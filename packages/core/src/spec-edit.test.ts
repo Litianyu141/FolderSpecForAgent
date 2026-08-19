@@ -376,4 +376,11 @@ describe('moveNode 与分组成员', () => {
     s = moveNode(s, 'examples/foo', 'src/cases', true)
     expect(s.groups[0].members).toEqual(['other/keep.ts'])
   })
+
+  it('不动与 from 共享字符串前缀、但不在其子树内的成员（src/core-utils 不是 src/core 的子节点）', () => {
+    let s = setAnnotation(emptySpec(), 'src/core', true, { annotation: 'x' })
+    s = setGroup(s, null, ['src/core-utils/a.ts'], { text: '工具' }).spec
+    s = moveNode(s, 'src/core', 'lib', true)
+    expect(s.groups[0].members).toEqual(['src/core-utils/a.ts'])
+  })
 })
