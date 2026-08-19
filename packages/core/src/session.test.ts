@@ -49,14 +49,46 @@ describe('Session.open', () => {
     expect(find(r.tree, 'src')?.origin).toBe('both')
   })
 
-  it('契约文件解析失败时进入只读模式且不清空数据', async () => {
+  it('契约文件解析失败时进入只读模式，不清空数据，树仍反映真实磁盘内容', async () => {
     await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
     const s = new Session(root)
     const r = await s.open()
     expect(r.parseErrors).not.toBeNull()
     expect(r.parseErrors![0].line).toBe(1)
+    // 解析失败不等于"什么都没有"：磁盘上真实存在的 src 目录必须仍然出现在树里，
+    // 只是不会带上（读不出来的）契约注释。
+    expect(find(r.tree, 'src')).not.toBeNull()
+    expect(find(r.tree, 'src')?.origin).toBe('actual-only')
     expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow('只读模式')
     await expect(s.save()).rejects.toThrow('只读模式')
+  })
+
+  it('契约文件解析失败时 raw() 也抛错，绝不能返回空契约掩盖用户原文件', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
+    const s = new Session(root)
+    await s.open()
+    expect(() => s.raw()).toThrow('只读模式')
+  })
+})
+
+describe('Session 未 open 时的防御性检查', () => {
+  it('save 在未 open 时抛错，且绝不覆盖磁盘上已有的契约文件', async () => {
+    const original = [
+      '---', 'folderspec: 1', 'root: .', 'ownership: human', '---',
+      '', '# 已有契约', '', '## 结构', '', '- `src/` — 人类写的注释', '',
+    ].join('\n')
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), original)
+
+    const s = new Session(root)
+    await expect(s.save()).rejects.toThrow('尚未打开')
+
+    const after = await fs.readFile(nodePath.join(root, SPEC_FILENAME), 'utf8')
+    expect(after).toBe(original)
+  })
+
+  it('tree 在未 open 时抛错，而不是返回一棵看似合理实则为空的假树', () => {
+    const s = new Session(root)
+    expect(() => s.tree()).toThrow('尚未打开')
   })
 })
 
@@ -110,17 +142,52 @@ describe('Session 编辑与保存', () => {
     expect(find(r.tree, 'src/cases/foo')?.origin).toBe('spec-only')
   })
 
-  it('隐藏状态是临时的：重新 open 后旧位置重新出现', async () => {
+  it('隐藏状态是临时的：同一个 Session reload() 后旧位置重新出现', async () => {
     await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
     const s = new Session(root)
     await s.open()
     s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
     await s.save()
 
-    const fresh = new Session(root)
-    const r = await fresh.open()
+    // 关键：复用同一个 s 实例调用 reload()，而不是 new 一个新 Session。
+    // hidden 是这个实例的私有状态；只有复用同一个实例，"reload 之后 hidden 被清空"
+    // 这件事才有机会被测出来——换一个新实例的话，它的 hidden 天生就是空的，
+    // 测试对 open() 里有没有 this.hidden.clear() 完全没有区分力。
+    const r = await s.reload()
     expect(find(r.tree, 'examples/foo')?.origin).toBe('actual-only')
     expect(find(r.tree, 'src/cases/foo')?.origin).toBe('spec-only')
+  })
+})
+
+describe('Session 输入校验', () => {
+  it('注释里的换行被归一化为空格，写盘后仍可解析', async () => {
+    const s = new Session(root)
+    await s.open()
+    const r = s.annotate({ path: 'src', isDir: true, annotation: '一行\n二行' })
+    expect(find(r.tree, 'src')?.annotation).toBe('一行 二行')
+
+    const { written } = await s.save()
+    expect(written).toBe(true)
+    const text = await fs.readFile(nodePath.join(root, SPEC_FILENAME), 'utf8')
+    expect(parseSpec(text).ok).toBe(true)
+  })
+
+  it('role 中含 "]" 时被拒绝，报错信息点名字段', async () => {
+    const s = new Session(root)
+    await s.open()
+    expect(() => s.annotate({ path: 'src', isDir: true, role: 'a]b' })).toThrow('role')
+  })
+
+  it('role 中含反引号时也被拒绝', async () => {
+    const s = new Session(root)
+    await s.open()
+    expect(() => s.annotate({ path: 'src', isDir: true, role: 'a`b' })).toThrow('role')
+  })
+
+  it('template 中含空白字符时被拒绝，报错信息点名字段', async () => {
+    const s = new Session(root)
+    await s.open()
+    expect(() => s.annotate({ path: 'src', isDir: true, template: 'a b' })).toThrow('template')
   })
 })
 
@@ -155,5 +222,32 @@ describe('Session.handle', () => {
   it('未知方法名抛错', async () => {
     const s = new Session(root)
     await expect(s.handle('nope' as never, {} as never)).rejects.toThrow('未知方法')
+  })
+
+  it('handle() 能正确分发全部 7 个 Api 方法', async () => {
+    const s = new Session(root)
+
+    const opened = await s.handle('workspace/open', { root })
+    expect((opened as { hasSpec: boolean }).hasSpec).toBe(false)
+
+    const got = await s.handle('tree/get', {})
+    expect((got as { tree: ViewNode }).tree.path).toBe('')
+
+    const expanded = await s.handle('tree/expand', { path: 'src/deep' })
+    expect(find((expanded as { tree: ViewNode }).tree, 'src/deep/deeper')).not.toBeNull()
+
+    const annotated = await s.handle('spec/annotate', { path: 'src', isDir: true, annotation: 'x' })
+    expect((annotated as { dirty: boolean }).dirty).toBe(true)
+    expect(find((annotated as { tree: ViewNode }).tree, 'src')?.annotation).toBe('x')
+
+    const moved = await s.handle('spec/move', { from: 'README.md', toParent: 'src', isDir: false })
+    expect(find((moved as { tree: ViewNode }).tree, 'README.md')).toBeNull()
+    expect(find((moved as { tree: ViewNode }).tree, 'src/README.md')).not.toBeNull()
+
+    const raw = await s.handle('spec/raw', {})
+    expect((raw as { markdown: string }).markdown).toContain('- `src/` — x')
+
+    const saved = await s.handle('spec/save', {})
+    expect((saved as { written: boolean }).written).toBe(true)
   })
 })
