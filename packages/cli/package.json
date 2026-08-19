@@ -14,8 +14,8 @@
   "bin": { "folderspec": "dist/main.js" },
   "files": ["dist"],
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node20 --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=dist/main.js && chmod +x dist/main.js && node scripts/copy-ui.mjs",
-    "prepublishOnly": "pnpm build",
+    "build": "pnpm -C ../core build && pnpm -C ../ui build && esbuild src/main.ts --bundle --platform=node --format=esm --target=node20 --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=dist/main.js && chmod +x dist/main.js && node scripts/copy-ui.mjs",
+    "prepack": "pnpm build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
