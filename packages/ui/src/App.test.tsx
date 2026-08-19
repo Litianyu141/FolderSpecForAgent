@@ -138,14 +138,28 @@ describe('App', () => {
   })
 
   it('横幅出现时会重新测量头部高度', async () => {
-    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect')
-    const bridge = bridgeWith()
+    // 用同一个根重新载入，第二次返回 parseErrors，只触发只读横幅这一条状态变化——
+    // 不掺入 externalChange，这样测试才是专门盯着 parseErrors 这个依赖项的。
+    let opens = 0
+    const bridge = new FakeBridge({
+      'workspace/open': () => {
+        opens += 1
+        return opens === 1 ? openResult() : openResult({ parseErrors: [{ line: 1, message: 'x' }] })
+      },
+      'spec/annotate': () => ({ tree: tree([SRC]), dirty: true }),
+      'spec/move': () => ({ tree: tree([SRC]), dirty: true }),
+      'spec/save': () => ({ written: true }),
+      'tree/expand': () => ({ tree: tree([SRC]) }),
+    } as never)
+
     render(<App bridge={bridge} initialRoot="/tmp/repo" />)
     await waitFor(() => screen.getByLabelText('工作区路径'))
 
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect')
     const before = spy.mock.calls.length
-    act(() => { bridge.emit('external-change', {}) })
-    await waitFor(() => screen.getByText(/已在外部修改/))
+
+    fireEvent.click(screen.getByText('载入'))
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
 
     expect(spy.mock.calls.length).toBeGreaterThan(before)
     spy.mockRestore()
