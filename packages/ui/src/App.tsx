@@ -2,14 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Bridge, FileReadResult, Group, OpenResult, ParseError, SetGroupParams, ViewNode,
 } from '@folderspec/core/api'
-import { SpecTree, flatten, matchesSearch } from './Tree.js'
+import { SpecTree, flatten } from './Tree.js'
 import { AnnotationPanel } from './AnnotationPanel.js'
 import type { PanelPatch } from './AnnotationPanel.js'
 import { ContentPane } from './ContentPane.js'
 import { GroupPanel } from './GroupPanel.js'
 import type { GroupSubmit } from './GroupPanel.js'
-import { applyClick, matchingGroups, visibleOrderOf } from './selection.js'
+import { applyClick, matchingGroups } from './selection.js'
 import type { ClickMods, SelectionState } from './selection.js'
+import type { TreeApi } from 'react-arborist'
 import { useSplitter } from './splitter.js'
 import { useElementSize } from './useElementSize.js'
 import { Toolbar } from './Toolbar.js'
@@ -27,10 +28,6 @@ export function App({ bridge, initialRoot }: AppProps) {
   const [groups, setGroups] = useState<Group[]>([])
   const [parseErrors, setParseErrors] = useState<ParseError[] | null>(null)
   const [selection, setSelection] = useState<SelectionState>(EMPTY_SELECTION)
-  // react-arborist 的展开态存在它自己的 store 里，外面读不到；这里按它的 onToggle 通知镜像一份，
-  // 只为算出 Shift 区间要用的"当前可见顺序"。切换工作区时不清空：react-arborist 自己也不会
-  // 因为换了 data 就折叠，清掉反而会让两边不一致（残留的路径在新树里查不到，无害）。
-  const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(() => new Set())
   const [contentPath, setContentPath] = useState<string | null>(null)
   const [content, setContent] = useState<FileReadResult | null>(null)
   const [contentLoading, setContentLoading] = useState(false)
@@ -41,6 +38,25 @@ export function App({ bridge, initialRoot }: AppProps) {
   const [bodyHeight, setBodyHeight] = useState(600)
 
   const headerRef = useRef<HTMLDivElement>(null)
+  const treeApiRef = useRef<TreeApi<ViewNode> | undefined>(undefined)
+
+  /**
+   * 收缩既有分组时"正在编辑哪个分组 + 它最新的成员集"。
+   *
+   * 两件事逼出了这个 ref。其一：收缩是"发请求 + 改选中集"两步，中间那一帧若让
+   * GroupPanel 看到"成员少了、groups 还没更新"，matchingGroups 会失配、current 变 null，
+   * 它按成员键重置的 effect 就把用户的分组名与注释清成空串；等响应回来 current 虽然
+   * 恢复，成员键却不再变化、effect 不再重跑，字段就停在空。那个空串会随下一次提交
+   * （改一下约束强度就够）写回契约，而 core 把"text 为空"当成删除该分组——用户写的
+   * 注释就此消失，正踩在本项目唯一那条红线上。所以选中集要等响应落地后与 groups
+   * 同批更新，面板永远看不到那个中间态。
+   * 其二：既然选中集要等，连续两次点击就不能各自从渲染快照出发，否则第二次会把第一次
+   * 移掉的成员又加回去。基准一律从这里取。
+   *
+   * 任何"重新决定编辑目标"的路径（选行、点分组入口、换工作区）都要把它清空。
+   */
+  const shrinkRef = useRef<{ id: string; members: string[] } | null>(null)
+  const shrinkChainRef = useRef<Promise<void>>(Promise.resolve())
 
   const left = useSplitter({ initial: 260, min: 160, max: 600, side: 'left' })
   const right = useSplitter({ initial: 320, min: 220, max: 720, side: 'right' })
@@ -78,6 +94,10 @@ export function App({ bridge, initialRoot }: AppProps) {
       setGroups(r.groups)
       setParseErrors(r.parseErrors)
       setSelection(EMPTY_SELECTION)
+      shrinkRef.current = null
+      // 与切到目录时同理：在途的 file/read 必须作废，否则它晚到时会往一个已经不存在的
+      // 上下文里写——成功路径看不出来，失败路径会在新工作区里弹出旧工作区的错误横幅
+      contentReqRef.current += 1
       setContentPath(null)
       setContent(null)
       setDirty(false)
@@ -146,15 +166,13 @@ export function App({ bridge, initialRoot }: AppProps) {
 
   const handleSelect = useCallback((path: string, mods: ClickMods) => {
     if (tree === null) return
-    // 搜索词必须参与：过滤生效时树上只剩命中的那几行，而 Shift 区间的结果会经
-    // spec/setGroup 写进用户的 .folderspec.md。按未过滤的顺序算，落进契约文件的
-    // 成员里就会有用户从没在屏幕上见过的路径（spec §5.3 的"所见即所选"）。
-    const order = visibleOrderOf(
-      tree.children ?? [],
-      p => openPaths.has(p),
-      searchTerm === '' ? undefined : n => matchesSearch(n, searchTerm),
-    )
+    // Shift 区间的顺序直接取 react-arborist 算好的可见行，不在外面复算一份：
+    // 那份顺序同时受展开态、搜索过滤、以及"过滤态下目录一律默认展开"三者影响，
+    // 外面复算已经错过两次，每次都把屏幕上没有的路径塞进选中集——而选中集会经
+    // spec/setGroup 写进用户的 .folderspec.md（spec §5.3 的"所见即所选"）。
+    const order = treeApiRef.current?.visibleNodes.map(n => n.id) ?? []
     setSelection(prev => applyClick(prev, path, order, mods))
+    shrinkRef.current = null
 
     const node = flatten(tree.children ?? []).get(path)
     if (!node) return
@@ -174,15 +192,7 @@ export function App({ bridge, initialRoot }: AppProps) {
     } else {
       void loadContent(path)
     }
-  }, [tree, openPaths, searchTerm, loadContent])
-
-  const handleToggle = useCallback((path: string) => {
-    setOpenPaths(prev => {
-      const next = new Set(prev)
-      if (!next.delete(path)) next.add(path)
-      return next
-    })
-  }, [])
+  }, [tree, loadContent])
 
   // 面板一次只编辑一个节点的注释；多选时走的是分组那条写路径（spec/setGroup）。
   const selectedPath = selection.selected.length === 1 ? selection.selected[0] : null
@@ -201,14 +211,17 @@ export function App({ bridge, initialRoot }: AppProps) {
     }
   }, [bridge, selectedPath, tree])
 
-  const sendSetGroup = useCallback(async (params: SetGroupParams) => {
+  /** 返回是否写成功——收缩成员时要靠它决定选中集该不该跟着变 */
+  const sendSetGroup = useCallback(async (params: SetGroupParams): Promise<boolean> => {
     try {
       const r = await bridge.request('spec/setGroup', params)
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      return false
     }
   }, [bridge])
 
@@ -231,23 +244,35 @@ export function App({ bridge, initialRoot }: AppProps) {
   const handlePickGroup = useCallback((id: string) => {
     const g = groupsRef.current.find(x => x.id === id)
     if (!g) return
+    shrinkRef.current = null
     setSelection({ selected: [...g.members], anchor: g.members[g.members.length - 1] ?? null })
   }, [])
 
   const handleRemoveMember = useCallback((path: string) => {
-    const rest = selection.selected.filter(p => p !== path)
-    // 面板正编辑某个既有分组时，"移除成员"必须真的把那个分组缩小。只改选中集的话，
-    // 成员集与该分组不再相等，matchingGroups 当场失配，下一次失焦提交就走 id: null
-    // 新建了一个分组——用户看着在编辑 g1，实际分叉出了第二个，g1 原封不动。
-    // 省略 name/text/severity：core 把 undefined 当"不变"，这里只动成员。
-    const current = matchingGroups(selection.selected, groups)[0]
-    if (current) void sendSetGroup({ id: current.id, members: rest })
-    setSelection(prev => ({
-      selected: rest,
-      // 锚点被移掉了就作废，别让后续 Shift 从一个已经不在选中集里的位置起算
-      anchor: prev.anchor === path ? null : prev.anchor,
-    }))
-  }, [sendSetGroup, selection.selected, groups])
+    const base = shrinkRef.current?.members ?? selection.selected
+    if (!base.includes(path)) return
+    const rest = base.filter(p => p !== path)
+    // 编辑目标一旦定下就记在 shrinkRef 里，不再靠"成员集恰好相等"重新判定：收缩在途时
+    // 成员集与 groups 本来就对不上，重新判定必然失配。
+    const id = shrinkRef.current?.id ?? matchingGroups(base, groups)[0]?.id ?? null
+    if (id !== null) shrinkRef.current = { id, members: rest }
+    const anchorGone = selection.anchor === path
+
+    // 串起来跑，不并发：两次移除若同时在途，落地顺序不保证，契约里可能停在先发的那一份。
+    shrinkChainRef.current = shrinkChainRef.current.then(async () => {
+      // 省略 name/text/severity：core 把 undefined 当"不变"，这里只动成员
+      if (id !== null && !(await sendSetGroup({ id, members: rest }))) {
+        // 写失败就不动选中集，界面继续与契约一致；下一次点击重新判定编辑目标
+        shrinkRef.current = null
+        return
+      }
+      setSelection(prev => ({
+        selected: rest,
+        // 锚点被移掉了就作废，别让后续 Shift 从一个已经不在选中集里的位置起算
+        anchor: anchorGone ? null : prev.anchor,
+      }))
+    })
+  }, [sendSetGroup, selection, groups])
 
   const handleSave = useCallback(async () => {
     try {
@@ -311,8 +336,8 @@ export function App({ bridge, initialRoot }: AppProps) {
               onSelect={handleSelect}
               onExpand={path => void handleExpand(path)}
               onMove={(from, toParent, isDir) => void handleMove(from, toParent, isDir)}
-              onToggle={handleToggle}
               onGroupClick={handlePickGroup}
+              apiRef={treeApiRef}
             />
           )}
         </div>

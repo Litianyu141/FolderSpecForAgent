@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { App } from './App.js'
 import { FakeBridge } from './test-bridge.js'
-import type { Bridge, FileReadResult, Group, OpenResult, ViewNode } from '@folderspec/core/api'
+import type { Bridge, FileReadResult, Group, OpenResult, Severity, ViewNode } from '@folderspec/core/api'
 
 const tree = (children: ViewNode[]): ViewNode =>
   ({ name: 'repo', path: '', isDir: true, origin: 'both', children })
@@ -55,6 +55,58 @@ const bridgeWith = (over: Partial<Record<string, unknown>> = {}) => new FakeBrid
 } as never)
 
 const rowsOf = (container: HTMLElement) => Array.from(container.querySelectorAll('.fs-row'))
+
+const G3: Group = { id: 'g1', members: ['src', 'docs', 'README.md'], text: '一体的三个' }
+
+/**
+ * 会真的按参数收缩分组、且响应带非零延迟的桩。两点缺一不可：
+ * 上一轮 bridgeWith 的 spec/setGroup 恒返回未收缩的 G1，把一个会销毁用户注释的缺陷
+ * 完全掩盖住了；而零延迟的桩测不出"请求在途的那一帧"——真实宿主的响应必然晚于本次
+ * 点击引发的渲染，缺陷就长在那一帧里。
+ */
+const groupBridge = (initial: Group[], delayMs = 20) => {
+  let groups: Group[] = initial.map(g => ({ ...g, members: [...g.members] }))
+  const calls: Array<{ method: string; params: unknown }> = []
+  const self = {
+    calls,
+    groupsNow: () => groups,
+    lastCall(method: string): unknown {
+      for (let i = calls.length - 1; i >= 0; i--) if (calls[i].method === method) return calls[i].params
+      return undefined
+    },
+    on: () => () => {},
+    request: (async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params })
+      if (method === 'workspace/open') return openResult({ groups })
+      if (method === 'file/read') return { kind: 'text', text: 'hello\nworld' }
+      if (method === 'spec/annotate') return { tree: tree(FIXTURE), dirty: true, groups }
+      if (method === 'spec/setGroup') {
+        await new Promise(r => setTimeout(r, delayMs))
+        const id = params.id as string | null
+        const members = params.members as string[]
+        groups = groups.map(g => g.id !== id ? g : {
+          ...g,
+          members: [...members],
+          ...(typeof params.name === 'string' && params.name !== '' ? { id: params.name } : {}),
+          ...(params.text !== undefined ? { text: params.text as string } : {}),
+          ...(params.severity ? { severity: params.severity as Severity } : {}),
+        })
+        return { tree: tree(FIXTURE), dirty: true, groups, id: id ?? 'group' }
+      }
+      throw new Error(`本用例未配置 ${method}`)
+    }) as Bridge['request'],
+  }
+  return self as typeof self & Bridge
+}
+
+/** 选中 src + docs + README.md 三项，恰好等于 G3 的成员集 */
+const selectAllThree = (container: HTMLElement) => {
+  const rows = rowsOf(container)
+  fireEvent.click(rows[0])
+  fireEvent.click(rows[1], { ctrlKey: true })
+  fireEvent.click(rows[2], { ctrlKey: true })
+}
+
 
 const clickFirstRow = (container: HTMLElement) => {
   const row = container.querySelector('.fs-row')
@@ -537,5 +589,181 @@ describe('App', () => {
 
     expect(container.querySelector('.fs-content-path')?.textContent).toBe('README.md')
     expect(container.querySelector('.fs-code-text')?.textContent).toBe('README 的内容')
+  })
+
+  it('搜索词是纯空白时不算过滤，shift 区间照常成立', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('搜索'))
+
+    // react-arborist 的 isFiltered 是 searchTerm?.trim()，纯空白等于没搜索。
+    // App 若自己按 searchTerm === '' 判定并把未 trim 的原串拿去匹配，就会认为在过滤、
+    // 且没有任何节点命中，区间静默退化成单选——两边对"算不算在过滤"的判断必须一致。
+    fireEvent.change(screen.getByLabelText('搜索'), { target: { value: '   ' } })
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(3))
+
+    fireEvent.click(rowsOf(container)[0])                        // src，展开
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(5))
+    fireEvent.click(rowsOf(container)[4], { shiftKey: true })    // README.md
+
+    await waitFor(() => expect(screen.getByText(/已选中 5 项/)).toBeTruthy())
+  })
+
+  it('过滤态下折叠一个目录后，shift 区间不会把屏幕上没有的行卷进来', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('搜索'))
+
+    // 搜 a：src 自己不含 a，但子项 a.ts 含，按 markMatch 作为祖先留下；docs、b.ts 落选。
+    // 过滤态下 react-arborist 让所有目录默认展开（tree-api 的 isOpen：filtered 表默认 true）
+    fireEvent.change(screen.getByLabelText('搜索'), { target: { value: 'a' } })
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(3))
+
+    fireEvent.click(rowsOf(container)[0])      // 过滤态下点 src 是**折叠**
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(2))
+    fireEvent.click(rowsOf(container)[1], { shiftKey: true })   // README.md
+
+    // 屏幕上只剩 src 与 README.md；src/a.ts 已被折叠起来，绝不能进成员列表
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+    expect(screen.queryByText('src/a.ts')).toBeNull()
+  })
+
+  it('过滤态下不折叠，shift 区间照样成立而不是退化成单选', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('搜索'))
+
+    fireEvent.change(screen.getByLabelText('搜索'), { target: { value: 'a' } })
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(3))
+
+    fireEvent.click(rowsOf(container)[1])                        // src/a.ts
+    fireEvent.click(rowsOf(container)[2], { shiftKey: true })    // README.md
+
+    // 两行都在屏幕上，区间必须成立。过去 App 自己算可见顺序时，src 不在 openPaths 里，
+    // src/a.ts 压根不在顺序表中，applyClick 的 indexOf 落空、静默退化成单选。
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+  })
+
+  it('收缩既有分组后，面板仍显示该分组的名字与注释', async () => {
+    const bridge = groupBridge([G3])
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    expect((ta as HTMLTextAreaElement).value).toBe('一体的三个')
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+    // 编辑目标仍然是 g1，字段不该被清空
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('一体的三个')
+    expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('g1')
+  })
+
+  it('收缩后紧接着改约束强度，提交的注释不是空串', async () => {
+    const bridge = groupBridge([G3])
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'warning' } })
+
+    // text 为空串会被 core 当成"删除该分组"（spec-edit.ts 的「清空 text 即删除」），
+    // 用户写的注释就此消失——本项目唯一那条红线
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({
+      id: 'g1', text: '一体的三个', severity: 'warning',
+    }))
+  })
+
+  it('连续两次移除成员，契约里的成员与界面一致', async () => {
+    const bridge = groupBridge([G3], 30)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+
+    // 第二次点击时第一次的响应还没回来，必须以最新的成员集为基准，不能各自从渲染快照出发
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    fireEvent.click(screen.getByLabelText('从选中集移除 docs'))
+
+    await waitFor(() => expect(screen.getByLabelText('注释')).toBeTruthy())   // 只剩 1 项
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src']))
+  })
+
+  it('分组收缩到只剩一个成员：注释保住，但此后再也进不了分组面板', async () => {
+    const bridge = groupBridge([{ id: 'g1', members: ['src', 'docs'], text: '两个一体' }])
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])
+    fireEvent.click(rows[1], { ctrlKey: true })
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 docs'))
+
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src']))
+    expect(bridge.groupsNow()[0].text).toBe('两个一体')          // 注释没丢
+    await waitFor(() => expect(screen.getByLabelText('注释')).toBeTruthy())
+    expect(screen.getByText('两个一体')).toBeTruthy()             // §5.4.2 的入口还列着它
+
+    fireEvent.click(screen.getByText('g1'))
+
+    // 单成员分组：点入口只会选中 1 项，右栏仍是单节点面板，进不去分组面板。
+    // 这是钉住"当前实际行为"的用例，不是在主张它理想——判断见报告。
+    await waitFor(() => expect(screen.getByLabelText('注释')).toBeTruthy())
+    expect(screen.queryByLabelText('分组注释')).toBeNull()
+  })
+
+  // 下面两条盯的是 contentReqRef 的自增，而不是 setContent(null)。
+  // 走的是**失败**路径：晚到的拒绝会调 setError 弹出错误横幅，而那时用户早已切走——
+  // 成功路径不可观测（ContentPane 遇到 isDir 或 node 为 null 都在读 content 之前就
+  // return），失败路径可观测。
+  it('切到目录后，先前那次读取失败不再弹错误横幅', async () => {
+    let rejectSlow!: (e: Error) => void
+    const bridge: Bridge = {
+      request: (async (method: string) => {
+        if (method === 'workspace/open') return openResult()
+        if (method === 'file/read') return new Promise((_, rej) => { rejectSlow = rej })
+        throw new Error(`本用例未配置 ${method}`)
+      }) as Bridge['request'],
+      on: () => () => {},
+    }
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[2])            // README.md，慢
+    fireEvent.click(rowsOf(container)[0])            // 切到 src/ 目录
+    await waitFor(() => expect(screen.getByText(/这是一个目录/)).toBeTruthy())
+
+    await act(async () => { rejectSlow(new Error('这条读取早就该作废了')) })
+
+    expect(screen.queryByText(/这条读取早就该作废了/)).toBeNull()
+  })
+
+  it('换工作区后，先前那次读取失败不再弹错误横幅', async () => {
+    let rejectSlow!: (e: Error) => void
+    let opens = 0
+    const bridge: Bridge = {
+      request: (async (method: string) => {
+        if (method === 'workspace/open') { opens += 1; return openResult() }
+        if (method === 'file/read') return new Promise((_, rej) => { rejectSlow = rej })
+        throw new Error(`本用例未配置 ${method}`)
+      }) as Bridge['request'],
+      on: () => () => {},
+    }
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[2])            // README.md，慢
+    fireEvent.click(screen.getByText('载入'))        // 换工作区
+    await waitFor(() => expect(opens).toBe(2))
+
+    await act(async () => { rejectSlow(new Error('上一个工作区的读取')) })
+
+    expect(screen.queryByText(/上一个工作区的读取/)).toBeNull()
   })
 })

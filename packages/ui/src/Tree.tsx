@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { Tree } from 'react-arborist'
-import type { NodeRendererProps } from 'react-arborist'
+import type { NodeRendererProps, TreeApi } from 'react-arborist'
 import type { ViewNode } from '@folderspec/core/api'
 import type { ClickMods } from './selection.js'
 import { NodeRow } from './NodeRow.js'
@@ -17,11 +17,13 @@ export interface TreeProps {
   onMove(from: string, toParent: string, isDir: boolean): void
   onGroupClick?: (id: string) => void
   /**
-   * 每次展开/折叠都通知一次（含折叠，react-arborist 只给 id、不给新状态）。
-   * 上层需要它是因为 Shift 区间选择以"当前可见顺序"为准，而可见顺序取决于哪些目录是展开的，
-   * 那份状态只存在于 react-arborist 内部；不镜像出来，跨层的区间选择就只能按顶层节点算。
+   * 把 react-arborist 的 TreeApi 交出去。上层要的是 `visibleNodes`——Shift 区间必须以
+   * 屏幕上真实的行序为准，而那份顺序由库自己算：它同时受展开态、搜索过滤、以及
+   * "过滤态下目录一律默认展开"（tree-api 的 isOpen 对 filtered 另有一张表）共同决定。
+   * 曾经在外面照着规则复算过一份，两次都漏掉了其中一条，选中集里于是混进了屏幕上
+   * 根本没有的路径——而那些路径会被写进用户的契约文件。改成直接问库要。
    */
-  onToggle?: (path: string) => void
+  apiRef?: React.Ref<TreeApi<ViewNode> | undefined>
 }
 
 export function flatten(nodes: ViewNode[]): Map<string, ViewNode> {
@@ -70,7 +72,7 @@ export function makeDisableDrop(disabled: boolean) {
 export function SpecTree(props: TreeProps) {
   const {
     data, selectedPaths, searchTerm, width, height, disabled,
-    onSelect, onExpand, onMove, onGroupClick, onToggle,
+    onSelect, onExpand, onMove, onGroupClick, apiRef,
   } = props
 
   // selectedPaths/onSelect 几乎每次点击都变。react-arborist 把 renderNode（下面的
@@ -99,6 +101,7 @@ export function SpecTree(props: TreeProps) {
   )
   return (
     <Tree<ViewNode>
+      ref={apiRef}
       data={data}
       // react-arborist 的 selection 只接受单个 id，多选态的真源是 selectedPaths、
       // 由 NodeRow 自行渲染 data-selected；这里传最后一个仅用于它自己的焦点/可访问性记录。
@@ -115,11 +118,7 @@ export function SpecTree(props: TreeProps) {
       disableDrag={disabled}
       disableDrop={makeDisableDrop(disabled)}
       onMove={makeMoveHandler(data, onMove)}
-      onToggle={id => {
-        onToggle?.(id)
-        const n = flatten(data).get(id)
-        if (n?.isDir && n.children === undefined) onExpand(id)
-      }}
+      onToggle={id => { const n = flatten(data).get(id); if (n?.isDir && n.children === undefined) onExpand(id) }}
     >
       {renderNode}
     </Tree>
