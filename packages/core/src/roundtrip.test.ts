@@ -23,7 +23,10 @@ const nodeArb: fc.Arbitrary<SpecNode> = fc.letrec<{ node: SpecNode }>(tie => ({
     children: fc.oneof(
       { depthSize: 'small' },
       fc.constant([] as SpecNode[]),
-      fc.array(tie('node'), { maxLength: 3 }),
+      // 同一层同名兄弟是重复声明，解析器现在直接拒绝（见下面的专门用例）。
+      // 生成器只产唯一兄弟，是为了让 round-trip 这条用例始终测的是"往返不丢数据"，
+      // 而不是变成一条重复检测用例。
+      fc.uniqueArray(tie('node'), { maxLength: 3, selector: n => n.name }),
     ),
   }).map(n => (n.isDir ? n : { ...n, children: [] })),
 })).node
@@ -60,28 +63,14 @@ const specArb: fc.Arbitrary<Spec> = fc.record({
   ownership: fc.constant('human'),
   title: fc.oneof(fc.constant(''), textArb),
   preamble: fc.array(textArb, { maxLength: 3 }),
-  nodes: fc.array(nodeArb, { maxLength: 4 }),
+  nodes: fc.uniqueArray(nodeArb, { maxLength: 4, selector: n => n.name }),
   templates: fc.array(templateArb, { maxLength: 2 }),
   rules: fc.array(ruleArb, { maxLength: 3 }),
 }).map(s => ({
   ...s,
-  nodes: dedupeSiblings(s.nodes),
   templates: s.templates.filter((t, i, all) => all.findIndex(o => o.name === t.name) === i),
   rules: s.rules.filter((r, i, all) => all.findIndex(o => o.id === r.id) === i),
 }))
-
-/** 同一层出现同名节点在语义上是重复声明，生成器层面去重 */
-function dedupeSiblings(nodes: SpecNode[]): SpecNode[] {
-  const seen = new Set<string>()
-  const out: SpecNode[] = []
-  for (const n of nodes) {
-    const key = `${n.name}|${n.isDir}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push({ ...n, children: dedupeSiblings(n.children) })
-  }
-  return out
-}
 
 /** 对齐 undefined 属性的表示，让比较只关注实际数据 */
 const norm = (v: unknown) => JSON.parse(JSON.stringify(v))
@@ -110,6 +99,28 @@ describe('serializeSpec ↔ parseSpec round-trip', () => {
         expect(serializeSpec(back.value)).toBe(once)
       }),
       { numRuns: 300 },
+    )
+  })
+})
+
+describe('同名兄弟节点', () => {
+  it('任意 Spec 的第一个根节点被复制一份后，序列化的结果必须解析失败', () => {
+    // 以前这里有个 dedupeSiblings() 帮解析器把重复项擦掉，注释写着"同名节点在语义上是
+    // 重复声明"——可当时谁也没有真的拒绝它，那句注释是空话。现在解析器会报错，这条用例
+    // 就是那句话的执行者：任何被复制出来的兄弟都必须让整份文档解析失败，而不是被静默
+    // 收下（收下之后 merge 显示最后一个、spec-edit 编辑第一个，注释会被无声改写）。
+    fc.assert(
+      fc.property(
+        specArb.filter(s => s.nodes.length > 0),
+        spec => {
+          const dup: Spec = { ...spec, nodes: [...spec.nodes, structuredClone(spec.nodes[0])] }
+          const back = parseSpec(serializeSpec(dup))
+          expect(back.ok).toBe(false)
+          if (back.ok) return
+          expect(back.errors.some(e => e.message.includes('重名'))).toBe(true)
+        },
+      ),
+      { numRuns: 200 },
     )
   })
 })

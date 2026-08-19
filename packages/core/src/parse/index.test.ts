@@ -59,3 +59,66 @@ describe('parseSpec', () => {
     expect(r.errors).toEqual(sorted)
   })
 })
+
+describe('parseSpec 拒绝同名兄弟节点', () => {
+  // 行号一目了然地对齐：1..5 是 front-matter，6 空行，7 是 "## 结构"，8 空行，
+  // 9/10/11 是三个结构行。
+  const doc = (...structure: string[]) => [
+    '---', 'folderspec: 1', 'root: .', 'ownership: human', '---',
+    '',
+    '## 结构',
+    '',
+    ...structure,
+    '',
+  ].join('\n')
+
+  it('两个同名兄弟被拒绝，行号指向后出现的那一条', () => {
+    const r = parseSpec(doc(
+      '- `src/` — 第一次声明',
+      '- `docs/` — 无关节点',
+      '- `src/` — 第二次声明',
+    ))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors).toHaveLength(1)
+    expect(r.errors[0].line).toBe(11)
+    expect(r.errors[0].message).toContain('重名')
+  })
+
+  it('同名的"文件 + 目录"也算重复声明', () => {
+    // 下游两条路径的键都只有 name（merge 用 Map、spec-edit 用 list.find），
+    // `src` 与 `src/` 作为兄弟一样会互相覆盖，所以不能因为 isDir 不同就放行。
+    const r = parseSpec(doc(
+      '- `src/` — 当成目录声明',
+      '- `src` — 又当成文件声明',
+    ))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].line).toBe(10)
+    expect(r.errors[0].message).toContain('重名')
+  })
+
+  it('嵌套层里的同名兄弟同样被拒绝，而不是只查根层', () => {
+    const r = parseSpec(doc(
+      '- `src/` — 源码',
+      '  - `core/` — 内核',
+      '  - `core/` — 又一个内核',
+    ))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].line).toBe(11)
+    expect(r.errors[0].message).toContain('重名')
+  })
+
+  it('不同父节点下的同名节点是合法的，不能误伤', () => {
+    const r = parseSpec(doc(
+      '- `src/` — 源码',
+      '  - `utils/` — 一份',
+      '- `tests/` — 测试',
+      '  - `utils/` — 另一份，和上面那个无关',
+    ))
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.nodes[0].children[0].name).toBe('utils')
+    expect(r.value.nodes[1].children[0].name).toBe('utils')
+  })
+})

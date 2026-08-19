@@ -89,8 +89,9 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
       if (annotation !== '') node.annotation = annotation
     }
 
+    let siblings: SpecNode[]
     if (depth === 0) {
-      roots.push(node)
+      siblings = roots
     } else {
       const parent = stack[depth - 1]
       if (!parent) {
@@ -101,8 +102,31 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
         errors.push({ line, message: `父节点 \`${parent.name}\` 不是目录，不能有子项` })
         continue
       }
-      parent.children.push(node)
+      siblings = parent.children
     }
+
+    // 同一层重名 = 重复声明，必须报错，不能默默收下。
+    //
+    // 工具自己永远写不出重复项，但这个文件的设计初衷就是给人手改、进 git、被 Agent 追加——
+    // 一次手抖、一次 merge 冲突解错，就能造出两个同名兄弟。此后下游两条路径对"哪一个才算数"
+    // 的答案是相反的：merge 用 name → node 的 Map（后一个覆盖前一个，UI 只显示最后那个），
+    // spec-edit 用 list.find（命中第一个，编辑落在第一个上）。于是用户编辑他看到的那一条，
+    // 工具却改写了另一条，界面上毫无变化也毫无报错——注释被静默弄丢，正是本工具唯一
+    // 有能力造成的那种伤害（spec §8）。
+    //
+    // 判重只看 name、不看 isDir：上面两条下游路径的键都只有 name，所以 `foo` 与 `foo/`
+    // 作为兄弟同样会互相覆盖，同样是重复声明。
+    const dup = siblings.find(n => n.name === node.name)
+    if (dup) {
+      const shown = `${node.name}${node.isDir ? '/' : ''}`
+      const other = `${dup.name}${dup.isDir ? '/' : ''}`
+      errors.push({
+        line,
+        message: `同一层出现重名节点 \`${shown}\`（与前面的 \`${other}\` 重复）：同名兄弟是重复声明，请删掉其中一条或改名`,
+      })
+      continue
+    }
+    siblings.push(node)
     stack[depth] = node
     stack.length = depth + 1
     prevDepth = depth
