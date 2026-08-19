@@ -45,6 +45,20 @@ describe('applyClick', () => {
     const r = applyClick(S(['e'], 'e'), 'a', ORDER, { shift: true, ctrl: false })
     expect(r.selected).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
+
+  // 锚点自身所在的目录被折叠后，锚点会从 visibleOrder 里消失（目标仍可见）——
+  // 这是这个特性存在的理由本身：折叠意味着"看不见"，看不见就不该参与区间计算，
+  // 必须退化为普通单击。用一个不含 'a' 的 visibleOrder 直接构造这个状态，
+  // 不依赖 applyClick 自己会不会把锚点从 selected 里带出可见序列。
+  it('锚点已不在可见序列里（如所在目录被折叠）时退化为普通单击', () => {
+    expect(applyClick(S(['a'], 'a'), 'c', ['b', 'c', 'd'], { shift: true, ctrl: false }))
+      .toEqual({ selected: ['c'], anchor: 'c' })
+  })
+
+  it('shift 单击锚点自身时区间只有该项', () => {
+    expect(applyClick(S(['b'], 'b'), 'b', ORDER, { shift: true, ctrl: false }))
+      .toEqual({ selected: ['b'], anchor: 'b' })
+  })
 })
 
 describe('matchingGroups', () => {

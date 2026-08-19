@@ -65,9 +65,13 @@ export function SpecTree(props: TreeProps) {
   const { data, selectedPaths, searchTerm, width, height, disabled, onSelect, onExpand, onMove, onGroupClick } = props
 
   // selectedPaths/onSelect 几乎每次点击都变。react-arborist 把 renderNode（下面的
-  // useCallback 返回值）当成子行的组件类型使用——引用一变就是"换了个组件"，会把整棵树
-  // 卸载重挂，折叠状态与选中态全部丢失。所以这两样"新鲜但高频变化"的值不能进依赖数组，
-  // 改用 ref 把最新值带进这个身份稳定的闭包，行渲染时读 .current 即可，不影响 useCallback 的引用。
+  // useCallback 返回值）当成每一行的组件类型使用——引用一变，当前可见的每一行都会被
+  // React 当成"换了个组件"卸载重挂。已实测证伪过一个更严重的猜想：展开/选中状态并不会
+  // 因此丢失，它们存在 react-arborist 自己的 Redux store 里（TreeProvider 用
+  // useSyncExternalStore 订阅），与 renderNode 的引用身份无关。真实代价是纯粹的渲染
+  // 开销——每次点击都要把所有可见行的 DOM 和 dragHandle 引用全部 churn 一遍——放着不
+  // 是错误，但没必要。所以这两样"新鲜但高频变化"的值不进依赖数组，改用 ref 把最新值
+  // 带进这个身份稳定的闭包，行渲染时读 .current 即可，不影响 useCallback 的引用。
   const selectedPathsRef = useRef(selectedPaths)
   selectedPathsRef.current = selectedPaths
   const onSelectRef = useRef(onSelect)
