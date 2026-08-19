@@ -57,6 +57,7 @@ export function moveNode(spec: Spec, from: string, toParent: string, isDir: bool
   const name = fromSegs[fromSegs.length - 1]
 
   // spec 里没有该节点时，新建一个空节点——它表达"我声明它应该在这里"，本身就是有效数据
+  // isDir 参数只在源节点不存在时生效；现有数据优先级高于调用者的声明
   const detached = detach(next.nodes, fromSegs) ?? { name, isDir, children: [] }
   pruneAlong(next.nodes, fromSegs.slice(0, -1))
 
@@ -96,8 +97,12 @@ function ensure(nodes: SpecNode[], segs: string[], lastIsDir: boolean): SpecNode
     if (!found) {
       found = { name: seg, isDir: isLast ? lastIsDir : true, children: [] }
       list.push(found)
-    } else if (isLast && found.isDir !== lastIsDir) {
-      found.isDir = lastIsDir
+    } else if (!isLast) {
+      // 要从它下面穿过去，它必然是目录
+      found.isDir = true
+    } else if (found.isDir !== lastIsDir) {
+      // 只有在没有子项时才允许把目录降级成文件
+      if (lastIsDir || found.children.length === 0) found.isDir = lastIsDir
     }
     node = found
     list = found.children
@@ -122,12 +127,12 @@ function mergeInto(target: SpecNode, incoming: SpecNode): void {
   if (incoming.role) target.role = incoming.role
   if (incoming.template) target.template = incoming.template
   if (incoming.severity) target.severity = incoming.severity
-  target.isDir = incoming.isDir
   for (const c of incoming.children) {
     const existing = target.children.find(t => t.name === c.name)
     if (existing) mergeInto(existing, c)
     else target.children.push(c)
   }
+  target.isDir = target.children.length > 0 ? true : incoming.isDir
 }
 
 function applyText(node: SpecNode, key: 'annotation' | 'role' | 'template', v: string | null | undefined): void {
@@ -142,8 +147,13 @@ function isEmptyNode(n: SpecNode): boolean {
 }
 
 /**
- * 只沿本次编辑触碰的那条路径自底向上回收空叶子。
- * 绝不做全树回收——拖拽声明出来的空节点是有效数据，全树回收会把它清掉。
+ * 只沿本次编辑触碰的那条路径自底向上回收空叶子，绝不做全树回收。
+ *
+ * 作用：给 src/core/ 写注释会顺带创建祖先 src，清空后应当把 src/core 一并收回。
+ * 边界：这只保证**本次编辑之外的路径**不受影响——拖拽声明出来的空节点不会被一次
+ * 无关路径的编辑清掉。但如果编辑的正是该空节点自己的子树，且清空后整条链都不再
+ * 携带任何字段，那么它同样会被回收。这两种节点在文件里字节相同，工具无法区分，
+ * 因此不做（也无法做）无条件保护。
  */
 function pruneAlong(rootList: SpecNode[], segs: string[]): void {
   const chain: Array<{ parent: SpecNode[]; node: SpecNode }> = []

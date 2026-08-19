@@ -1,18 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { emptySpec, moveNode, setAnnotation } from './spec-edit.js'
+import { emptySpec, findSpecNode, moveNode, setAnnotation } from './spec-edit.js'
 import type { Spec, SpecNode } from './types.js'
+import { serializeSpec } from './serialize.js'
+import { parseSpec } from './parse/index.js'
 
-const find = (nodes: SpecNode[], path: string): SpecNode | null => {
-  const segs = path.split('/')
-  let list = nodes
-  let node: SpecNode | null = null
-  for (const seg of segs) {
-    node = list.find(n => n.name === seg) ?? null
-    if (!node) return null
-    list = node.children
-  }
-  return node
-}
+const find = findSpecNode
 
 describe('setAnnotation', () => {
   it('为深层路径写注释时自动创建祖先目录节点', () => {
@@ -135,6 +127,99 @@ describe('emptySpec', () => {
     expect(s.version).toBe(1)
     expect(s.ownership).toBe('human')
     expect(s.preamble.join('\n')).toContain('Agent 不应自行修改本文件')
+    expect(s.nodes).toEqual([])
+  })
+})
+
+describe('isDir 一致性（Finding 1：isDir 与 children 同步）', () => {
+  it('序列化再解析应该成功 - 路由穿过文件节点', () => {
+    // 这会在修复前失败：b.txt 会有 children 但 isDir: false
+    let s = setAnnotation(emptySpec(), 'a/b.txt', false, { annotation: 'x' })
+    s = setAnnotation(s, 'a/b.txt/c', false, { annotation: 'y' })
+
+    const serialized = serializeSpec(s)
+    const parsed = parseSpec(serialized)
+    expect(parsed.ok).toBe(true)
+  })
+
+  it('序列化再解析应该成功 - 降级目录为文件', () => {
+    // 这会在修复前失败：src 既有子项又被设成 isDir: false
+    let s = setAnnotation(emptySpec(), 'src', true, { annotation: 'x' })
+    s = setAnnotation(s, 'src/core', false, { annotation: 'y' })
+    s = setAnnotation(s, 'src', false, { annotation: 'z' })
+
+    const serialized = serializeSpec(s)
+    const parsed = parseSpec(serialized)
+    expect(parsed.ok).toBe(true)
+  })
+
+  it('ensure 穿过文件节点时把它升级成目录', () => {
+    let s = setAnnotation(emptySpec(), 'a/b.txt', false, { annotation: 'x' })
+    s = setAnnotation(s, 'a/b.txt/c', false, { annotation: 'y' })
+
+    const btxt = find(s.nodes, 'a/b.txt')
+    expect(btxt?.isDir).toBe(true)
+    expect(btxt?.annotation).toBe('x')
+    expect(find(s.nodes, 'a/b.txt/c')?.annotation).toBe('y')
+  })
+
+  it('有子项的目录不会被降级成文件', () => {
+    let s = setAnnotation(emptySpec(), 'src', true, { annotation: 'x' })
+    s = setAnnotation(s, 'src/core', false, { annotation: 'y' })
+    s = setAnnotation(s, 'src', false, { annotation: 'z' })
+
+    const src = find(s.nodes, 'src')
+    expect(src?.isDir).toBe(true)
+    expect(src?.annotation).toBe('z')
+    expect(src?.children.length).toBeGreaterThan(0)
+  })
+
+  it('mergeInto 落到已有子项的同名节点上时结果是目录', () => {
+    let s = setAnnotation(emptySpec(), 'src/cases/foo', true, { annotation: '旧的', role: 'keep-me' })
+    s = setAnnotation(s, 'examples/foo', true, { annotation: '新的' })
+    s = moveNode(s, 'examples/foo', 'src/cases', true)
+
+    const foo = find(s.nodes, 'src/cases/foo')
+    expect(foo?.isDir).toBe(true)
+    expect(foo?.annotation).toBe('新的')
+    expect(foo?.role).toBe('keep-me')
+  })
+
+  it('自子树判断不误伤相邻名字', () => {
+    const s = setAnnotation(emptySpec(), 'a', true, { annotation: 'x' })
+
+    // a 不在 ab 的子树下
+    expect(() => moveNode(s, 'a', 'ab', true)).not.toThrow()
+
+    // ab 不在 a 的子树下
+    expect(() => moveNode(s, 'ab', 'a', true)).not.toThrow()
+
+    // a 在 a/b 的子树下——应当抛出
+    const s2 = setAnnotation(emptySpec(), 'a/b', true, { annotation: 'x' })
+    expect(() => moveNode(s2, 'a', 'a/b', true)).toThrow('不能把节点移动到它自己的子树下')
+  })
+})
+
+describe('拖拽声明的空节点行为（Finding 2：边界情况）', () => {
+  it('移动产生的空节点在无关路径的编辑中不被回收', () => {
+    let s = moveNode(emptySpec(), 'examples/foo', 'src/cases', true)
+    // 对无关路径做一次编辑，确认移动结果仍在
+    s = setAnnotation(s, 'docs', true, { annotation: '文档' })
+    expect(find(s.nodes, 'src/cases/foo')).not.toBeNull()
+  })
+
+  it('拖拽声明的空节点在其自身子树被清空时也会被回收（已知边界）', () => {
+    let s = moveNode(emptySpec(), 'examples/foo', 'src/cases', true)
+    // 现在 src/cases/foo 是空的拖拽声明
+
+    // 为它添加子项
+    s = setAnnotation(s, 'src/cases/foo/readme.md', false, { annotation: 'hi' })
+    expect(find(s.nodes, 'src/cases/foo')).not.toBeNull()
+
+    // 清空该子项
+    s = setAnnotation(s, 'src/cases/foo/readme.md', false, { annotation: null })
+
+    // 结果：整条链都被清掉，因为没有任何实质内容
     expect(s.nodes).toEqual([])
   })
 })
