@@ -53,6 +53,7 @@ describe('buildWebviewHtml', () => {
     expect(html).toContain('--fs-panel-border: var(--vscode-panel-border')
     expect(html).toContain('--fs-row-hover-bg: var(--vscode-list-hoverBackground')
     expect(html).toContain('--fs-indent-guide: var(--vscode-tree-indentGuidesStroke')
+    expect(html).toContain('--fs-group-dot: var(--vscode-charts-purple')
     expect(html).toContain('--fs-line-number: var(--vscode-editorLineNumber-foreground')
   })
 
