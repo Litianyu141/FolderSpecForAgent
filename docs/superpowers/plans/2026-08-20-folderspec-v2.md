@@ -1489,14 +1489,16 @@ export function useElementSize<T extends HTMLElement>(fallback: Size): [React.Re
 
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return
-    const el = ref.current
-    if (!el) return
+    // ResizeObserver 必须无条件创建：单测里 renderHook 不渲染任何 JSX，ref 永远不会
+    // 挂到真实 DOM 节点上，如果在此处按 `!ref.current` 提前 return，观察者对象根本不会
+    // 被构造，测试里用来断言「回调已注册」的钩子就永远拿不到实例。真实场景下 ref 已经在
+    // commit 阶段（早于这个被动 effect）绑定好了，所以 observe() 依然会按预期生效。
     const ro = new ResizeObserver(entries => {
       const r = entries[0]?.contentRect
       if (!r) return
       if (r.width > 0 && r.height > 0) setSize({ width: r.width, height: r.height })
     })
-    ro.observe(el)
+    if (ref.current) ro.observe(ref.current)
     return () => ro.disconnect()
   }, [])
 
