@@ -1,17 +1,18 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { Tree } from 'react-arborist'
 import type { NodeRendererProps } from 'react-arborist'
 import type { ViewNode } from '@folderspec/core/api'
+import type { ClickMods } from './selection.js'
 import { NodeRow } from './NodeRow.js'
 
 export interface TreeProps {
   data: ViewNode[]
-  selectedPath: string | null
+  selectedPaths: string[]
   searchTerm: string
   width: number
   height: number
   disabled: boolean
-  onSelect(path: string, node: ViewNode): void
+  onSelect(path: string, mods: ClickMods): void
   onExpand(path: string): void
   onMove(from: string, toParent: string, isDir: boolean): void
   onGroupClick?: (id: string) => void
@@ -61,17 +62,34 @@ export function makeDisableDrop(disabled: boolean) {
 }
 
 export function SpecTree(props: TreeProps) {
-  const { data, selectedPath, searchTerm, width, height, disabled, onSelect, onExpand, onMove, onGroupClick } = props
-  // react-arborist 以子渲染器的引用作为身份，每次渲染换一个新函数会让整棵树重挂载，
-  // 选中态与展开态全部丢失，所以必须用 useCallback 稳定这个引用。
+  const { data, selectedPaths, searchTerm, width, height, disabled, onSelect, onExpand, onMove, onGroupClick } = props
+
+  // selectedPaths/onSelect 几乎每次点击都变。react-arborist 把 renderNode（下面的
+  // useCallback 返回值）当成子行的组件类型使用——引用一变就是"换了个组件"，会把整棵树
+  // 卸载重挂，折叠状态与选中态全部丢失。所以这两样"新鲜但高频变化"的值不能进依赖数组，
+  // 改用 ref 把最新值带进这个身份稳定的闭包，行渲染时读 .current 即可，不影响 useCallback 的引用。
+  const selectedPathsRef = useRef(selectedPaths)
+  selectedPathsRef.current = selectedPaths
+  const onSelectRef = useRef(onSelect)
+  onSelectRef.current = onSelect
+
   const renderNode = useCallback(
-    (p: NodeRendererProps<ViewNode>) => <NodeRow {...p} onGroupClick={onGroupClick} />,
+    (p: NodeRendererProps<ViewNode>) => (
+      <NodeRow
+        {...p}
+        onGroupClick={onGroupClick}
+        selectedPaths={selectedPathsRef.current}
+        onRowClick={(path, mods) => onSelectRef.current(path, mods)}
+      />
+    ),
     [onGroupClick],
   )
   return (
     <Tree<ViewNode>
       data={data}
-      selection={selectedPath ?? undefined}
+      // react-arborist 的 selection 只接受单个 id，多选态的真源是 selectedPaths、
+      // 由 NodeRow 自行渲染 data-selected；这里传最后一个仅用于它自己的焦点/可访问性记录。
+      selection={selectedPaths[selectedPaths.length - 1] ?? undefined}
       idAccessor="path"
       childrenAccessor="children"
       openByDefault={false}
@@ -85,7 +103,6 @@ export function SpecTree(props: TreeProps) {
       disableDrop={makeDisableDrop(disabled)}
       onMove={makeMoveHandler(data, onMove)}
       onToggle={id => { const n = flatten(data).get(id); if (n?.isDir && n.children === undefined) onExpand(id) }}
-      onSelect={nodes => { const n = nodes[0]; if (n) onSelect(n.data.path, n.data) }}
     >
       {renderNode}
     </Tree>

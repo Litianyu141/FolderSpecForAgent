@@ -17,7 +17,10 @@ export function App({ bridge, initialRoot }: AppProps) {
   const [root, setRoot] = useState(initialRoot)
   const [tree, setTree] = useState<ViewNode | null>(null)
   const [parseErrors, setParseErrors] = useState<ParseError[] | null>(null)
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  // 多选决策逻辑（applyClick/visibleOrderOf）已在 selection.ts 就绪，
+  // 但把它接进 App 级状态需要拿到 react-arborist 的实时展开态，属于后续任务的接线范围；
+  // 这里先保持既有的单选行为：普通点击选中一个，数组长度恒为 0 或 1。
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [dirty, setDirty] = useState(false)
   const [externalChange, setExternalChange] = useState(false)
@@ -53,7 +56,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setRoot(r.root)
       setTree(r.tree)
       setParseErrors(r.parseErrors)
-      setSelectedPath(null)
+      setSelectedPaths([])
       setDirty(false)
       setExternalChange(false)
       setError(null)
@@ -94,6 +97,10 @@ export function App({ bridge, initialRoot }: AppProps) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [bridge])
+
+  // 面板一次只编辑一个节点的注释；多选后共享一条分组注释是另一条写路径（spec/setGroup，
+  // 由 App 级多选状态接线后才会用上），这里取首个选中项，与改动前的单选行为等价。
+  const selectedPath = selectedPaths[0] ?? null
 
   const handlePatch = useCallback(async (patch: PanelPatch) => {
     if (selectedPath === null || tree === null) return
@@ -158,12 +165,14 @@ export function App({ bridge, initialRoot }: AppProps) {
         {tree && (
           <SpecTree
             data={tree.children ?? []}
-            selectedPath={selectedPath}
+            selectedPaths={selectedPaths}
             searchTerm={searchTerm}
             width={size.width}
             height={size.height}
             disabled={readOnly}
-            onSelect={path => setSelectedPath(path)}
+            // mods（shift/ctrl）暂未使用：多选决策（applyClick）接入 App 状态是后续任务，
+            // 这里先保持单选——普通点击、shift 点击、ctrl 点击目前都只选中被点的这一项。
+            onSelect={path => setSelectedPaths([path])}
             onExpand={path => void handleExpand(path)}
             onMove={(from, toParent, isDir) => void handleMove(from, toParent, isDir)}
           />

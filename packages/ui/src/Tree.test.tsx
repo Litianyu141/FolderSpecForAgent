@@ -1,6 +1,32 @@
 import { describe, it, expect, vi } from 'vitest'
+import { render } from '@testing-library/react'
 import { makeDisableDrop, makeMoveHandler, matchesSearch } from './Tree.js'
+import { NodeRow } from './NodeRow.js'
 import type { ViewNode } from '@folderspec/core/api'
+
+// 通过直接渲染 NodeRow 断言多选态的接线，避免依赖虚拟列表——
+// 与本文件其余用例（makeMoveHandler/matchesSearch/makeDisableDrop）同样只测抽出的逻辑，
+// 不渲染 SpecTree/react-arborist 的虚拟化列表。
+const renderRowWithSelection = (data: ViewNode, selectedPaths: string[]) => {
+  const node = {
+    data,
+    isSelected: false,
+    isOpen: false,
+    isLeaf: !data.isDir,
+    level: 0,
+    toggle: vi.fn(),
+  }
+  return render(
+    <NodeRow
+      node={node as never}
+      style={{}}
+      dragHandle={undefined}
+      tree={{} as never}
+      preview={false}
+      selectedPaths={selectedPaths}
+    />,
+  )
+}
 
 const tree: ViewNode[] = [
   { name: 'src', path: 'src', isDir: true, origin: 'both', children: [
@@ -92,5 +118,23 @@ describe('matchesSearch', () => {
 
   it('空搜索词一律匹配', () => {
     expect(matchesSearch(n('a.ts'), '')).toBe(true)
+  })
+})
+
+describe('多选态接线（经 NodeRow 断言，不渲染虚拟列表）', () => {
+  it('多选时每个被选中的行都带 data-selected', () => {
+    const { container } = renderRowWithSelection(
+      { name: 'b', path: 'b', isDir: false, origin: 'actual-only' },
+      ['a', 'b'],
+    )
+    expect(container.querySelector('.fs-row')?.getAttribute('data-selected')).toBe('true')
+  })
+
+  it('未被选中的行 data-selected 为 false', () => {
+    const { container } = renderRowWithSelection(
+      { name: 'c', path: 'c', isDir: false, origin: 'actual-only' },
+      ['a', 'b'],
+    )
+    expect(container.querySelector('.fs-row')?.getAttribute('data-selected')).toBe('false')
   })
 })

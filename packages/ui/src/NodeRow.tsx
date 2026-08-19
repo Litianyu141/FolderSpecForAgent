@@ -1,14 +1,27 @@
 import type { NodeRendererProps } from 'react-arborist'
 import type { ViewNode } from '@folderspec/core/api'
+import type { ClickMods } from './selection.js'
 import { SEVERITY_BADGE, isAnnotated, nodeColorVar } from './colors.js'
 import { FileIcon, iconKindFor } from './FileIcon.js'
 
+export interface NodeRowExtraProps {
+  onGroupClick?: (id: string) => void
+  /**
+   * 多选态的真源。不读 react-arborist 自己的 node.isSelected——
+   * 那是它内部单选模型的产物，多选决策已经搬到外部的 SelectionState（见 selection.ts）。
+   * 可选是为了不破坏既有测试里不传这个 prop 的调用方，此时退回 node.isSelected。
+   */
+  selectedPaths?: string[]
+  onRowClick?: (path: string, mods: ClickMods) => void
+}
+
 export function NodeRow(
-  { node, style, dragHandle, onGroupClick }: NodeRendererProps<ViewNode> & { onGroupClick?: (id: string) => void },
+  { node, style, dragHandle, onGroupClick, selectedPaths, onRowClick }: NodeRendererProps<ViewNode> & NodeRowExtraProps,
 ) {
   const d = node.data
   const color = nodeColorVar(d)
   const annotated = isAnnotated(d)
+  const selected = selectedPaths ? selectedPaths.includes(d.path) : node.isSelected
   // paddingLeft 是 react-arborist 表达层级的方式；这里换成可见的引导线，所以要摘掉它
   const { paddingLeft: _drop, ...rest } = (style ?? {}) as { paddingLeft?: unknown }
 
@@ -17,10 +30,13 @@ export function NodeRow(
       ref={dragHandle}
       style={rest as React.CSSProperties}
       className="fs-row"
-      data-selected={node.isSelected}
+      data-selected={selected}
       data-origin={d.origin}
       data-annotated={annotated}
-      onClick={() => { if (d.isDir) node.toggle() }}
+      onClick={e => {
+        if (d.isDir) node.toggle()
+        onRowClick?.(d.path, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey })
+      }}
     >
       {Array.from({ length: node.level }, (_, i) => (
         <span key={i} className="fs-indent-guide" aria-hidden="true" />
