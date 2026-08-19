@@ -18,11 +18,14 @@ export function AnnotationPanel({ node, disabled, onChange }: AnnotationPanelPro
   const [annotation, setAnnotation] = useState('')
   const [role, setRole] = useState('')
 
-  // 切换选中节点时用新节点的内容重置本地编辑态
+  // 只在选中的节点变化时重置本地编辑态。
+  // 不要把 annotation/role 放进依赖：本面板是这两个字段唯一的编辑者，
+  // 它们的变化只可能是本面板自己那次提交的回声 —— 此时本地状态已经等于或
+  // 领先于回来的值，重置只会把用户失焦后又继续输入的内容冲掉。
   useEffect(() => {
     setAnnotation(node?.annotation ?? '')
     setRole(node?.role ?? '')
-  }, [node?.path, node?.annotation, node?.role])
+  }, [node?.path])
 
   if (!node) {
     return <div className="fs-panel-empty">在左侧选中一个文件或目录</div>

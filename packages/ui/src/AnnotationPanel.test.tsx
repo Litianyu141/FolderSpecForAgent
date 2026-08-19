@@ -74,6 +74,27 @@ describe('AnnotationPanel', () => {
     expect((screen.getByLabelText('注释') as HTMLTextAreaElement).value).toBe('B')
   })
 
+  it('失焦提交后继续输入，往返返回时不覆盖新输入的内容', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <AnnotationPanel node={node({ annotation: '' })} disabled={false} onChange={onChange} />)
+    const ta = screen.getByLabelText('注释')
+    fireEvent.change(ta, { target: { value: 'hello' } })
+    fireEvent.blur(ta)
+    fireEvent.change(ta, { target: { value: 'hello world' } })
+    rerender(
+      <AnnotationPanel node={node({ annotation: 'hello' })} disabled={false} onChange={onChange} />)
+    expect((ta as HTMLTextAreaElement).value).toBe('hello world')
+  })
+
+  it('切换到字段值相同但路径不同的节点时仍然更新', () => {
+    const { rerender } = render(
+      <AnnotationPanel node={node({ path: 'src/a', annotation: '内核', role: 'x' })} disabled={false} onChange={vi.fn()} />)
+    rerender(
+      <AnnotationPanel node={node({ path: 'src/b', annotation: '内核', role: 'y' })} disabled={false} onChange={vi.fn()} />)
+    expect((screen.getByLabelText('语义角色') as HTMLInputElement).value).toBe('y')
+  })
+
   it('只读模式下全部控件禁用', () => {
     render(<AnnotationPanel node={node()} disabled={true} onChange={vi.fn()} />)
     expect((screen.getByLabelText('注释') as HTMLTextAreaElement).disabled).toBe(true)
