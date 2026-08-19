@@ -1309,7 +1309,7 @@ describe('Session 的分组与文件读取', () => {
   })
 
   it('setGroup 透传 name，改名后返回新 id', async () => {
-    const s = await open()
+    const s = new Session(root); await s.open()
     const { id } = s.setGroup({ id: null, members: ['src'], text: 't' })
     const r = s.setGroup({ id, members: ['src'], name: '解析层' })
     expect(r.id).toBe('解析层')
@@ -1352,9 +1352,11 @@ describe('Session 的分组与文件读取', () => {
 
   it('handle 能分发全部三个新方法', async () => {
     const s = new Session(root); await s.open()
+    // members 是单个顶层路径（无公共父目录），deriveGroupId 按 spec §3.4 回退为 'group'。
+    // 这里只关心 handle() 的分发，取名规则由 spec-edit.test.ts 覆盖。
     const g = await s.handle('spec/setGroup', { id: null, members: ['src'], text: 't' })
-    expect((g as { id: string }).id).toBe('src')
-    await s.handle('spec/deleteGroup', { id: 'src' })
+    expect((g as { id: string }).id).toBe('group')
+    await s.handle('spec/deleteGroup', { id: 'group' })
     const f = await s.handle('file/read', { path: 'README.md' })
     expect((f as { kind: string }).kind).toBeDefined()
   })
