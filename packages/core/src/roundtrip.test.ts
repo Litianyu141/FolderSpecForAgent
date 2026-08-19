@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import fc from 'fast-check'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
-import type { Rule, Spec, SpecNode, Template } from './types.js'
+import type { Group, Rule, Spec, SpecNode, Template } from './types.js'
 
 const chars = (pool: string, min: number, max: number) =>
   fc.array(fc.constantFrom(...pool.split('')), { minLength: min, maxLength: max })
@@ -57,6 +57,25 @@ const ruleArb: fc.Arbitrary<Rule> = fc.record({
   text: textArb,
 })
 
+/** 成员路径：多段 posix 路径，不含 '..' 段（解析器会拒绝它） */
+const memberArb = fc
+  .array(chars('abz09-', 1, 6), { minLength: 1, maxLength: 3 })
+  .map(segs => segs.join('/'))
+
+/**
+ * 分组 id 用比 identArb 宽得多的字符池：它是**用户在面板里手打的组名**，
+ * 会出现中文、空格，以及 : # - " 这些对 YAML 有特殊含义的字符。
+ * 模板名与规则 id 目前没有编辑入口，所以沿用窄的 identArb；分组名不能照抄。
+ */
+const groupIdArb = chars('ab中文 -:#"', 1, 12).map(s => s.trim()).filter(s => s !== '')
+
+const groupArb: fc.Arbitrary<Group> = fc.record({
+  id: groupIdArb,
+  members: fc.uniqueArray(memberArb, { minLength: 1, maxLength: 4 }),
+  text: textArb,
+  severity: fc.option(fc.constantFrom('error' as const, 'warning' as const, 'advisory' as const), { nil: undefined }),
+})
+
 const specArb: fc.Arbitrary<Spec> = fc.record({
   version: fc.constant(1),
   root: fc.constant('.'),
@@ -66,14 +85,12 @@ const specArb: fc.Arbitrary<Spec> = fc.record({
   nodes: fc.uniqueArray(nodeArb, { maxLength: 4, selector: n => n.name }),
   templates: fc.array(templateArb, { maxLength: 2 }),
   rules: fc.array(ruleArb, { maxLength: 3 }),
-  // ## 分组 区的序列化（Task 2）尚未接入，这里先固定为空数组，
-  // 避免这条 property test 断言一个 serializeSpec 还写不出来的字段。
-  // Task 2 落地后应改为随机生成，让它重新覆盖分组区的往返。
-  groups: fc.constant([]),
+  groups: fc.array(groupArb, { maxLength: 3 }),
 }).map(s => ({
   ...s,
   templates: s.templates.filter((t, i, all) => all.findIndex(o => o.name === t.name) === i),
   rules: s.rules.filter((r, i, all) => all.findIndex(o => o.id === r.id) === i),
+  groups: s.groups.filter((g, i, all) => all.findIndex(o => o.id === g.id) === i),
 }))
 
 /** 对齐 undefined 属性的表示，让比较只关注实际数据 */

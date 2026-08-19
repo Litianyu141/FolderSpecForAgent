@@ -5,7 +5,7 @@ import type { Spec } from './types.js'
 const base: Spec = {
   version: 1, root: '.', ownership: 'human',
   title: '仓库结构契约', preamble: ['Agent 不应自行修改本文件。'],
-  nodes: [], templates: [], rules: [],
+  nodes: [], templates: [], rules: [], groups: [],
 }
 
 describe('serializeSpec', () => {
@@ -91,5 +91,33 @@ describe('serializeSpec', () => {
     expect(out).toContain('input/:')
     expect(out).toContain('## 规则')
     expect(out).toContain('id: r1')
+  })
+
+  it('groups 为空时不输出分组区', () => {
+    expect(serializeSpec(base)).not.toContain('## 分组')
+  })
+
+  it('输出分组区', () => {
+    const out = serializeSpec({
+      ...base,
+      groups: [{
+        id: 'parse-layer',
+        members: ['src/parse/sections.ts', 'src/parse/structure.ts'],
+        text: '这两个共同构成解析层',
+        severity: 'warning',
+      }],
+    })
+    expect(out).toContain('## 分组')
+    expect(out).toContain('id: parse-layer')
+    expect(out).toContain('src/parse/sections.ts')
+    expect(out).toContain('severity: warning')
+  })
+
+  it('severity 缺省时不输出该键', () => {
+    const out = serializeSpec({
+      ...base,
+      groups: [{ id: 'g', members: ['a.ts'], text: 't' }],
+    })
+    expect(out).not.toContain('severity')
   })
 })

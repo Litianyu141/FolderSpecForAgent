@@ -1,6 +1,6 @@
 import { stringify } from 'yaml'
 import { ANNOTATION_SEPARATOR } from './parse/structure.js'
-import type { Rule, Spec, SpecNode, Template } from './types.js'
+import type { Group, Rule, Spec, SpecNode, Template } from './types.js'
 
 export function serializeSpec(spec: Spec): string {
   const out: string[] = []
@@ -41,6 +41,15 @@ export function serializeSpec(spec: Spec): string {
     out.push('')
     out.push('```yaml')
     out.push(rulesToYaml(spec.rules))
+    out.push('```')
+    out.push('')
+  }
+
+  if (spec.groups.length > 0) {
+    out.push('## 分组')
+    out.push('')
+    out.push('```yaml')
+    out.push(groupsToYaml(spec.groups))
     out.push('```')
     out.push('')
   }
@@ -93,4 +102,12 @@ function rulesToYaml(rules: Rule[]): string {
   return stringify(rules.map(r => ({
     id: r.id, severity: r.severity, scope: r.scope, text: r.text,
   }))).replace(/\n+$/, '')
+}
+
+function groupsToYaml(groups: Group[]): string {
+  return stringify(groups.map(g => {
+    const o: Record<string, unknown> = { id: g.id, members: g.members, text: g.text }
+    if (g.severity) o.severity = g.severity
+    return o
+  })).replace(/\n+$/, '')
 }
