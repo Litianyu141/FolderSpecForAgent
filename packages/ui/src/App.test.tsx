@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { App } from './App.js'
 import { FakeBridge } from './test-bridge.js'
-import type { Group, OpenResult, ViewNode } from '@folderspec/core/api'
+import type { Bridge, FileReadResult, Group, OpenResult, ViewNode } from '@folderspec/core/api'
 
 const tree = (children: ViewNode[]): ViewNode =>
   ({ name: 'repo', path: '', isDir: true, origin: 'both', children })
@@ -372,7 +372,8 @@ describe('App', () => {
   })
 
   it('从分组面板移除成员后退回单选的注释面板', async () => {
-    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
     await waitFor(() => screen.getByLabelText('工作区路径'))
 
     selectTwoUnrelated(container)
@@ -381,6 +382,8 @@ describe('App', () => {
     fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
 
     await waitFor(() => expect(screen.getByLabelText('注释')).toBeTruthy())
+    // 这是"新建态"（选中集不等于任何既有分组），移除只该改选中集，不该去写谁的成员
+    expect(bridge.calls.some(c => c.method === 'spec/setGroup')).toBe(false)
   })
 
   it('shift 区间跨越已展开的子节点', async () => {
@@ -437,5 +440,102 @@ describe('App', () => {
     fireEvent.blur(ta)
 
     await waitFor(() => expect(screen.getByText(/建组炸了/)).toBeTruthy())
+  })
+
+  it('单击目录时中间栏显示该目录的子项统计', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[0])   // src/，夹具里有两个子项
+
+    await waitFor(() => expect(screen.getByText(/这是一个目录，共 2 项/)).toBeTruthy())
+    expect(bridge.calls.some(c => c.method === 'file/read')).toBe(false)
+  })
+
+  // 注意这条断言的**只是**"代码视图被目录统计取代"。它无法侦测 handleSelect 里那句
+  // setContent(null) 被删掉——ContentPane 遇到 isDir 会在读 content 之前就 return，
+  // 陈旧内容在目录形态下结构上不可见（已用单点变异证实：删掉那句，本用例照样绿）。
+  // 那句是防御性的，理由写在 App.tsx 的注释里，不在这里假装被测到。
+  it('从文件切到目录时，中间栏由代码视图换成目录统计', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[2])   // README.md
+    await waitFor(() => expect(container.querySelectorAll('.fs-code-line')).toHaveLength(2))
+
+    fireEvent.click(rowsOf(container)[0])   // src/
+
+    await waitFor(() => expect(container.querySelector('.fs-content-path')?.textContent).toBe('src'))
+    expect(container.querySelectorAll('.fs-code-line')).toHaveLength(0)
+  })
+
+  it('搜索过滤生效时，shift 区间只覆盖屏幕上还在的行', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('搜索'))
+
+    // "docs" 里没有 r，被过滤掉；src 与 README.md 留下。a.ts/b.ts 同样不含 r，
+    // 所以 src 展开后它们也不会出现——屏幕上自始至终只有两行。
+    fireEvent.change(screen.getByLabelText('搜索'), { target: { value: 'r' } })
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(2))
+
+    fireEvent.click(rowsOf(container)[0])                      // src
+    expect(rowsOf(container)).toHaveLength(2)
+    fireEvent.click(rowsOf(container)[1], { shiftKey: true })  // README.md
+
+    // 所见即所选：屏幕上就两行，区间不能把被过滤掉的 docs / 未显示的 a.ts、b.ts 卷进来，
+    // 那些路径会随下一次提交写进用户的 .folderspec.md。
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+  })
+
+  it('从既有分组的成员列表里移除一项，收缩的是那个分组而不是分叉出新分组', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])                       // src
+    fireEvent.click(rows[1], { ctrlKey: true })    // docs —— 选中集恰好等于 g1
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 docs'))
+
+    // 带着 g1 的 id 提交剩余成员；若只改选中集，下一次失焦会以 id: null 新建一个分组，
+    // 用户看着在编辑 g1，实际分叉出了第二个分组，g1 原封不动。
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({
+      id: 'g1', members: ['src'],
+    }))
+  })
+
+  it('先点的大文件晚回来时，不会盖掉后点文件的内容', async () => {
+    let resolveSlow!: (v: FileReadResult) => void
+    const bridge: Bridge = {
+      request: (async (method: string, params: { path?: string }) => {
+        if (method === 'workspace/open') return openResult()
+        if (method === 'file/read') {
+          if (params.path === 'src/a.ts') return new Promise(res => { resolveSlow = res })
+          return { kind: 'text', text: 'README 的内容' }
+        }
+        throw new Error(`本用例未配置 ${method}`)
+      }) as Bridge['request'],
+      on: () => () => {},
+    }
+
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[0])                       // 展开 src
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(5))
+    fireEvent.click(rowsOf(container)[1])                       // src/a.ts —— 慢
+    fireEvent.click(rowsOf(container)[4])                       // README.md —— 快
+
+    await waitFor(() =>
+      expect(container.querySelector('.fs-code-text')?.textContent).toBe('README 的内容'))
+
+    // 宿主对每条消息各起一个异步任务、不排队（cli/src/server.ts），先发的可以后到
+    await act(async () => { resolveSlow({ kind: 'text', text: 'a.ts 的内容' }) })
+
+    expect(container.querySelector('.fs-content-path')?.textContent).toBe('README.md')
+    expect(container.querySelector('.fs-code-text')?.textContent).toBe('README 的内容')
   })
 })

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Bridge, FileReadResult, Group, OpenResult, ParseError, ViewNode } from '@folderspec/core/api'
-import { SpecTree, flatten } from './Tree.js'
+import type {
+  Bridge, FileReadResult, Group, OpenResult, ParseError, SetGroupParams, ViewNode,
+} from '@folderspec/core/api'
+import { SpecTree, flatten, matchesSearch } from './Tree.js'
 import { AnnotationPanel } from './AnnotationPanel.js'
 import type { PanelPatch } from './AnnotationPanel.js'
 import { ContentPane } from './ContentPane.js'
 import { GroupPanel } from './GroupPanel.js'
 import type { GroupSubmit } from './GroupPanel.js'
-import { applyClick, visibleOrderOf } from './selection.js'
+import { applyClick, matchingGroups, visibleOrderOf } from './selection.js'
 import type { ClickMods, SelectionState } from './selection.js'
 import { useSplitter } from './splitter.js'
 import { useElementSize } from './useElementSize.js'
@@ -120,29 +122,59 @@ export function App({ bridge, initialRoot }: AppProps) {
     }
   }, [bridge])
 
+  // 读文件请求的序号。宿主对每条消息各起一个异步任务、彼此不排队（cli/src/server.ts），
+  // 于是先发的大文件可以晚于后发的小文件到达。没有这道闸门，晚到的旧响应会盖掉新内容，
+  // 而路径头与高亮语言取自 contentPath（已经是新的那个）——界面上就是"路径写着 B、
+  // 内容是 A"。切到目录时也要自增，让在途的读取作废。
+  const contentReqRef = useRef(0)
+
   const loadContent = useCallback(async (path: string) => {
+    const seq = ++contentReqRef.current
     setContentLoading(true)
     try {
-      setContent(await bridge.request('file/read', { path }))
+      const r = await bridge.request('file/read', { path })
+      if (seq !== contentReqRef.current) return
+      setContent(r)
     } catch (e) {
+      if (seq !== contentReqRef.current) return
       setContent(null)
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setContentLoading(false)
+      if (seq === contentReqRef.current) setContentLoading(false)
     }
   }, [bridge])
 
   const handleSelect = useCallback((path: string, mods: ClickMods) => {
     if (tree === null) return
-    const order = visibleOrderOf(tree.children ?? [], p => openPaths.has(p))
+    // 搜索词必须参与：过滤生效时树上只剩命中的那几行，而 Shift 区间的结果会经
+    // spec/setGroup 写进用户的 .folderspec.md。按未过滤的顺序算，落进契约文件的
+    // 成员里就会有用户从没在屏幕上见过的路径（spec §5.3 的"所见即所选"）。
+    const order = visibleOrderOf(
+      tree.children ?? [],
+      p => openPaths.has(p),
+      searchTerm === '' ? undefined : n => matchesSearch(n, searchTerm),
+    )
     setSelection(prev => applyClick(prev, path, order, mods))
+
     const node = flatten(tree.children ?? []).get(path)
-    // 只有文件才读内容：点目录时中间栏保持不动，与编辑器里点文件夹不换 tab 的习惯一致
-    if (node && !node.isDir) {
-      setContentPath(path)
+    if (!node) return
+    setContentPath(path)
+    if (node.isDir) {
+      // 目录不读内容，中间栏改显子项统计（spec §5.6）。
+      //
+      // 下面三句是防御性的，**不是**用户可见行为，别按"这没测到就删了"处理：
+      // ContentPane 碰到 isDir 会在读 content 之前就 return，所以陈旧内容在目录形态下
+      // 结构上就看不见（已做单点变异验证，删掉 setContent(null) 没有任何用例会红）。
+      // 保留的理由是另外两条：一是刚看过的文件正文可能是几 MB 的字符串，切走了就该放掉；
+      // 二是维持"content 永远属于当前 contentPath"这条不变量，免得日后有人给目录形态
+      // 加上一段会读 content 的渲染，凭空多出一个隔了两次点击才发作的错配。
+      contentReqRef.current += 1
+      setContent(null)
+      setContentLoading(false)
+    } else {
       void loadContent(path)
     }
-  }, [tree, openPaths, loadContent])
+  }, [tree, openPaths, searchTerm, loadContent])
 
   const handleToggle = useCallback((path: string) => {
     setOpenPaths(prev => {
@@ -169,22 +201,26 @@ export function App({ bridge, initialRoot }: AppProps) {
     }
   }, [bridge, selectedPath, tree])
 
-  const handleGroupSubmit = useCallback(async (p: GroupSubmit) => {
+  const sendSetGroup = useCallback(async (params: SetGroupParams) => {
     try {
-      const r = await bridge.request('spec/setGroup', {
-        id: p.id,
-        members: selection.selected,
-        name: p.name,
-        text: p.text,
-        severity: p.severity,
-      })
+      const r = await bridge.request('spec/setGroup', params)
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [bridge, selection.selected])
+  }, [bridge])
+
+  const handleGroupSubmit = useCallback((p: GroupSubmit) => {
+    void sendSetGroup({
+      id: p.id,
+      members: selection.selected,
+      name: p.name,
+      text: p.text,
+      severity: p.severity,
+    })
+  }, [sendSetGroup, selection.selected])
 
   // groups 走 ref 而不是依赖数组：这个回调会传给 SpecTree 的 onGroupClick，而那是
   // renderNode（每一行的组件类型）的依赖项——引用一变，所有可见行都会卸载重挂。
@@ -199,8 +235,19 @@ export function App({ bridge, initialRoot }: AppProps) {
   }, [])
 
   const handleRemoveMember = useCallback((path: string) => {
-    setSelection(prev => ({ selected: prev.selected.filter(p => p !== path), anchor: prev.anchor }))
-  }, [])
+    const rest = selection.selected.filter(p => p !== path)
+    // 面板正编辑某个既有分组时，"移除成员"必须真的把那个分组缩小。只改选中集的话，
+    // 成员集与该分组不再相等，matchingGroups 当场失配，下一次失焦提交就走 id: null
+    // 新建了一个分组——用户看着在编辑 g1，实际分叉出了第二个，g1 原封不动。
+    // 省略 name/text/severity：core 把 undefined 当"不变"，这里只动成员。
+    const current = matchingGroups(selection.selected, groups)[0]
+    if (current) void sendSetGroup({ id: current.id, members: rest })
+    setSelection(prev => ({
+      selected: rest,
+      // 锚点被移掉了就作废，别让后续 Shift 从一个已经不在选中集里的位置起算
+      anchor: prev.anchor === path ? null : prev.anchor,
+    }))
+  }, [sendSetGroup, selection.selected, groups])
 
   const handleSave = useCallback(async () => {
     try {
@@ -286,7 +333,7 @@ export function App({ bridge, initialRoot }: AppProps) {
               members={selection.selected}
               groups={groups}
               disabled={readOnly}
-              onSubmit={p => void handleGroupSubmit(p)}
+              onSubmit={handleGroupSubmit}
               onRemoveMember={handleRemoveMember}
             />
           ) : (
