@@ -1944,7 +1944,9 @@ export function NodeRow(
   )
 ```
 
-把 `{NodeRow}` 换成 `{renderNode}`。**`useCallback` 不能省**：react-arborist 以子渲染器的引用作为身份，每次渲染换一个新函数会让整棵树重挂载，选中态与展开态全部丢失。
+把 `{NodeRow}` 换成 `{renderNode}`。**`useCallback` 不能省**：react-arborist 把子渲染器的引用当作组件类型，引用一变，每一个可见行都会卸载重挂——代价是每次渲染都 churn 掉全部行的 DOM 与 drag-ref 身份，以及实打实的渲染开销。
+
+（注：**不是**「选中态与展开态会丢失」。本计划早先的措辞是错的，已核对 `react-arborist@3.16.0` 源码更正：选中/展开态存在它自己的 Redux store 里（`TreeProvider` 的 `useRef` + `useSyncExternalStore`），与渲染器身份完全解耦，换引用只让单行组件重挂，store 不受影响。写进代码注释时请用真实理由，别沿用旧说法。）
 
 **本步不加 `Tree.test.tsx` 用例。** 那个文件从建立起就只测抽出来的纯函数（`makeMoveHandler` / `matchesSearch` / `makeDisableDrop`），从不渲染虚拟列表——沿用这条既有约定。透传本身在两处已被覆盖：色点点击由 `NodeRow.test.tsx` 验证，端到端由 Task 11 的 App 测试验证（App 测试里树是真渲染出行的）。
 
