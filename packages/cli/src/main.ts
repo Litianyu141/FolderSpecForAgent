@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as fs from 'node:fs/promises'
 import * as nodePath from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { startServer } from './server.js'
 import { launch, pickBrowser } from './open-window.js'
 import type { BrowserCandidate } from './open-window.js'
@@ -15,27 +15,58 @@ const HELP = `folderspec — 可视化声明仓库结构意图
   folderspec --help          显示本帮助
 `
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2)
+export interface CliArgs {
+  root: string
+  port?: number
+  noOpen: boolean
+  help: boolean
+}
+
+/**
+ * 纯函数：只依赖显式传入的 argv/cwd，不读 process.*，方便直接单测
+ * （参照本项目 pickBrowser 的写法）。
+ *
+ * --port 后面缺值或给了非正整数时必须抛出，而不是静默丢弃退回随机端口——
+ * 否则用户没法区分"我就是要随机端口"和"我打错了 --port 的值"。
+ */
+export function parseArgs(argv: readonly string[], cwd: string): CliArgs {
   if (argv.includes('--help') || argv.includes('-h')) {
-    process.stdout.write(HELP)
-    return
+    return { root: nodePath.resolve(cwd), noOpen: false, help: true }
   }
 
   const noOpen = argv.includes('--no-open')
   const portIdx = argv.indexOf('--port')
-  const port = portIdx !== -1 ? Number(argv[portIdx + 1]) : undefined
+  let port: number | undefined
+  if (portIdx !== -1) {
+    const raw = argv[portIdx + 1] as string | undefined
+    const parsed = raw !== undefined ? Number(raw) : NaN
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error(`--port 需要一个正整数端口号，收到：${raw ?? '(缺失)'}`)
+    }
+    port = parsed
+  }
+
   const positional = argv.filter((a, i) =>
     !a.startsWith('-') && !(portIdx !== -1 && i === portIdx + 1))
-  const root = nodePath.resolve(positional[0] ?? process.cwd())
+  const root = nodePath.resolve(cwd, positional[0] ?? '.')
+
+  return { root, port, noOpen, help: false }
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2), process.cwd())
+  if (args.help) {
+    process.stdout.write(HELP)
+    return
+  }
 
   const here = nodePath.dirname(fileURLToPath(import.meta.url))
   const uiDir = nodePath.join(here, 'ui')
 
-  const server = await startServer({ root, uiDir, ...(port ? { port } : {}) })
-  process.stdout.write(`FolderSpec 已启动\n  工作区：${root}\n  地址：  ${server.url}\n`)
+  const server = await startServer({ root: args.root, uiDir, ...(args.port ? { port: args.port } : {}) })
+  process.stdout.write(`FolderSpec 已启动\n  工作区：${args.root}\n  地址：  ${server.url}\n`)
 
-  if (!noOpen) {
+  if (!args.noOpen) {
     const candidate = await detectBrowser()
     if (candidate) {
       launch(candidate, server.url, process.platform)
@@ -78,7 +109,20 @@ async function detectBrowser(): Promise<BrowserCandidate | null> {
   return pickBrowser(process.platform, available)
 }
 
-void main().catch((e: unknown) => {
-  process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`)
-  process.exit(1)
-})
+/**
+ * 只有作为入口脚本被 `node dist/main.js` 直接执行时才真的跑起来。main.test.ts 要单测
+ * parseArgs 就得 `import { parseArgs } from './main.js'`——如果没有这层判断，那次 import
+ * 本身就会把整个 CLI（真起一个 HTTP/WS 服务、真去探测并可能拉起浏览器）当副作用跑起来，
+ * 服务永远不会被关掉，是货真价实的"没关掉的 handle"。
+ */
+function isMainModule(): boolean {
+  const entry = process.argv[1]
+  return entry !== undefined && import.meta.url === pathToFileURL(entry).href
+}
+
+if (isMainModule()) {
+  void main().catch((e: unknown) => {
+    process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`)
+    process.exit(1)
+  })
+}

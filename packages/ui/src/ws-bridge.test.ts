@@ -50,6 +50,16 @@ class FakeWebSocket {
     this.dispatch('message', { data: JSON.stringify(payload) })
   }
 
+  /** 测试专用：模拟连接被关闭（正常关闭或服务端挂掉之后的断连） */
+  triggerClose(): void {
+    this.dispatch('close', {})
+  }
+
+  /** 测试专用：模拟连接出错（比如连接被拒绝，服务端还没起来） */
+  triggerError(): void {
+    this.dispatch('error', {})
+  }
+
   private dispatch(type: string, ev: { data?: string }): void {
     for (const cb of [...(this.listeners.get(type) ?? [])]) cb(ev)
   }
@@ -57,6 +67,16 @@ class FakeWebSocket {
 
 /** 把一个微任务 + 一个宏任务都放行，足够让 bridge 内部的 `await ready` 链跑完 */
 const flush = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
+
+/**
+ * 给一个断言套上超时保护：实现有 bug 导致 promise 永远不 resolve/reject 时，
+ * 用这个让测试在几十毫秒内失败，而不是拖到 vitest 默认的 5000ms 超时才失败。
+ */
+const withTimeout = <T,>(p: Promise<T>, ms = 200): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`等待 ${ms}ms 后仍未 settle——疑似挂起`)), ms)),
+  ])
 
 let hadOriginalWebSocket = false
 let originalWebSocket: typeof WebSocket | undefined
@@ -156,5 +176,34 @@ describe('createWebSocketBridge', () => {
     socket.triggerMessage({ id: sentMsg.id, ok: true, result: { written: true } })
 
     await expect(promise).resolves.toEqual({ written: true })
+  })
+
+  it('socket 关闭时所有 pending 请求被拒绝', async () => {
+    const bridge = createWebSocketBridge('ws://x')
+    const socket = FakeWebSocket.instances[0]!
+    socket.triggerOpen()
+
+    const promise = bridge.request('spec/save', {})
+    await flush()
+    expect(socket.sent).toHaveLength(1)
+
+    socket.triggerClose()
+
+    await expect(withTimeout(promise)).rejects.toThrow('与本地服务的连接已断开')
+  })
+
+  it('socket 出错时 ready 被拒绝，后续请求立即失败', async () => {
+    const bridge = createWebSocketBridge('ws://x')
+    const socket = FakeWebSocket.instances[0]!
+
+    // 请求在 open 之前发出，此刻卡在内部的 `await ready` 上
+    const inFlight = bridge.request('spec/save', {})
+
+    socket.triggerError()
+
+    await expect(withTimeout(inFlight)).rejects.toThrow('与本地服务的连接已断开')
+
+    // socket 已经死了：之后再发的请求必须立刻拒绝，而不是排队等一个不会再来的 open
+    await expect(withTimeout(bridge.request('spec/save', {}))).rejects.toThrow('与本地服务的连接已断开')
   })
 })

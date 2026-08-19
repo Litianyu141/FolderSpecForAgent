@@ -121,4 +121,18 @@ describe('startServer', () => {
       ws.close()
     }
   })
+
+  it('畸形的百分号编码不会让进程崩溃', async () => {
+    // %E0%80%80 语法上是合法的百分号转义（三个合法的十六进制对），但解码后不是合法的
+    // UTF-8 字节序列——decodeURIComponent 会抛出 URIError。fetch 不会在发出前拒绝它，
+    // 因为转义本身语法合法，问题只在服务端解码这一步暴露。
+    const res = await fetch(`${server.url}%E0%80%80`)
+    expect([400, 404]).toContain(res.status)
+
+    // 崩溃的旧实现会让 http.Server 所在的整个 Node 进程带着未处理的 rejection 退出；
+    // 用第二个正常请求验证进程（以及这个 server 实例）还活着。
+    const followUp = await fetch(server.url)
+    expect(followUp.status).toBe(200)
+    expect(await followUp.text()).toContain('ui')
+  })
 })

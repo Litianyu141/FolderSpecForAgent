@@ -26,14 +26,27 @@ export function pickBrowser(platform: NodeJS.Platform, available: readonly strin
   return first ? { command: first, appMode: false } : null
 }
 
+/**
+ * 存在性探测（which/fs.access）和真正 spawn 之间有一个 TOCTOU 窗口——二进制可能在这中间
+ * 消失，或者探测通过但没有执行权限（EACCES）。spawn 对这类失败是异步 emit 'error'，不监听
+ * 就会被当成未处理异常抛出，和 Finding 1 是同一类"一次意外请求就能杀死整个进程"的问题。
+ */
+function spawnDetached(command: string, args: readonly string[]): void {
+  const child = spawn(command, args, { detached: true, stdio: 'ignore' })
+  child.on('error', () => {
+    process.stderr.write(`无法启动浏览器：${command}\n`)
+  })
+  child.unref()
+}
+
 export function launch(candidate: BrowserCandidate, url: string, platform: NodeJS.Platform): void {
   const args = candidate.appMode
     ? [`--app=${url}`, '--window-size=1200,800']
     : [url]
 
   if (platform === 'darwin') {
-    spawn('open', ['-na', candidate.command, '--args', ...args], { detached: true, stdio: 'ignore' }).unref()
+    spawnDetached('open', ['-na', candidate.command, '--args', ...args])
     return
   }
-  spawn(candidate.command, args, { detached: true, stdio: 'ignore' }).unref()
+  spawnDetached(candidate.command, args)
 }

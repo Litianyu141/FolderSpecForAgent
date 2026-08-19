@@ -32,7 +32,12 @@ export async function startServer(opts: ServerOpts): Promise<ServerHandle> {
   const uiDir = nodePath.resolve(opts.uiDir)
 
   const server = http.createServer((req, res) => {
-    void serveStatic(req, res, uiDir, opts.root)
+    // 双保险的外层：即便 serveStatic 自己的 try/catch 有遗漏，也不能让异常逃逸成
+    // 未处理的 rejection——http.createServer 的回调不是 async，没人在等它。
+    serveStatic(req, res, uiDir, opts.root).catch(() => {
+      if (!res.headersSent) res.writeHead(500).end('internal error')
+      else res.end()
+    })
   })
 
   const wss = new WebSocketServer({ server })
@@ -85,33 +90,44 @@ async function serveStatic(
   uiDir: string,
   root: string,
 ): Promise<void> {
-  const rawPath = (req.url ?? '/').split('?')[0]
-  const rel = rawPath === '/' ? 'index.html' : decodeURIComponent(rawPath.replace(/^\/+/, ''))
-  const abs = nodePath.resolve(uiDir, rel)
-
-  // 路径穿越防护：解析后必须仍在 uiDir 之内
-  if (abs !== uiDir && !abs.startsWith(uiDir + nodePath.sep)) {
-    res.writeHead(404).end('not found')
-    return
-  }
-
-  let body: Buffer
   try {
-    body = await fs.readFile(abs)
+    const rawPath = (req.url ?? '/').split('?')[0]
+    // decodeURIComponent 在语法合法但字节序列非法（比如 %E0%80%80）时会抛出 URIError；
+    // 一次这样的请求不能撂倒整个进程，所以整段处理都在下面的 catch 之内。
+    const rel = rawPath === '/' ? 'index.html' : decodeURIComponent(rawPath.replace(/^\/+/, ''))
+    const abs = nodePath.resolve(uiDir, rel)
+
+    // 路径穿越防护：解析后必须仍在 uiDir 之内
+    if (abs !== uiDir && !abs.startsWith(uiDir + nodePath.sep)) {
+      res.writeHead(404).end('not found')
+      return
+    }
+
+    let body: Buffer
+    try {
+      body = await fs.readFile(abs)
+    } catch {
+      res.writeHead(404).end('not found')
+      return
+    }
+
+    const ext = nodePath.extname(abs)
+    if (ext === '.html') {
+      const injected = String(body).replace(
+        '</head>',
+        `<script>window.__folderspecRoot=${JSON.stringify(root)};</script></head>`,
+      )
+      res.writeHead(200, { 'content-type': MIME['.html'] }).end(injected)
+      return
+    }
+
+    res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream' }).end(body)
   } catch {
-    res.writeHead(404).end('not found')
-    return
+    // 未预料的错误（典型例子：非法的 %XX 转义触发的 URIError）必须变成一个 400 响应，
+    // 绝不能重新抛出——这里没有 await 它的调用者，抛出就会变成未处理的 rejection 并
+    // 杀死整个 CLI 进程（服务器只绑定 127.0.0.1，但同源策略挡不住一个简单 GET 的发出，
+    // 用户开着的任何一个网页都能借此杀死本地会话，丢光尚未保存的编辑）。
+    if (!res.headersSent) res.writeHead(400).end('bad request')
+    else res.end()
   }
-
-  const ext = nodePath.extname(abs)
-  if (ext === '.html') {
-    const injected = String(body).replace(
-      '</head>',
-      `<script>window.__folderspecRoot=${JSON.stringify(root)};</script></head>`,
-    )
-    res.writeHead(200, { 'content-type': MIME['.html'] }).end(injected)
-    return
-  }
-
-  res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream' }).end(body)
 }
