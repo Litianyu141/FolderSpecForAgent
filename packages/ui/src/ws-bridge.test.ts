@@ -206,4 +206,19 @@ describe('createWebSocketBridge', () => {
     // socket 已经死了：之后再发的请求必须立刻拒绝，而不是排队等一个不会再来的 open
     await expect(withTimeout(bridge.request('spec/save', {}))).rejects.toThrow('与本地服务的连接已断开')
   })
+
+  it('socket 正常打开后又关闭，之后新发起的请求依然会立即被拒绝', async () => {
+    // 上一个用例里 ready 还没 resolve 就死了，所以内部 `await ready` 本身也会 reject，
+    // 光靠这条路径盖不住 request() 顶部的 `closed` 检查。这里让 ready 先正常 resolve
+    // （open 成功过），再关闭连接——此时 ready 已经 settle 成功，`await ready` 不会再
+    // reject 任何东西，request() 顶部的 closed 标志是唯一还能拦住新请求的防线。
+    const bridge = createWebSocketBridge('ws://x')
+    const socket = FakeWebSocket.instances[0]!
+    socket.triggerOpen()
+    await flush()
+
+    socket.triggerClose()
+
+    await expect(withTimeout(bridge.request('spec/save', {}))).rejects.toThrow('与本地服务的连接已断开')
+  })
 })

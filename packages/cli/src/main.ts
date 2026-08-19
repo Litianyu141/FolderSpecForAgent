@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import * as fs from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import * as nodePath from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { startServer } from './server.js'
@@ -110,17 +111,28 @@ async function detectBrowser(): Promise<BrowserCandidate | null> {
 }
 
 /**
- * 只有作为入口脚本被 `node dist/main.js` 直接执行时才真的跑起来。main.test.ts 要单测
- * parseArgs 就得 `import { parseArgs } from './main.js'`——如果没有这层判断，那次 import
- * 本身就会把整个 CLI（真起一个 HTTP/WS 服务、真去探测并可能拉起浏览器）当副作用跑起来，
- * 服务永远不会被关掉，是货真价实的"没关掉的 handle"。
+ * 只有作为入口脚本被直接执行时才真的跑起来。main.test.ts 要单测 parseArgs 就得
+ * `import { parseArgs } from './main.js'`——如果没有这层判断，那次 import 本身就会把
+ * 整个 CLI（真起一个 HTTP/WS 服务、真去探测并可能拉起浏览器）当副作用跑起来，服务
+ * 永远不会被关掉，是货真价实的"没关掉的 handle"。
+ *
+ * Node 会把入口模块的 import.meta.url 解析成 realpath，却原样保留 process.argv[1]。
+ * 经由包管理器 bin 生成的符号链接调用时（`npx folderspec`、全局安装等——这正是这个
+ * 包唯一真正被使用的方式）两者必然不同：import.meta.url 指向 dist/main.js 的真实路径，
+ * argv[1] 还停在符号链接那一层。不先 realpath 就直接比较，会让符号链接调用永远判定为
+ * "不是入口模块"，main() 就再也不会执行——`npx folderspec` 会静默退出、什么都不做，
+ * 且不打印任何错误。所以这里必须先对 argv[1] 求 realpath 再比较。
  */
-function isMainModule(): boolean {
-  const entry = process.argv[1]
-  return entry !== undefined && import.meta.url === pathToFileURL(entry).href
+export function isEntryModule(moduleUrl: string, argv1: string | undefined): boolean {
+  if (argv1 === undefined) return false
+  try {
+    return moduleUrl === pathToFileURL(realpathSync(argv1)).href
+  } catch {
+    return false
+  }
 }
 
-if (isMainModule()) {
+if (isEntryModule(import.meta.url, process.argv[1])) {
   void main().catch((e: unknown) => {
     process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`)
     process.exit(1)
