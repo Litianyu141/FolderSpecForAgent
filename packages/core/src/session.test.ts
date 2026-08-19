@@ -194,6 +194,45 @@ describe('Session 编辑与保存', () => {
     expect(find(r.tree, 'examples/foo')?.origin).toBe('actual-only')
     expect(find(r.tree, 'src/cases/foo')?.origin).toBe('spec-only')
   })
+
+  // 复现用户报告的 bug：把 `.claude/commands` 拖了一下之后它就从界面上消失了——
+  // 磁盘上文件还在、契约里也还声明着它，但 move() 无条件把 from 塞进 hidden，
+  // 而拖回同一个父级时新旧路径相同，merge 在 actual 侧和 spec 侧会把它双双跳过。
+  it('拖回原父级时节点不会从视图中消失', async () => {
+    await fs.mkdir(nodePath.join(root, 'a/b'), { recursive: true })
+    const s = new Session(root)
+    await s.open()
+    expect(find(s.tree(), 'a/b')).not.toBeNull() // 拖拽前：可见
+
+    const r = s.move({ from: 'a/b', toParent: 'a', isDir: true })
+    expect(find(r.tree, 'a/b')).not.toBeNull() // 拖回原父级后：仍然可见
+  })
+
+  it('移动到不同父级时旧位置仍然隐藏', async () => {
+    await fs.mkdir(nodePath.join(root, 'a/b'), { recursive: true })
+    const s = new Session(root)
+    await s.open()
+    const r = s.move({ from: 'a/b', toParent: 'c', isDir: true })
+    expect(find(r.tree, 'a/b')).toBeNull()
+    expect(find(r.tree, 'c/b')?.origin).toBe('spec-only')
+  })
+
+  // 相邻场景：先把节点拖到别的父级（旧位置 a/b 被记进 hidden），
+  // 再把它从新位置拖回原父级。第二次 move() 的 from 是当前视图路径 'c/b'，
+  // 不是磁盘上的真实路径 'a/b'；如果只管"新增 hidden"而不管"归还时撤销 hidden"，
+  // 'a/b' 会一直留在 hidden 里——即使契约又把节点声明回了 a/b，
+  // merge 仍然会在 actual 侧和 spec 侧同时把 a/b 跳过，节点第二次消失。
+  it('先拖到新父级再拖回原父级，节点同样不会消失', async () => {
+    await fs.mkdir(nodePath.join(root, 'a/b'), { recursive: true })
+    const s = new Session(root)
+    await s.open()
+
+    s.move({ from: 'a/b', toParent: 'c', isDir: true })
+    const r = s.move({ from: 'c/b', toParent: 'a', isDir: true })
+
+    expect(find(r.tree, 'a/b')).not.toBeNull()
+    expect(find(r.tree, 'c/b')).toBeNull()
+  })
 })
 
 describe('Session 输入校验', () => {
