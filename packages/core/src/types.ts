@@ -99,3 +99,8 @@ export interface ScanOpts {
   /** 单目录最多保留多少子项，超出则截断；默认 MAX_CHILDREN。主要用于测试和对扫描量有更紧预算的调用方 */
   maxChildren?: number
 }
+
+export type GitState = 'ignored' | 'untracked' | 'modified' | 'added' | 'deleted' | 'conflicted'
+
+/** 键是相对工作区根的 posix 路径 */
+export type GitStates = Map<string, GitState>
