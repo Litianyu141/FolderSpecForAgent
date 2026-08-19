@@ -1,4 +1,4 @@
-import type { Group, ViewNode } from '@folderspec/core/api'
+import type { Group } from '@folderspec/core/api'
 
 export interface ClickMods { shift: boolean; ctrl: boolean }
 export interface SelectionState { selected: string[]; anchor: string | null }

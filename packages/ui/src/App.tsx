@@ -41,22 +41,34 @@ export function App({ bridge, initialRoot }: AppProps) {
   const treeApiRef = useRef<TreeApi<ViewNode> | undefined>(undefined)
 
   /**
-   * 收缩既有分组时"正在编辑哪个分组 + 它最新的成员集"。
+   * 当前正在雕琢的这一组：成员集，以及它绑定到哪个既有分组（null = 还没落地成分组）。
+   * 分组的每一次写入都以它为准，而不是各自去读渲染时的 selection / groups 快照。
    *
-   * 两件事逼出了这个 ref。其一：收缩是"发请求 + 改选中集"两步，中间那一帧若让
-   * GroupPanel 看到"成员少了、groups 还没更新"，matchingGroups 会失配、current 变 null，
-   * 它按成员键重置的 effect 就把用户的分组名与注释清成空串；等响应回来 current 虽然
-   * 恢复，成员键却不再变化、effect 不再重跑，字段就停在空。那个空串会随下一次提交
-   * （改一下约束强度就够）写回契约，而 core 把"text 为空"当成删除该分组——用户写的
-   * 注释就此消失，正踩在本项目唯一那条红线上。所以选中集要等响应落地后与 groups
-   * 同批更新，面板永远看不到那个中间态。
-   * 其二：既然选中集要等，连续两次点击就不能各自从渲染快照出发，否则第二次会把第一次
-   * 移掉的成员又加回去。基准一律从这里取。
+   * 三件事逼出了这个 ref，它们其实是同一个机制的三面：
+   *
+   * 1. 收缩是"发请求 + 改选中集"两步。中间那一帧若让 GroupPanel 看到"成员少了、groups
+   *    还没更新"，matchingGroups 会失配、current 变 null，它按成员键重置的 effect 就把
+   *    用户的分组名与注释清成空串；等响应回来 current 虽恢复，成员键却不再变化、effect
+   *    不再重跑，字段停在空。那个空串随下一次提交写回，而 core 把"text 为空"当成删除该
+   *    分组——用户写的注释就此消失，正踩在本项目唯一那条红线上。所以选中集要等响应落地、
+   *    与 groups 同批更新。
+   * 2. 既然选中集要等，连续两次点击就不能各自从渲染快照出发，否则第二次会把第一次移掉的
+   *    成员又加回去。**新建态同样如此**，所以这里无论有没有绑定分组都要记。
+   * 3. 改名会让 core 把分组 rename 成新 id。缓存的旧 id 从此指向一个不存在的分组，而
+   *    core 在 id 找不到时走的是「清空 text 即删除」的早退分支——对不存在的分组是空操作，
+   *    **照样返回成功**。界面收缩了，契约纹丝不动，且没有任何提示。所以每次写成功后都要
+   *    用 EditResult.id 把它刷新一遍（那正是改名后的新 id）。
    *
    * 任何"重新决定编辑目标"的路径（选行、点分组入口、换工作区）都要把它清空。
    */
-  const shrinkRef = useRef<{ id: string; members: string[] } | null>(null)
-  const shrinkChainRef = useRef<Promise<void>>(Promise.resolve())
+  const pendingRef = useRef<{ members: string[]; groupId: string | null } | null>(null)
+  const chainRef = useRef<Promise<void>>(Promise.resolve())
+
+  // 读文件请求的序号。宿主对每条消息各起一个异步任务、彼此不排队（cli/src/server.ts），
+  // 于是先发的大文件可以晚于后发的小文件到达。没有这道闸门，晚到的旧响应会盖掉新内容，
+  // 而路径头与高亮语言取自 contentPath（已经是新的那个）——界面上就是"路径写着 B、
+  // 内容是 A"。切到目录时也要自增，让在途的读取作废。
+  const contentReqRef = useRef(0)
 
   const left = useSplitter({ initial: 260, min: 160, max: 600, side: 'left' })
   const right = useSplitter({ initial: 320, min: 220, max: 720, side: 'right' })
@@ -94,7 +106,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setGroups(r.groups)
       setParseErrors(r.parseErrors)
       setSelection(EMPTY_SELECTION)
-      shrinkRef.current = null
+      pendingRef.current = null
       // 与切到目录时同理：在途的 file/read 必须作废，否则它晚到时会往一个已经不存在的
       // 上下文里写——成功路径看不出来，失败路径会在新工作区里弹出旧工作区的错误横幅
       contentReqRef.current += 1
@@ -142,11 +154,6 @@ export function App({ bridge, initialRoot }: AppProps) {
     }
   }, [bridge])
 
-  // 读文件请求的序号。宿主对每条消息各起一个异步任务、彼此不排队（cli/src/server.ts），
-  // 于是先发的大文件可以晚于后发的小文件到达。没有这道闸门，晚到的旧响应会盖掉新内容，
-  // 而路径头与高亮语言取自 contentPath（已经是新的那个）——界面上就是"路径写着 B、
-  // 内容是 A"。切到目录时也要自增，让在途的读取作废。
-  const contentReqRef = useRef(0)
 
   const loadContent = useCallback(async (path: string) => {
     const seq = ++contentReqRef.current
@@ -172,7 +179,7 @@ export function App({ bridge, initialRoot }: AppProps) {
     // spec/setGroup 写进用户的 .folderspec.md（spec §5.3 的"所见即所选"）。
     const order = treeApiRef.current?.visibleNodes.map(n => n.id) ?? []
     setSelection(prev => applyClick(prev, path, order, mods))
-    shrinkRef.current = null
+    pendingRef.current = null
 
     const node = flatten(tree.children ?? []).get(path)
     if (!node) return
@@ -211,29 +218,75 @@ export function App({ bridge, initialRoot }: AppProps) {
     }
   }, [bridge, selectedPath, tree])
 
-  /** 返回是否写成功——收缩成员时要靠它决定选中集该不该跟着变 */
-  const sendSetGroup = useCallback(async (params: SetGroupParams): Promise<boolean> => {
+  /** 成功时返回该分组**落地后**的 id（改名时就是新 id），失败返回 null */
+  const sendSetGroup = useCallback(async (params: SetGroupParams): Promise<string | null> => {
     try {
       const r = await bridge.request('spec/setGroup', params)
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
-      return true
+      return r.id
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-      return false
+      return null
     }
   }, [bridge])
 
-  const handleGroupSubmit = useCallback((p: GroupSubmit) => {
-    void sendSetGroup({
-      id: p.id,
-      members: selection.selected,
-      name: p.name,
-      text: p.text,
-      severity: p.severity,
+  /** 取当前正在雕琢的这一组；还没有就按此刻的选中集与分组建立一份 */
+  const takePending = useCallback(() => {
+    if (pendingRef.current === null) {
+      pendingRef.current = {
+        members: selection.selected,
+        groupId: matchingGroups(selection.selected, groups)[0]?.id ?? null,
+      }
+    }
+    return pendingRef.current
+  }, [selection.selected, groups])
+
+  /**
+   * 分组的所有写入走同一条串行链。串行不只是为了落地顺序：两次写并发时，后发的那次
+   * 带的是基于旧状态算出的成员集，先失败的那次又只能事后补救。排队之后每一步都能看到
+   * 前一步的结果，失败也能靠代次号把后面整段作废。
+   */
+  const runGroupWrite = useCallback((
+    build: (p: { members: string[]; groupId: string | null }) => SetGroupParams | null,
+    after?: () => void,
+  ) => {
+    chainRef.current = chainRef.current.then(async () => {
+      // 排在链条后面的每一步都在这里过闸：pending 被置空就说明它依据的前提没了
+      // （前一步写失败，或用户已经改选了别的东西），整步作废。
+      // 排队的步骤都在相邻的微任务里依次跑完，用户点击插不进来，所以这一道就够了。
+      const p = pendingRef.current
+      if (p === null) return
+      const params = build(p)
+      if (params !== null) {
+        const id = await sendSetGroup(params)
+        if (id === null) {
+          // 写失败：置空 pending，排在后面的步骤会在上面那道闸口一起作废，
+          // 下一次点击重新建立编辑目标。不动选中集——报了失败，界面就得继续与契约一致。
+          pendingRef.current = null
+          return
+        }
+        // core 可能把分组改了名，缓存的 id 必须跟着走，否则下一次写会打在一个
+        // 不存在的分组上——那是一次静默的空操作，不会报错
+        if (pendingRef.current !== null) pendingRef.current.groupId = id
+      }
+      after?.()
     })
-  }, [sendSetGroup, selection.selected])
+  }, [sendSetGroup])
+
+  const handleGroupSubmit = useCallback((sub: GroupSubmit) => {
+    takePending()
+    // 成员取 pending 而不是 selection：收缩在途时 selection 还是收缩前的那一份，
+    // 拿它去提交改名或约束强度，会把刚移除的成员又写回契约
+    runGroupWrite(p => ({
+      id: p.groupId ?? sub.id,
+      members: p.members,
+      name: sub.name,
+      text: sub.text,
+      severity: sub.severity,
+    }))
+  }, [takePending, runGroupWrite])
 
   // groups 走 ref 而不是依赖数组：这个回调会传给 SpecTree 的 onGroupClick，而那是
   // renderNode（每一行的组件类型）的依赖项——引用一变，所有可见行都会卸载重挂。
@@ -244,35 +297,28 @@ export function App({ bridge, initialRoot }: AppProps) {
   const handlePickGroup = useCallback((id: string) => {
     const g = groupsRef.current.find(x => x.id === id)
     if (!g) return
-    shrinkRef.current = null
+    pendingRef.current = null
     setSelection({ selected: [...g.members], anchor: g.members[g.members.length - 1] ?? null })
   }, [])
 
   const handleRemoveMember = useCallback((path: string) => {
-    const base = shrinkRef.current?.members ?? selection.selected
-    if (!base.includes(path)) return
-    const rest = base.filter(p => p !== path)
-    // 编辑目标一旦定下就记在 shrinkRef 里，不再靠"成员集恰好相等"重新判定：收缩在途时
-    // 成员集与 groups 本来就对不上，重新判定必然失配。
-    const id = shrinkRef.current?.id ?? matchingGroups(base, groups)[0]?.id ?? null
-    if (id !== null) shrinkRef.current = { id, members: rest }
+    const p = takePending()
+    if (!p.members.includes(path)) return
+    const rest = p.members.filter(x => x !== path)
+    pendingRef.current = { members: rest, groupId: p.groupId }
     const anchorGone = selection.anchor === path
 
-    // 串起来跑，不并发：两次移除若同时在途，落地顺序不保证，契约里可能停在先发的那一份。
-    shrinkChainRef.current = shrinkChainRef.current.then(async () => {
-      // 省略 name/text/severity：core 把 undefined 当"不变"，这里只动成员
-      if (id !== null && !(await sendSetGroup({ id, members: rest }))) {
-        // 写失败就不动选中集，界面继续与契约一致；下一次点击重新判定编辑目标
-        shrinkRef.current = null
-        return
-      }
-      setSelection(prev => ({
+    runGroupWrite(
+      // 绑定到既有分组才需要写；新建态只是在调整选中集，还没有分组可写。
+      // 省略 name/text/severity：core 把 undefined 当"不变"，这里只动成员。
+      cur => cur.groupId === null ? null : { id: cur.groupId, members: rest },
+      () => setSelection(prev => ({
         selected: rest,
         // 锚点被移掉了就作废，别让后续 Shift 从一个已经不在选中集里的位置起算
         anchor: anchorGone ? null : prev.anchor,
-      }))
-    })
-  }, [sendSetGroup, selection, groups])
+      })),
+    )
+  }, [takePending, runGroupWrite, selection.anchor])
 
   const handleSave = useCallback(async () => {
     try {

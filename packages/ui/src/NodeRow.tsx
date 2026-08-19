@@ -34,8 +34,14 @@ export function NodeRow(
       data-origin={d.origin}
       data-annotated={annotated}
       onClick={e => {
-        if (d.isDir) node.toggle()
-        onRowClick?.(d.path, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey })
+        const mods = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }
+        // 带修饰键的点击是在扩选，不折叠/展开目录。两个理由：
+        // 一是 shift 点一个目录本意是把选区延伸到它，顺手折叠本身就是意外行为；
+        // 二是 toggle 之后 react-arborist 的 visibleNodes 要等下一次渲染才重算
+        // （TreeApi.update），事件处理器里读到的仍是折叠前的顺序，区间会把随之从屏幕上
+        // 消失的子项一并选进去——而选中集会被写进用户的契约文件（spec §5.3）。
+        if (d.isDir && !mods.shift && !mods.ctrl) node.toggle()
+        onRowClick?.(d.path, mods)
       }}
     >
       {Array.from({ length: node.level }, (_, i) => (

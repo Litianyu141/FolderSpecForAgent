@@ -64,7 +64,7 @@ const G3: Group = { id: 'g1', members: ['src', 'docs', 'README.md'], text: '一�
  * 完全掩盖住了；而零延迟的桩测不出"请求在途的那一帧"——真实宿主的响应必然晚于本次
  * 点击引发的渲染，缺陷就长在那一帧里。
  */
-const groupBridge = (initial: Group[], delayMs = 20) => {
+const groupBridge = (initial: Group[], delayMs = 20, failFirstSetGroup = false) => {
   let groups: Group[] = initial.map(g => ({ ...g, members: [...g.members] }))
   const calls: Array<{ method: string; params: unknown }> = []
   const self = {
@@ -82,8 +82,14 @@ const groupBridge = (initial: Group[], delayMs = 20) => {
       if (method === 'spec/annotate') return { tree: tree(FIXTURE), dirty: true, groups }
       if (method === 'spec/setGroup') {
         await new Promise(r => setTimeout(r, delayMs))
+        if (failFirstSetGroup && calls.filter(c => c.method === 'spec/setGroup').length === 1) {
+          throw new Error('写失败了')
+        }
         const id = params.id as string | null
         const members = params.members as string[]
+        // core 的 setGroup 返回的是**落地后**的 id：给了 name 就是改名后的那个
+        // （spec-edit 的 targetId）。桩必须照做，否则改名后的链路根本测不到。
+        const landedId = typeof params.name === 'string' && params.name !== '' ? params.name : (id ?? 'group')
         groups = groups.map(g => g.id !== id ? g : {
           ...g,
           members: [...members],
@@ -91,7 +97,7 @@ const groupBridge = (initial: Group[], delayMs = 20) => {
           ...(params.text !== undefined ? { text: params.text as string } : {}),
           ...(params.severity ? { severity: params.severity as Severity } : {}),
         })
-        return { tree: tree(FIXTURE), dirty: true, groups, id: id ?? 'group' }
+        return { tree: tree(FIXTURE), dirty: true, groups, id: landedId }
       }
       throw new Error(`本用例未配置 ${method}`)
     }) as Bridge['request'],
@@ -765,5 +771,103 @@ describe('App', () => {
     await act(async () => { rejectSlow(new Error('上一个工作区的读取')) })
 
     expect(screen.queryByText(/上一个工作区的读取/)).toBeNull()
+  })
+
+  it('改名之后再移除成员，收缩落在改名后的那个分组上', async () => {
+    const bridge = groupBridge([G3])
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+
+    const nameInput = screen.getByLabelText('分组名')
+    fireEvent.change(nameInput, { target: { value: '核心' } })
+    fireEvent.blur(nameInput)
+    await waitFor(() => expect(bridge.groupsNow()[0].id).toBe('核心'))
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 docs'))
+
+    // 缓存的 id 若还停在 'g1'，core 找不到该分组会走「清空即删除」的早退分支——
+    // 对不存在的分组是空操作，且照样返回成功。界面收缩了，契约纹丝不动。
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src']))
+    expect(bridge.groupsNow()[0].id).toBe('核心')
+  })
+
+  it('新建态连续两次移除，被移除的成员不会复活', async () => {
+    // groups 为空 → 选中集不对应任何既有分组，走新建态
+    const bridge = groupBridge([])
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    fireEvent.click(screen.getByLabelText('从选中集移除 docs'))
+
+    // 第二次若从渲染快照出发，rest 会变回 ['src','README.md']，被移除的 README.md 复活
+    await waitFor(() => expect(screen.getByLabelText('注释')).toBeTruthy())
+    expect(screen.queryByText(/已选中/)).toBeNull()
+  })
+
+  it('shift 点在已展开的目录行上，不折叠它，也不把它的子项选进来', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[0])                     // src/ 展开
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(5))
+    fireEvent.click(rowsOf(container)[4])                     // README.md，落锚点
+
+    fireEvent.click(rowsOf(container)[0], { shiftKey: true }) // shift 点回已展开的 src/
+
+    await waitFor(() => expect(screen.getByText(/已选中 5 项/)).toBeTruthy())
+    // 带修饰键的点击不该顺手折叠。若折叠了，屏幕只剩 3 行，而选中集仍是 5 项——
+    // src/a.ts、src/b.ts 已经不在屏幕上却进了成员集，正是 §5.3 要防的
+    expect(rowsOf(container)).toHaveLength(5)
+  })
+
+  it('收缩在途时改约束强度，提交的成员是收缩后的那一份', async () => {
+    const bridge = groupBridge([G3], 40)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    // 不等收缩落地就改约束强度：此刻 selection 还是收缩前那三项，
+    // 拿它去提交会把刚移除的 README.md 又写回契约
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'warning' } })
+
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({ severity: 'warning' }))
+    expect(bridge.lastCall('spec/setGroup')).toMatchObject({ members: ['src', 'docs'] })
+  })
+
+  it('串行链里前一次写失败，后一次不会带着累积结果生效', async () => {
+    const bridge = groupBridge([G3], 20, true)   // 第一次 setGroup 抛错
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    fireEvent.click(screen.getByLabelText('从选中集移除 docs'))
+
+    await waitFor(() => expect(screen.getByText(/写失败了/)).toBeTruthy())
+
+    // 数调用次数是确定的、不依赖桩的延迟：request() 在 await 之前就把调用记进 calls，
+    // 所以第二段链条只要**启动**过就会留下第二条记录。
+    // （第一版这条用例只断言契约与界面，在横幅刚出现时第二段还没跑完，于是恒绿——
+    //   典型的"夹具触发不到要防的路径"，已改掉。）
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+
+    // 再把可能存在的第二段彻底跑完，确认提示与事实一致：报了失败，两边就都不能动
+    await act(async () => { await new Promise(r => setTimeout(r, 60)) })
+    expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs', 'README.md'])
+    expect(screen.getByText(/已选中 3 项/)).toBeTruthy()
   })
 })

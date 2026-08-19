@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { applyClick, matchingGroups } from './selection.js'
-import type { Group, ViewNode } from '@folderspec/core/api'
+import type { Group } from '@folderspec/core/api'
 
 const ORDER = ['a', 'b', 'c', 'd', 'e']
 const S = (selected: string[], anchor: string | null = null) => ({ selected, anchor })
