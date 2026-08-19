@@ -101,4 +101,35 @@ describe('readWorkspaceFile', () => {
     expect(leakedText(result)).not.toContain(SECRET)
     expect(threw).toBe(true)
   })
+
+  it('符号链接环（自引用/相互引用）返回 unreadable 而非抛错', async () => {
+    // 解析失败不等于越界证据：ELOOP 只是"这次没解析成功"，不是"证实它指向工作区外"。
+    // 修复越界漏洞时若把 realpath 的失败一律重抛，会把这类本该走 unreadable 分支的
+    // 普通解析失败错误地升级成未捕获异常——scan() 顶层 readdir 仍会把它列成一个
+    // 普通的 symlink 子项，用户点开它是最自然的下一步动作。
+    await fs.symlink('loop-b.txt', nodePath.join(root, 'loop-a.txt'))
+    await fs.symlink('loop-a.txt', nodePath.join(root, 'loop-b.txt'))
+
+    const r = await readWorkspaceFile(root, 'loop-a.txt')
+    expect(r.kind).toBe('unreadable')
+  })
+
+  it('目录不可搜索（EACCES）时返回 unreadable 而非抛错', async () => {
+    expect(
+      process.getuid?.(),
+      '这条用例必须以非 root 身份运行：root 无视目录的执行位，chmod 0o600 造不出 EACCES，用例会假绿',
+    ).not.toBe(0)
+
+    const dir = nodePath.join(root, 'noexec')
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(nodePath.join(dir, 'f.txt'), 'x')
+    await fs.chmod(dir, 0o600) // 可读写、不可搜索——realpath 穿过这一级目录时应得到 EACCES
+
+    try {
+      const r = await readWorkspaceFile(root, 'noexec/f.txt')
+      expect(r.kind).toBe('unreadable')
+    } finally {
+      await fs.chmod(dir, 0o755) // 还原，否则 afterAll 的 recursive rm 进不去这个目录
+    }
+  })
 })

@@ -195,4 +195,34 @@ describe('scan', () => {
     expect(leakedNames).not.toContain('secret-marker-file.txt')
     expect(threw).toBe(true)
   })
+
+  it('symlink 环（自引用/相互引用）作为 subPath 时标 unreadable 而非抛错', async () => {
+    // 解析失败不等于越界证据：ELOOP 只是"这次没解析成功"，不是"证实它指向工作区外"。
+    // scan() 在父目录列举子项时仍会把这两个符号链接列成普通的 kind:'symlink' 子项，
+    // 用户把它们当作 subPath 展开是最自然的下一步动作，不该因为 realpath 解析失败
+    // 就让整次 scan() 抛出未捕获异常。
+    await fs.symlink('loop-b', nodePath.join(root, 'loop-a'))
+    await fs.symlink('loop-a', nodePath.join(root, 'loop-b'))
+
+    const t = await scan(root, { subPath: 'loop-a', depth: 1 })
+    expect(t.unreadable).toBe(true)
+  })
+
+  it('subPath 经过一个不可搜索目录（EACCES）时标 unreadable 而非抛错', async () => {
+    expect(
+      process.getuid?.(),
+      '这条用例必须以非 root 身份运行：root 无视目录的执行位，chmod 0o600 造不出 EACCES，用例会假绿',
+    ).not.toBe(0)
+
+    const dir = nodePath.join(root, 'noexec-scan')
+    await fs.mkdir(nodePath.join(dir, 'sub'), { recursive: true })
+    await fs.chmod(dir, 0o600) // 可读写、不可搜索——realpath 穿过这一级目录时应得到 EACCES
+
+    try {
+      const t = await scan(root, { subPath: 'noexec-scan/sub', depth: 1 })
+      expect(t.unreadable).toBe(true)
+    } finally {
+      await fs.chmod(dir, 0o755) // 还原，否则 afterAll 的 recursive rm 进不去这个目录
+    }
+  })
 })

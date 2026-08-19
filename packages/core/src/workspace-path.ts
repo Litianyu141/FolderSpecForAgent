@@ -38,9 +38,15 @@ export function normalizeWorkspacePath(input: string): string {
  * root 自己也要 realpath 再比较——否则 root 本身是符号链接时（例如 macOS 上
  * /tmp 实际是 /private/tmp 的符号链接）会把工作区自己误判成越界。
  *
- * 目标路径不存在时 realpath 抛 ENOENT：这不是越界，是"没有"，交还给调用方
- * （file-read 的 stat、scan 的 readdir）用它们各自已有的"不存在/不可读"分支处理——
- * 这里只负责越界判断，不在"找不到"这件事上抢答。
+ * realpath(abs) 解析失败时——不管是 ENOENT（不存在）、ELOOP（符号链接环，比如
+ * a -> b -> a 或 self -> self）、EACCES（某一级目录不可搜索）还是别的 errno——
+ * 一律返回未解析的 abs，交还给调用方（file-read 的 stat、scan 的 readdir）用
+ * 它们各自已有的"不存在/不可读"分支处理，这里只负责越界判断。**解析失败不等于
+ * 越界证据**：这里如果因为"解析不出来"就直接抛错，那个抛出会越过调用方包在
+ * stat/readdir 外面的 try/catch（它们包的是 stat/readdir 本身，不是这一步），
+ * 把一次本该降级为 unreadable 的普通失败，错误地升级成一次未被捕获的异常——
+ * 而调用方接下来对同一个 abs 做 stat/readdir，本就会撞上同一个 errno，照样能
+ * 走进那些分支得到 unreadable，不需要在这里抢答。
  *
  * TOCTOU：realpath 到调用方真正读取/罗列之间，目标理论上可能被替换掉。本工具是
  * 单用户本地场景（同一个人在同一台机器上读自己正在编辑的仓库），这个窗口期不构成
@@ -55,13 +61,20 @@ export async function resolveWithinWorkspace(root: string, subPath: string): Pro
   let real: string
   try {
     real = await fs.realpath(abs)
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return abs
-    throw e
+  } catch {
+    return abs
   }
 
-  if (real !== realRoot && !real.startsWith(realRoot + nodePath.sep)) {
-    throw new Error(`路径 ${JSON.stringify(subPath)} 解析后逃出工作区，可能经过符号链接`)
+  // 用 nodePath.relative 而不是手工拼 `realRoot + sep` 做前缀比较：工作区根是
+  // 文件系统根 '/' 时，`realRoot + sep` 会变成 '//'，导致任何子路径都比不出前缀、
+  // 被误判成越界。relative() 对 '/' 这个边界天然正确：任何路径相对 '/' 的结果
+  // 都不会以 '..' 开头。
+  if (real !== realRoot) {
+    const rel2 = nodePath.relative(realRoot, real)
+    const escapes = rel2 === '..' || rel2.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(rel2)
+    if (escapes) {
+      throw new Error(`路径 ${JSON.stringify(subPath)} 解析后逃出工作区，可能经过符号链接`)
+    }
   }
   return real
 }
