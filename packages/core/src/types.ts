@@ -104,3 +104,20 @@ export type GitState = 'ignored' | 'untracked' | 'modified' | 'added' | 'deleted
 
 /** 键是相对工作区根的 posix 路径 */
 export type GitStates = Map<string, GitState>
+
+export type NodeOrigin = 'both' | 'spec-only' | 'actual-only' | 'unscanned'
+
+export interface ViewNode {
+  name: string
+  path: string
+  isDir: boolean
+  origin: NodeOrigin
+  gitState?: GitState
+  annotation?: string
+  role?: string
+  template?: string
+  severity?: Severity
+  children?: ViewNode[]
+  truncated?: boolean
+  unreadable?: boolean
+}
