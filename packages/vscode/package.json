@@ -24,14 +24,19 @@
   "scripts": {
     "build": "node scripts/copy-ui.mjs && esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
     "test": "vitest run",
+    "test:e2e": "tsc -p tsconfig.test.json && node dist-test/test/runTest.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": { "@folderspec/core": "workspace:*" },
   "devDependencies": {
     "@folderspec/ui": "workspace:*",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^22.10.2",
     "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^2.4.1",
     "esbuild": "^0.24.0",
+    "glob": "^11.0.0",
+    "mocha": "^10.8.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
   }

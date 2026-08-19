@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm -C packages/core test
+      - run: pnpm -C packages/ui test
+      - run: pnpm -C packages/ui build
+      - run: pnpm -C packages/cli test
+      - run: pnpm -C packages/vscode test
+      - run: pnpm -C packages/vscode build
+      - run: xvfb-run -a pnpm -C packages/vscode test:e2e
