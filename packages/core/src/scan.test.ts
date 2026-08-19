@@ -27,6 +27,26 @@ beforeAll(async () => {
   await fs.writeFile(nodePath.join(root, 'debug.log'), '')
   await fs.writeFile(nodePath.join(root, 'README.md'), '')
   await fs.symlink(nodePath.join(root, 'src'), nodePath.join(root, 'link-to-src'), 'dir')
+
+  // maxChildren 边界：恰好等于上限，不应截断
+  await fs.mkdir(nodePath.join(root, 'cap-exact'), { recursive: true })
+  await Promise.all(
+    Array.from({ length: 3 }, (_, i) => fs.writeFile(nodePath.join(root, 'cap-exact', `f${i}.txt`), '')),
+  )
+
+  // maxChildren 边界：超过上限一个，应截断
+  await fs.mkdir(nodePath.join(root, 'cap-over'), { recursive: true })
+  await Promise.all(
+    Array.from({ length: 4 }, (_, i) => fs.writeFile(nodePath.join(root, 'cap-over', `f${i}.txt`), '')),
+  )
+
+  // maxChildren 边界：被 ignore 掉的条目不应计入截断判断
+  await fs.mkdir(nodePath.join(root, 'cap-ignored'), { recursive: true })
+  await Promise.all([
+    ...Array.from({ length: 3 }, (_, i) => fs.writeFile(nodePath.join(root, 'cap-ignored', `keep${i}.txt`), '')),
+    ...Array.from({ length: 2 }, (_, i) => fs.writeFile(nodePath.join(root, 'cap-ignored', `skip${i}.log`), '')),
+  ])
+  await fs.writeFile(nodePath.join(root, 'cap-ignored/.gitignore'), '*.log\n.gitignore\n')
 })
 
 afterAll(async () => {
@@ -118,4 +138,34 @@ describe('scan', () => {
       await fs.rm(big, { recursive: true, force: true })
     }
   }, 60_000)
+
+  it('.gitignore 里的否定模式无法复活 .git', async () => {
+    const negateRoot = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'folderspec-scan-negate-'))
+    try {
+      await fs.mkdir(nodePath.join(negateRoot, '.git'), { recursive: true })
+      await fs.writeFile(nodePath.join(negateRoot, '.gitignore'), 'node_modules\n!.git\n')
+      const t = await scan(negateRoot, { depth: 1 })
+      expect(t.children!.map(c => c.name)).not.toContain('.git')
+    } finally {
+      await fs.rm(negateRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('恰好 maxChildren 个子项时不标记 truncated', async () => {
+    const t = await scan(root, { subPath: 'cap-exact', depth: 1, maxChildren: 3 })
+    expect(t.children).toHaveLength(3)
+    expect(t.truncated).toBeUndefined()
+  })
+
+  it('超过 maxChildren 时标记 truncated', async () => {
+    const t = await scan(root, { subPath: 'cap-over', depth: 1, maxChildren: 3 })
+    expect(t.children).toHaveLength(3)
+    expect(t.truncated).toBe(true)
+  })
+
+  it('被忽略的条目不计入截断', async () => {
+    const t = await scan(root, { subPath: 'cap-ignored', depth: 1, maxChildren: 3 })
+    expect(t.children!.map(c => c.name).sort()).toEqual(['keep0.txt', 'keep1.txt', 'keep2.txt'])
+    expect(t.truncated).toBeUndefined()
+  })
 })

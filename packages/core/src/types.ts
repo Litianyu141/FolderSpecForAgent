@@ -96,4 +96,6 @@ export interface ScanOpts {
   subPath?: string
   /** 从起点往下扫几层；默认 2 */
   depth?: number
+  /** 单目录最多保留多少子项，超出则截断；默认 MAX_CHILDREN。主要用于测试和对扫描量有更紧预算的调用方 */
+  maxChildren?: number
 }

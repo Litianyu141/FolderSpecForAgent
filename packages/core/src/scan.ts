@@ -8,8 +8,8 @@ import type { ActualNode, FileKind, ScanOpts } from './types.js'
 export const MAX_CHILDREN = 10_000
 export const DEFAULT_DEPTH = 2
 
-/** 无论 .gitignore 怎么写都不进入的目录 */
-const ALWAYS_IGNORED = ['.git']
+/** 无论 ignore 文件怎么写都必须排除的目录名，硬编码判断，不参与 ignore 规则的优先级竞争 */
+const ALWAYS_IGNORED_NAMES = new Set(['.git'])
 
 /** 一层 ignore 规则；base 是它生效的目录（相对根的 posix 路径，根为 ''） */
 interface IgnoreLayer {
@@ -20,6 +20,7 @@ interface IgnoreLayer {
 export async function scan(root: string, opts: ScanOpts = {}): Promise<ActualNode> {
   const subPath = toPosix(opts.subPath ?? '')
   const depth = opts.depth ?? DEFAULT_DEPTH
+  const maxChildren = opts.maxChildren ?? MAX_CHILDREN
 
   const layers = await buildAncestorLayers(root, subPath)
   const node: ActualNode = {
@@ -27,11 +28,17 @@ export async function scan(root: string, opts: ScanOpts = {}): Promise<ActualNod
     path: subPath,
     kind: 'dir',
   }
-  await walk(root, node, layers, depth)
+  await walk(root, node, layers, depth, maxChildren)
   return node
 }
 
-async function walk(root: string, dir: ActualNode, inherited: IgnoreLayer[], depth: number): Promise<void> {
+async function walk(
+  root: string,
+  dir: ActualNode,
+  inherited: IgnoreLayer[],
+  depth: number,
+  maxChildren: number,
+): Promise<void> {
   if (depth <= 0) return
 
   const abs = nodePath.join(root, dir.path)
@@ -52,13 +59,14 @@ async function walk(root: string, dir: ActualNode, inherited: IgnoreLayer[], dep
     const rel = dir.path === '' ? e.name : `${dir.path}/${e.name}`
     const isSymlink = e.isSymbolicLink()
     const isDir = !isSymlink && e.isDirectory()
+    if (ALWAYS_IGNORED_NAMES.has(e.name)) continue
     if (isIgnored(layers, rel, isDir)) continue
-    const kind: FileKind = isSymlink ? 'symlink' : isDir ? 'dir' : 'file'
-    children.push({ name: e.name, path: rel, kind })
-    if (children.length >= MAX_CHILDREN) {
+    if (children.length >= maxChildren) {
       dir.truncated = true
       break
     }
+    const kind: FileKind = isSymlink ? 'symlink' : isDir ? 'dir' : 'file'
+    children.push({ name: e.name, path: rel, kind })
   }
 
   children.sort(compareNodes)
@@ -66,7 +74,7 @@ async function walk(root: string, dir: ActualNode, inherited: IgnoreLayer[], dep
 
   // 只递归真实目录；符号链接一律不进入，避免成环
   for (const c of children) {
-    if (c.kind === 'dir') await walk(root, c, layers, depth - 1)
+    if (c.kind === 'dir') await walk(root, c, layers, depth - 1, maxChildren)
   }
 }
 
@@ -77,12 +85,20 @@ export function compareNodes(a: ActualNode, b: ActualNode): number {
   return a.name.localeCompare(b.name, 'en')
 }
 
-/** 为 subPath 的每一级祖先（含根、含 subPath 自身的父级）建立 ignore 层 */
+/**
+ * 为 subPath 的每一级祖先建立 ignore 层：根目录本身（若 subPath 非空）
+ * 到 subPath 的父级为止。subPath 自身的层由 walk() 首次调用时补上，
+ * 避免和这里重复读取、重复编译。
+ *
+ * subPath === '' 时根本身就是 walk() 的起点，根层完全交给 walk() 读取，
+ * 这里直接返回空数组，省掉一次多余的磁盘读取与 ignore 编译。
+ */
 async function buildAncestorLayers(root: string, subPath: string): Promise<IgnoreLayer[]> {
+  if (subPath === '') return []
+
   const layers: IgnoreLayer[] = []
   const rootLayer = await readLayer(root, '')
   if (rootLayer) layers.push(rootLayer)
-  if (subPath === '') return layers
 
   const parts = subPath.split('/')
   let acc = ''
@@ -95,7 +111,7 @@ async function buildAncestorLayers(root: string, subPath: string): Promise<Ignor
 }
 
 async function readLayer(absDir: string, base: string): Promise<IgnoreLayer | null> {
-  const patterns: string[] = base === '' ? [...ALWAYS_IGNORED] : []
+  const patterns: string[] = []
   for (const file of ['.gitignore', '.ignore']) {
     try {
       patterns.push(await fs.readFile(nodePath.join(absDir, file), 'utf8'))
