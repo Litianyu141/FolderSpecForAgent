@@ -219,3 +219,6 @@ __marimo__/
 
 # SDD 工作区（本地脚手架，不入库）
 .superpowers/
+
+node_modules/
+dist/
