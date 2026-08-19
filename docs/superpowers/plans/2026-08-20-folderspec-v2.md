@@ -2780,6 +2780,9 @@ git commit -m "feat(ui): 中间栏只读文件预览与轻量语法高亮"
 Phase B 的收口。
 
 **Files:**
+- Modify: `packages/core/src/api.ts`（`OpenResult` 与 `EditResult` 增加 `groups: Group[]`）
+- Modify: `packages/core/src/session.ts`（两处返回值带上 `groups`）
+- Test: `packages/core/src/session.test.ts`（追加）
 - Modify: `packages/ui/src/App.tsx`
 - Modify: `packages/ui/src/test-bridge.ts`（新增 `setHandler`）
 - Test: `packages/ui/src/App.test.tsx`（重写受影响的用例并追加新用例）
@@ -2787,7 +2790,67 @@ Phase B 的收口。
 
 **Interfaces:**
 - Consumes: 前面全部组件与纯函数
-- Produces: 三栏 App，`selectedPaths` 驱动右栏形态，内容栏跟随最后点击的文件
+- Produces: `OpenResult`/`EditResult` 带 `groups: Group[]`；三栏 App，`selectedPaths` 驱动右栏形态，内容栏跟随最后点击的文件
+
+- [ ] **Step 0: 先把 `Group[]` 送过桥**
+
+**这一步是控制器在 Task 9 评审后补进计划的，原计划缺了它，缺了 App 就写不出来。**
+
+`ViewNode.groups` 只有 id 字符串，没有 `text` 与 `severity`。但 App 这一层需要完整的 `Group[]`：
+
+- `GroupPanel` 要靠 `matchingGroups(selected, groups)` 判定「选中集是否恰好等于某个既有分组」，并回填名字与注释
+- `AnnotationPanel` 的 `groupsOfNode` 要显示 id **和注释首行**（spec §5.4.2）
+- `onPickGroup(id)` 要把 id 映射回该分组的成员列表
+
+而 `OpenResult` 与 `EditResult` 目前只带 `tree`。所以先补契约。
+
+`packages/core/src/api.ts`：`OpenResult` 与 `EditResult` 各加一行
+
+```ts
+  /** 当前契约里的全部分组。UI 需要完整的 text/severity，ViewNode.groups 只有 id */
+  groups: Group[]
+```
+
+`Group` 已在该文件的类型再导出行里，不用改 import。
+
+`packages/core/src/session.ts`：`open()` 与所有返回 `EditResult` 的地方带上 `groups: structuredClone(this.spec.groups)`。**必须拷贝**——直接把内部数组交出去，宿主或 UI 侧任何一次意外改动都会污染 `Spec`，而那正是要写进用户文件的东西。建议提一个私有 `private groupsSnapshot(): Group[]` 收口，避免五处各写一遍。
+
+追加到 `packages/core/src/session.test.ts`：
+
+```ts
+  it('open 返回当前契约的全部分组', async () => {
+    const s = new Session(root); await s.open()
+    s.setGroup({ id: null, members: ['src/core', 'src/deep'], text: '两个子目录' })
+    const r = await s.open()
+    expect(r.groups).toEqual([])   // open 会重读磁盘，未保存的编辑不该出现
+  })
+
+  it('setGroup 的返回值里带上更新后的分组', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.setGroup({ id: null, members: ['src/core', 'src/deep'], text: '两个子目录' })
+    expect(r.groups).toHaveLength(1)
+    expect(r.groups[0]).toMatchObject({ id: 'src', text: '两个子目录' })
+  })
+
+  it('交出去的是拷贝，改它不会污染 Spec', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.setGroup({ id: null, members: ['src'], text: 't' })
+    r.groups[0].text = '被外部改了'
+    expect(s.raw()).toContain('t')
+    expect(s.raw()).not.toContain('被外部改了')
+  })
+
+  it('annotate 的返回值也带 groups', async () => {
+    const s = new Session(root); await s.open()
+    s.setGroup({ id: null, members: ['src'], text: 't' })
+    const r = s.annotate({ path: 'src', isDir: true, annotation: '注释' })
+    expect(r.groups).toHaveLength(1)
+  })
+```
+
+「交出去的是拷贝」那条要做**单点变异实证**：把 `structuredClone` 去掉、亲眼看它变红、再恢复看绿。
+
+改完这一步先跑 `pnpm -C packages/core test` 与 `pnpm -C packages/core build`（后面的 ui typecheck 依赖 core 的 `dist/*.d.ts`），再进 Step 1。`packages/cli` 与 `packages/vscode` 的测试也要复查——它们构造过 `EditResult` 形状的对象。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -2881,8 +2944,9 @@ Phase B 的收口。
 4. 右栏：`selection.selected.length >= 2` 渲染 `GroupPanel`，否则渲染 `AnnotationPanel`（并传入 `groupsOfNode` 与 `onPickGroup`）。
 5. `onPickGroup(id)`：把 `selection.selected` 设为该分组的成员。
 6. 全部 bridge 调用一律 `try/catch` 并落到错误横幅——包括新增的三个。
-7. `SpecTree` 传 `onGroupClick={onPickGroup}`——spec §5.5 的色点入口与 §5.4.2 的面板入口走同一个处理函数，两条路径落到同一个结果，不要写成两份逻辑。
-8. 两条分隔条各用一个 `useSplitter`：左 `{ initial: 260, min: 160, max: 600, side: 'left' }`，右 `{ initial: 320, min: 220, max: 720, side: 'right' }`。宽度写进对应栏的内联 `style={{ flexBasis: `${width}px` }}`，分隔条 `<div className="fs-splitter" onPointerDown={...} role="separator" aria-orientation="vertical" />`。树栏宽度变化由 `useElementSize` 自动被 `ResizeObserver` 捕获，不需要额外接线。
+7. 新增状态 `groups: Group[]`，与 `tree` 一起由 `open`/各写方法的返回值更新（Step 0 已让它们带上）。`GroupPanel` 的 `groups` prop 传它；`AnnotationPanel` 的 `groupsOfNode` 传 `groups.filter(g => g.members.includes(selectedPath))`——**换掉 Task 9 留下的 `[]` 占位**，那个占位就是等这一步。
+8. `SpecTree` 传 `onGroupClick={onPickGroup}`——spec §5.5 的色点入口与 §5.4.2 的面板入口走同一个处理函数，两条路径落到同一个结果，不要写成两份逻辑。
+9. 两条分隔条各用一个 `useSplitter`：左 `{ initial: 260, min: 160, max: 600, side: 'left' }`，右 `{ initial: 320, min: 220, max: 720, side: 'right' }`。宽度写进对应栏的内联 `style={{ flexBasis: `${width}px` }}`，分隔条 `<div className="fs-splitter" onPointerDown={...} role="separator" aria-orientation="vertical" />`。树栏宽度变化由 `useElementSize` 自动被 `ResizeObserver` 捕获，不需要额外接线。
 
 三个新增处理函数的实现：
 
