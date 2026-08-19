@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { emptySpec, findSpecNode, moveNode, setAnnotation } from './spec-edit.js'
+import { deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, setAnnotation, setGroup } from './spec-edit.js'
 import type { Spec, SpecNode } from './types.js'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
@@ -230,5 +230,150 @@ describe('拖拽声明的空节点行为（Finding 2：边界情况）', () => {
 
     // 结果：整条链都被清掉，因为没有任何实质内容
     expect(s.nodes).toEqual([])
+  })
+})
+
+describe('deriveGroupId', () => {
+  it('取最长公共父目录的 basename', () => {
+    expect(deriveGroupId(['src/parse/a.ts', 'src/parse/b.ts'], new Set())).toBe('parse')
+  })
+
+  it('公共父目录较浅时取较浅的那个', () => {
+    expect(deriveGroupId(['src/parse/a.ts', 'src/ui/b.ts'], new Set())).toBe('src')
+  })
+
+  it('成员都在根下时回退为 group', () => {
+    expect(deriveGroupId(['a.ts', 'b.ts'], new Set())).toBe('group')
+  })
+
+  it('单个成员取其父目录名', () => {
+    expect(deriveGroupId(['src/parse/a.ts'], new Set())).toBe('parse')
+  })
+
+  it('冲突时递增后缀', () => {
+    expect(deriveGroupId(['src/parse/a.ts'], new Set(['parse']))).toBe('parse-2')
+    expect(deriveGroupId(['src/parse/a.ts'], new Set(['parse', 'parse-2']))).toBe('parse-3')
+  })
+
+  it('中文目录名可直接作为 id', () => {
+    expect(deriveGroupId(['文档/设计/a.md', '文档/设计/b.md'], new Set())).toBe('设计')
+  })
+})
+
+describe('setGroup', () => {
+  it('新建分组并自动取名，成员按字典序存储', () => {
+    const r = setGroup(emptySpec(), null, ['src/parse/z.ts', 'src/parse/a.ts'], { text: '解析层' })
+    expect(r.id).toBe('parse')
+    expect(r.spec.groups).toEqual([{ id: 'parse', members: ['src/parse/a.ts', 'src/parse/z.ts'], text: '解析层' }])
+  })
+
+  it('不修改传入的 spec', () => {
+    const before = emptySpec()
+    setGroup(before, null, ['a/b.ts'], { text: 'x' })
+    expect(before.groups).toEqual([])
+  })
+
+  it('按 id 更新既有分组', () => {
+    let s = setGroup(emptySpec(), null, ['src/parse/a.ts'], { text: '旧' }).spec
+    s = setGroup(s, 'parse', ['src/parse/a.ts', 'src/parse/b.ts'], { text: '新' }).spec
+    expect(s.groups).toHaveLength(1)
+    expect(s.groups[0].text).toBe('新')
+    expect(s.groups[0].members).toEqual(['src/parse/a.ts', 'src/parse/b.ts'])
+  })
+
+  it('设置与清除 severity', () => {
+    let s = setGroup(emptySpec(), null, ['a/b.ts'], { text: 't', severity: 'error' }).spec
+    expect(s.groups[0].severity).toBe('error')
+    s = setGroup(s, s.groups[0].id, ['a/b.ts'], { severity: null }).spec
+    expect(s.groups[0].severity).toBeUndefined()
+  })
+
+  it('清空 text 即删除该分组', () => {
+    let s = setGroup(emptySpec(), null, ['a/b.ts'], { text: 't' }).spec
+    s = setGroup(s, s.groups[0].id, ['a/b.ts'], { text: '   ' }).spec
+    expect(s.groups).toEqual([])
+  })
+
+  it('对不存在的分组传空 text 是空操作', () => {
+    const s = setGroup(emptySpec(), null, ['a/b.ts'], { text: '' }).spec
+    expect(s.groups).toEqual([])
+  })
+
+  it('成员去重', () => {
+    const r = setGroup(emptySpec(), null, ['a/b.ts', 'a/b.ts'], { text: 't' })
+    expect(r.spec.groups[0].members).toEqual(['a/b.ts'])
+  })
+})
+
+describe('setGroup 改名', () => {
+  it('patch.name 把既有分组改成用户指定的名字', () => {
+    let s = setAnnotation(emptySpec(), 'src/a.ts', false, { annotation: 'x' })
+    const { spec, id } = setGroup(s, null, ['src/a.ts', 'src/b.ts'], { text: '一体' })
+    expect(id).toBe('src')
+    const r = setGroup(spec, id, ['src/a.ts', 'src/b.ts'], { name: '解析层' })
+    expect(r.id).toBe('解析层')
+    expect(r.spec.groups.map(g => g.id)).toEqual(['解析层'])
+    expect(r.spec.groups[0].text).toBe('一体')
+  })
+
+  it('新建时 name 优先于自动取名', () => {
+    const r = setGroup(emptySpec(), null, ['src/a.ts'], { name: '我起的名', text: 't' })
+    expect(r.id).toBe('我起的名')
+  })
+
+  it('改成已被占用的名字时按同样的规则加后缀', () => {
+    let { spec } = setGroup(emptySpec(), null, ['src/a.ts'], { name: 'core', text: 't1' })
+    const mk = setGroup(spec, null, ['docs/b.md'], { text: 't2' })
+    const r = setGroup(mk.spec, mk.id, ['docs/b.md'], { name: 'core' })
+    expect(r.id).toBe('core-2')
+    expect(r.spec.groups.map(g => g.id).sort()).toEqual(['core', 'core-2'])
+  })
+
+  it('改成自己当前的名字不加后缀', () => {
+    const { spec, id } = setGroup(emptySpec(), null, ['src/a.ts'], { name: 'core', text: 't' })
+    const r = setGroup(spec, id, ['src/a.ts'], { name: 'core' })
+    expect(r.id).toBe('core')
+    expect(r.spec.groups).toHaveLength(1)
+  })
+
+  it('name 为空白串时视为未改名', () => {
+    const { spec, id } = setGroup(emptySpec(), null, ['src/a.ts'], { text: 't' })
+    const r = setGroup(spec, id, ['src/a.ts'], { name: '   ' })
+    expect(r.id).toBe(id)
+  })
+})
+
+describe('deleteGroup', () => {
+  it('按 id 删除', () => {
+    const s = setGroup(emptySpec(), null, ['a/b.ts'], { text: 't' }).spec
+    expect(deleteGroup(s, s.groups[0].id).groups).toEqual([])
+  })
+
+  it('删除不存在的 id 是空操作', () => {
+    const s = setGroup(emptySpec(), null, ['a/b.ts'], { text: 't' }).spec
+    expect(deleteGroup(s, 'nope').groups).toHaveLength(1)
+  })
+})
+
+describe('moveNode 与分组成员', () => {
+  it('移动节点时同步重写分组成员路径', () => {
+    let s = setAnnotation(emptySpec(), 'examples/foo', true, { annotation: 'x' })
+    s = setGroup(s, null, ['examples/foo'], { text: '案例' }).spec
+    s = moveNode(s, 'examples/foo', 'src/cases', true)
+    expect(s.groups[0].members).toEqual(['src/cases/foo'])
+  })
+
+  it('重写子树内部的成员路径', () => {
+    let s = setAnnotation(emptySpec(), 'examples/foo/input.json', false, { annotation: 'x' })
+    s = setGroup(s, null, ['examples/foo/input.json'], { text: '输入' }).spec
+    s = moveNode(s, 'examples/foo', 'src/cases', true)
+    expect(s.groups[0].members).toEqual(['src/cases/foo/input.json'])
+  })
+
+  it('不动与被移动子树无关的成员', () => {
+    let s = setAnnotation(emptySpec(), 'other/keep.ts', false, { annotation: 'x' })
+    s = setGroup(s, null, ['other/keep.ts'], { text: '保持' }).spec
+    s = moveNode(s, 'examples/foo', 'src/cases', true)
+    expect(s.groups[0].members).toEqual(['other/keep.ts'])
   })
 })

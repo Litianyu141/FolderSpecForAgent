@@ -1,4 +1,4 @@
-import type { Severity, Spec, SpecNode } from './types.js'
+import type { Group, Severity, Spec, SpecNode } from './types.js'
 
 export interface AnnotationPatch {
   annotation?: string | null
@@ -66,6 +66,10 @@ export function moveNode(spec: Spec, from: string, toParent: string, isDir: bool
   const existing = list.find(n => n.name === detached.name)
   if (existing) mergeInto(existing, detached)
   else list.push(detached)
+
+  const movedName = fromSegs[fromSegs.length - 1]
+  const movedTo = toSegs.length === 0 ? movedName : `${toSegs.join('/')}/${movedName}`
+  rewriteGroupMembers(next.groups, fromSegs.join('/'), movedTo)
 
   return next
 }
@@ -171,5 +175,96 @@ function pruneAlong(rootList: SpecNode[], segs: string[]): void {
       const idx = parent.indexOf(node)
       if (idx !== -1) parent.splice(idx, 1)
     }
+  }
+}
+
+export interface GroupPatch {
+  /** 用户手填的组名。省略或全为空白＝不改名；改名后 id 随之变化，返回的 id 是最终生效的那个。 */
+  name?: string | null
+  text?: string | null
+  severity?: Severity | null
+}
+
+/** 取所有成员的最长公共父目录的 basename；无公共父目录时回退为 group。冲突时递增后缀。 */
+export function deriveGroupId(members: readonly string[], taken: ReadonlySet<string>): string {
+  return uniqueId(commonParentBasename(members), taken)
+}
+
+/** 冲突时追加 -2、-3。自动取名与用户改名共用这一条规则，两条路径的去重行为必须一致。 */
+function uniqueId(base: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(base)) return base
+  for (let i = 2; ; i++) {
+    const candidate = `${base}-${i}`
+    if (!taken.has(candidate)) return candidate
+  }
+}
+
+function commonParentBasename(members: readonly string[]): string {
+  if (members.length === 0) return 'group'
+  const parents = members.map(m => m.split('/').filter(s => s !== '').slice(0, -1))
+  let common = parents[0]
+  for (const p of parents.slice(1)) {
+    let i = 0
+    while (i < common.length && i < p.length && common[i] === p[i]) i++
+    common = common.slice(0, i)
+  }
+  const last = common[common.length - 1]
+  return last && last !== '..' ? last : 'group'
+}
+
+export function setGroup(
+  spec: Spec,
+  id: string | null,
+  members: readonly string[],
+  patch: GroupPatch,
+): { spec: Spec; id: string } {
+  const next = structuredClone(spec)
+  const sorted = [...new Set(members)].sort((a, b) => a.localeCompare(b, 'en'))
+  const taken = new Set(next.groups.map(g => g.id))
+  const current = id === null ? undefined : next.groups.find(g => g.id === id)
+
+  // 改名时自身的旧 id 不算冲突，否则每改一次名字就多一个 -2 后缀
+  const wanted = patch.name?.trim()
+  const others = new Set(taken)
+  if (current) others.delete(current.id)
+
+  const targetId = wanted ? uniqueId(wanted, others) : (id ?? deriveGroupId(sorted, taken))
+  const existing = current ?? next.groups.find(g => g.id === targetId)
+
+  const text = patch.text === undefined ? existing?.text : (patch.text ?? '').trim()
+
+  // 清空 text 即删除该分组；对尚不存在的分组是空操作
+  if (text === undefined || text === '') {
+    if (existing) next.groups = next.groups.filter(g => g !== existing)
+    return { spec: next, id: targetId }
+  }
+
+  if (existing) {
+    existing.id = targetId
+    existing.members = sorted
+    existing.text = text
+    if (patch.severity !== undefined) {
+      if (patch.severity === null) delete existing.severity
+      else existing.severity = patch.severity
+    }
+  } else {
+    const g: Group = { id: targetId, members: sorted, text }
+    if (patch.severity) g.severity = patch.severity
+    next.groups.push(g)
+  }
+  return { spec: next, id: targetId }
+}
+
+export function deleteGroup(spec: Spec, id: string): Spec {
+  const next = structuredClone(spec)
+  next.groups = next.groups.filter(g => g.id !== id)
+  return next
+}
+
+/** 节点被移动后，指向该子树的分组成员路径必须同步重写，否则分组会悄悄指向不存在的位置。 */
+function rewriteGroupMembers(groups: Group[], from: string, to: string): void {
+  const prefix = `${from}/`
+  for (const g of groups) {
+    g.members = g.members.map(m => (m === from ? to : m.startsWith(prefix) ? to + m.slice(from.length) : m))
   }
 }
