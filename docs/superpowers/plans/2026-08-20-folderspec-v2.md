@@ -1398,13 +1398,18 @@ git commit -m "feat(core): 工作区边界校验、file/read、Session 的分组
 
 **Files:**
 - Create: `packages/ui/src/useElementSize.ts`
+- Create: `packages/ui/src/splitter.ts`
 - Create: `packages/ui/src/layout.css`
 - Modify: `packages/ui/src/styles.css`（**仅新增** token，不改既有规则）
 - Modify: `packages/ui/src/main.tsx`（import layout.css）
 - Test: `packages/ui/src/useElementSize.test.ts`
+- Test: `packages/ui/src/splitter.test.ts`
 
 **Interfaces:**
-- Produces: `function useElementSize<T extends HTMLElement>(fallback: { width: number; height: number }): [React.RefObject<T>, { width: number; height: number }]`
+- Produces:
+  - `function useElementSize<T extends HTMLElement>(fallback: { width: number; height: number }): [React.RefObject<T>, { width: number; height: number }]`
+  - `function nextWidth(startWidth: number, delta: number, side: 'left' | 'right', min: number, max: number): number`
+  - `function useSplitter(opts: { initial: number; min: number; max: number; side: 'left' | 'right' }): { width: number; onPointerDown: (e: React.PointerEvent<HTMLElement>) => void }`
 
 **为什么必须实测而不是算：** 现在的 `App.tsx` 用 `window.innerWidth - PANEL_WIDTH` 和 `innerHeight - headerHeight` 推树的尺寸。已修复的高亮溢出缺陷的成因就在这里——推算值可能超过容器真实宽度。改成实测后，那一类缺陷在构造上不可能再发生。
 
@@ -1538,12 +1543,122 @@ export function useElementSize<T extends HTMLElement>(fallback: Size): [React.Re
 .fs-splitter:hover { background: var(--fs-panel-border); }
 ```
 
-- [ ] **Step 5: 在 `main.tsx` 里 import `./layout.css`，运行测试与 typecheck，提交**
+- [ ] **Step 5: 写分栏拖拽的失败测试**
+
+spec §5.1 明确要求左右两栏**可拖**。`.fs-splitter` 只给了 `cursor: col-resize` 是不够的——没有拖拽逻辑它就只是个装饰。宽度计算提成纯函数单测，指针事件只测一条主路径。
+
+`packages/ui/src/splitter.test.ts`：
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { renderHook, act } from '@testing-library/react'
+import { nextWidth, useSplitter } from './splitter.js'
+
+describe('nextWidth', () => {
+  it('左栏：向右拖变宽', () => {
+    expect(nextWidth(260, 40, 'left', 160, 600)).toBe(300)
+  })
+
+  it('右栏：向右拖变窄', () => {
+    expect(nextWidth(320, 40, 'right', 220, 600)).toBe(280)
+  })
+
+  it('下界夹紧', () => {
+    expect(nextWidth(260, -500, 'left', 160, 600)).toBe(160)
+  })
+
+  it('上界夹紧', () => {
+    expect(nextWidth(260, 5000, 'left', 160, 600)).toBe(600)
+  })
+
+  it('零位移原地不动', () => {
+    expect(nextWidth(260, 0, 'left', 160, 600)).toBe(260)
+  })
+})
+
+describe('useSplitter', () => {
+  it('按下并移动指针后宽度跟随，抬起后停止跟随', () => {
+    const { result } = renderHook(() => useSplitter({ initial: 260, min: 160, max: 600, side: 'left' }))
+    expect(result.current.width).toBe(260)
+
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+
+    act(() => {
+      result.current.onPointerDown({
+        clientX: 100, pointerId: 1, currentTarget: el, preventDefault: () => {},
+      } as unknown as React.PointerEvent<HTMLElement>)
+    })
+
+    // jsdom 没有 PointerEvent 构造器，但 addEventListener 按事件名匹配，
+    // 用 MouseEvent 发一个名为 pointermove 的事件即可命中监听器。
+    act(() => { el.dispatchEvent(new MouseEvent('pointermove', { clientX: 150 })) })
+    expect(result.current.width).toBe(310)
+
+    act(() => { el.dispatchEvent(new MouseEvent('pointerup', {})) })
+    act(() => { el.dispatchEvent(new MouseEvent('pointermove', { clientX: 400 })) })
+    expect(result.current.width).toBe(310)
+  })
+})
+```
+
+- [ ] **Step 6: 实现 `splitter.ts`**
+
+```ts
+import { useCallback, useState } from 'react'
+
+export function nextWidth(
+  startWidth: number, delta: number, side: 'left' | 'right', min: number, max: number,
+): number {
+  const raw = side === 'left' ? startWidth + delta : startWidth - delta
+  return Math.min(max, Math.max(min, raw))
+}
+
+export interface SplitterOptions {
+  initial: number
+  min: number
+  max: number
+  /** 分隔条在被调节的那一栏的哪一侧：'left' 表示这一栏在分隔条左边（右拖变宽） */
+  side: 'left' | 'right'
+}
+
+export function useSplitter({ initial, min, max, side }: SplitterOptions) {
+  const [width, setWidth] = useState(initial)
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = width
+    const el = e.currentTarget
+    // jsdom 没有 setPointerCapture；可选链让测试环境不必打桩
+    el.setPointerCapture?.(e.pointerId)
+
+    const move = (ev: Event) => {
+      setWidth(nextWidth(startWidth, (ev as MouseEvent).clientX - startX, side, min, max))
+    }
+    const up = () => {
+      el.releasePointerCapture?.(e.pointerId)
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointercancel', up)
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
+  }, [width, min, max, side])
+
+  return { width, onPointerDown }
+}
+```
+
+宽度存在 hook 里而不是 App 里，是因为它是纯粹的界面状态：不进 `Spec`、不落盘、刷新即回到默认值。与 `hidden` 集合同一类东西。
+
+- [ ] **Step 7: 在 `main.tsx` 里 import `./layout.css`，运行测试与 typecheck，提交**
 
 ```bash
 pnpm -C packages/ui test && pnpm -C packages/core build && pnpm -C packages/ui typecheck
-git add packages/ui/src/useElementSize.ts packages/ui/src/useElementSize.test.ts packages/ui/src/layout.css packages/ui/src/styles.css packages/ui/src/main.tsx
-git commit -m "feat(ui): 三栏骨架、容器实测 hook 与表面色 token"
+git add packages/ui/src/useElementSize.ts packages/ui/src/useElementSize.test.ts packages/ui/src/splitter.ts packages/ui/src/splitter.test.ts packages/ui/src/layout.css packages/ui/src/styles.css packages/ui/src/main.tsx
+git commit -m "feat(ui): 三栏骨架、容器实测 hook、分栏拖拽与表面色 token"
 ```
 
 ---
@@ -1553,6 +1668,7 @@ git commit -m "feat(ui): 三栏骨架、容器实测 hook 与表面色 token"
 **Files:**
 - Create: `packages/ui/src/FileIcon.tsx`
 - Modify: `packages/ui/src/NodeRow.tsx`
+- Modify: `packages/ui/src/Tree.tsx`（`indent`/`rowHeight` 改值、透传 `onGroupClick`）
 - Modify: `packages/ui/src/layout.css`
 - Test: `packages/ui/src/FileIcon.test.tsx`
 - Test: `packages/ui/src/NodeRow.test.tsx`（追加）
@@ -1561,7 +1677,10 @@ git commit -m "feat(ui): 三栏骨架、容器实测 hook 与表面色 token"
 - Produces:
   - `function iconKindFor(name: string, isDir: boolean, isOpen: boolean): IconKind`
   - `function FileIcon(props: { kind: IconKind }): JSX.Element`
-  - `NodeRow` 渲染图标、缩进引导线、分组色点
+  - `NodeRow` 渲染图标、缩进引导线、可点击的分组色点；新增可选 prop `onGroupClick?: (id: string) => void`
+  - `SpecTree` 新增可选 prop `onGroupClick?: (id: string) => void`，`indent` 改 8、`rowHeight` 改 22
+
+**spec §5.2 的行高与缩进是 CSS 与 react-arborist 两处必须同时改的值。** `rowHeight` 决定虚拟化为每行预留的像素；只改 CSS 的 `.fs-row { height }` 会让行与预留槽位错位、行间露出缝隙。所以 `.fs-row` **不设固定 height**（沿用 `styles.css` 里的 `height: 100%` 填满槽位），22px 由 `rowHeight={22}` 决定。`indent` 同理改成 8，与缩进引导线的每级宽度保持一致。
 
 **一条必须写进 README 的平台限制：** VSCode 不把用户当前生效的 file icon theme 暴露给 webview，所以本扩展只能自带图标，与用户原生资源管理器里看到的**可能不一致**。这不是实现瑕疵。
 
@@ -1636,7 +1755,28 @@ describe('FileIcon', () => {
     const { container } = renderRow(make())
     expect(container.querySelectorAll('.fs-group-dot')).toHaveLength(0)
   })
+
+  it('点击色点上报该分组 id，且不触发整行的展开', () => {
+    const onGroupClick = vi.fn()
+    const toggle = vi.fn()
+    const { container } = renderRow(make({ groups: ['g1'] }), { onGroupClick, toggle })
+    fireEvent.click(container.querySelector('.fs-group-dot')!)
+    expect(onGroupClick).toHaveBeenCalledWith('g1')
+    expect(toggle).not.toHaveBeenCalled()
+  })
+
+  it('缩进引导线的条数等于层级', () => {
+    const { container } = renderRow(make(), { level: 3 })
+    expect(container.querySelectorAll('.fs-indent-guide')).toHaveLength(3)
+  })
+
+  it('根层级没有引导线', () => {
+    const { container } = renderRow(make(), { level: 0 })
+    expect(container.querySelectorAll('.fs-indent-guide')).toHaveLength(0)
+  })
 ```
+
+`renderRow` 是 `NodeRow.test.tsx` 里已有的辅助函数，它构造一个假的 `NodeRendererProps`。**本任务需要给它加三个可选入参**：`level`（默认 0，写进假 node 的 `level`）、`toggle`（默认 `vi.fn()`，写进假 node 的 `toggle`）、`onGroupClick`（默认 `undefined`，作为额外 prop 传给 `NodeRow`）。改造时不要动它已有的默认行为，否则既有用例会连带失败。文件顶部的 import 需要补 `fireEvent`（现在只 import 了 `render`、`screen`）。
 
 - [ ] **Step 2: 运行确认失败，然后实现 `FileIcon.tsx`**
 
@@ -1712,7 +1852,33 @@ export function FileIcon({ kind }: { kind: IconKind }) {
 
 在既有结构基础上：图标插在折叠箭头之后、名称之前；分组色点插在注释之前；整行不再依赖外部宽度。
 
+签名改为 `NodeRow(props: NodeRendererProps<ViewNode> & { onGroupClick?: (id: string) => void })`。
+
+**缩进引导线必须自己画，不能靠 react-arborist 的 `paddingLeft`。** 它给节点渲染器的 `style` 里只有 `paddingLeft: level * indent`，那是一段空白，画不出竖线。所以把 `paddingLeft` 从 `style` 里摘掉，改成按层级渲染等宽的引导线元素——层级关系一目了然，条数还能直接单测。
+
 ```tsx
+export function NodeRow(
+  { node, style, dragHandle, onGroupClick }: NodeRendererProps<ViewNode> & { onGroupClick?: (id: string) => void },
+) {
+  const d = node.data
+  const color = nodeColorVar(d)
+  const annotated = isAnnotated(d)
+  // paddingLeft 是 react-arborist 表达层级的方式；这里换成可见的引导线，所以要摘掉它
+  const { paddingLeft: _drop, ...rest } = (style ?? {}) as { paddingLeft?: unknown }
+
+  return (
+    <div
+      ref={dragHandle}
+      style={rest as React.CSSProperties}
+      className="fs-row"
+      data-selected={node.isSelected}
+      data-origin={d.origin}
+      data-annotated={annotated}
+      onClick={() => { if (d.isDir) node.toggle() }}
+    >
+      {Array.from({ length: node.level }, (_, i) => (
+        <span key={i} className="fs-indent-guide" aria-hidden="true" />
+      ))}
       <span className="fs-caret" aria-hidden="true">
         {d.isDir ? (node.isOpen ? '▾' : '▸') : ''}
       </span>
@@ -1721,32 +1887,63 @@ export function FileIcon({ kind }: { kind: IconKind }) {
       <span className="fs-name" style={color ? { color } : undefined}>
         {d.name}{d.isDir ? '/' : ''}
       </span>
+      {d.truncated ? <span title={`子项过多，已截断显示`}>⋯</span> : null}
+      {d.unreadable ? <span title={`无法读取该目录（通常是权限不足）`}>🚫</span> : null}
+      {d.annotation ? <span className="fs-annotation">{d.annotation}</span> : null}
       {(d.groups ?? []).map(g => (
-        <span key={g} className="fs-group-dot" title={`属于分组 ${g}`} aria-hidden="true" />
+        <button
+          key={g} type="button" className="fs-group-dot"
+          title={`属于分组 ${g}`} aria-label={`选中分组 ${g} 的全部成员`}
+          onClick={e => { e.stopPropagation(); onGroupClick?.(g) }}
+        />
       ))}
+    </div>
+  )
+}
 ```
+
+**`e.stopPropagation()` 不能省**：整行的 `onClick` 会展开目录，色点落在行内，不拦住就会「点色点顺带把目录展开/收起」。spec §5.5 要求色点可点击并选中该分组全部成员，这是它唯一的入口。
 
 - [ ] **Step 4: 追加样式到 `layout.css`**
 
 ```css
-.fs-row { height: 22px; font-size: 13px; gap: 4px; }
+/* 行高由 Tree 的 rowHeight={22} 决定；这里不设 height，避免与虚拟化预留的槽位错位 */
+.fs-row { font-size: 13px; gap: 4px; }
 .fs-row:hover { background: var(--fs-row-hover-bg); }
 .fs-caret { display: inline-flex; justify-content: center; width: 16px; flex-shrink: 0; }
 .fs-icon { display: inline-flex; align-items: center; width: 16px; flex-shrink: 0; opacity: .85; }
-.fs-group-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--fs-group-dot); flex-shrink: 0; margin-left: 2px;
+/* 每级一根竖线，宽度必须与 Tree 的 indent={8} 一致 */
+.fs-indent-guide {
+  flex: 0 0 8px; align-self: stretch;
+  border-left: 1px solid var(--fs-indent-guide);
 }
-/* 缩进引导线：react-arborist 用 padding-left 表达层级，这里用重复的线性渐变画竖线 */
-.fs-tree-indent-guides .fs-row { position: relative; }
+.fs-group-dot {
+  width: 6px; height: 6px; border-radius: 50%; padding: 0; border: none;
+  background: var(--fs-group-dot); flex-shrink: 0; margin-left: 2px; cursor: pointer;
+}
 ```
+
+- [ ] **Step 4b: 改 `Tree.tsx` 的两个数值并透传 `onGroupClick`**
+
+`TreeProps` 追加 `onGroupClick?: (id: string) => void`，`indent={16}` 改 `indent={8}`，`rowHeight={24}` 改 `rowHeight={22}`，并把子节点渲染器换成携带回调的包装：
+
+```tsx
+  const renderNode = useCallback(
+    (p: NodeRendererProps<ViewNode>) => <NodeRow {...p} onGroupClick={onGroupClick} />,
+    [onGroupClick],
+  )
+```
+
+把 `{NodeRow}` 换成 `{renderNode}`。**`useCallback` 不能省**：react-arborist 以子渲染器的引用作为身份，每次渲染换一个新函数会让整棵树重挂载，选中态与展开态全部丢失。
+
+**本步不加 `Tree.test.tsx` 用例。** 那个文件从建立起就只测抽出来的纯函数（`makeMoveHandler` / `matchesSearch` / `makeDisableDrop`），从不渲染虚拟列表——沿用这条既有约定。透传本身在两处已被覆盖：色点点击由 `NodeRow.test.tsx` 验证，端到端由 Task 11 的 App 测试验证（App 测试里树是真渲染出行的）。
 
 - [ ] **Step 5: 运行测试、typecheck，提交**
 
 ```bash
 pnpm -C packages/ui test
-git add packages/ui/src/FileIcon.tsx packages/ui/src/FileIcon.test.tsx packages/ui/src/NodeRow.tsx packages/ui/src/NodeRow.test.tsx packages/ui/src/layout.css
-git commit -m "feat(ui): 文件类型图标与树行重构（图标、分组色点、22px 行高）"
+git add packages/ui/src/FileIcon.tsx packages/ui/src/FileIcon.test.tsx packages/ui/src/NodeRow.tsx packages/ui/src/NodeRow.test.tsx packages/ui/src/Tree.tsx packages/ui/src/layout.css
+git commit -m "feat(ui): 文件类型图标与树行重构（图标、缩进引导线、可点击分组色点、22px 行高）"
 ```
 
 ---
@@ -2572,7 +2769,9 @@ Phase B 的收口。
 
 **Files:**
 - Modify: `packages/ui/src/App.tsx`
+- Modify: `packages/ui/src/test-bridge.ts`（新增 `setHandler`）
 - Test: `packages/ui/src/App.test.tsx`（重写受影响的用例并追加新用例）
+- Test: `packages/ui/src/test-bridge.test.ts`（追加 `setHandler` 用例）
 
 **Interfaces:**
 - Consumes: 前面全部组件与纯函数
@@ -2626,6 +2825,28 @@ Phase B 的收口。
     }))
   })
 
+  it('点击行尾的分组色点，选中该分组的全部成员并进入分组面板', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    const dot = container.querySelector('.fs-group-dot')
+    expect(dot, '固定树夹具里至少要有一个节点带 groups').toBeTruthy()
+    fireEvent.click(dot!)
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+  })
+
+  it('拖动左侧分隔条改变树栏宽度', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    const pane = container.querySelector('.fs-pane-tree') as HTMLElement
+    const before = pane.style.flexBasis
+    const splitter = container.querySelectorAll('.fs-splitter')[0] as HTMLElement
+    fireEvent.pointerDown(splitter, { clientX: 260, pointerId: 1 })
+    fireEvent(splitter, new MouseEvent('pointermove', { clientX: 320 }))
+    fireEvent(splitter, new MouseEvent('pointerup', {}))
+    expect(pane.style.flexBasis).not.toBe(before)
+  })
+
   it('file/read 失败时显示错误横幅', async () => {
     const bridge = bridgeWith()
     bridge.setHandler('file/read', () => { throw new Error('读取炸了') })
@@ -2648,6 +2869,8 @@ Phase B 的收口。
 4. 右栏：`selection.selected.length >= 2` 渲染 `GroupPanel`，否则渲染 `AnnotationPanel`（并传入 `groupsOfNode` 与 `onPickGroup`）。
 5. `onPickGroup(id)`：把 `selection.selected` 设为该分组的成员。
 6. 全部 bridge 调用一律 `try/catch` 并落到错误横幅——包括新增的三个。
+7. `SpecTree` 传 `onGroupClick={onPickGroup}`——spec §5.5 的色点入口与 §5.4.2 的面板入口走同一个处理函数，两条路径落到同一个结果，不要写成两份逻辑。
+8. 两条分隔条各用一个 `useSplitter`：左 `{ initial: 260, min: 160, max: 600, side: 'left' }`，右 `{ initial: 320, min: 220, max: 720, side: 'right' }`。宽度写进对应栏的内联 `style={{ flexBasis: `${width}px` }}`，分隔条 `<div className="fs-splitter" onPointerDown={...} role="separator" aria-orientation="vertical" />`。树栏宽度变化由 `useElementSize` 自动被 `ResizeObserver` 捕获，不需要额外接线。
 
 三个新增处理函数的实现：
 
@@ -2707,6 +2930,8 @@ pnpm -C packages/ui build
 git add packages/ui/src/App.tsx packages/ui/src/App.test.tsx packages/ui/src/test-bridge.ts packages/ui/src/test-bridge.test.ts
 git commit -m "feat(ui): 三栏 App 组装，多选驱动分组面板，内容栏联动"
 ```
+
+**App 测试的固定树夹具需要带 `groups`。** 上面的色点用例要求夹具里存在一个 `groups: ['g1']` 且成员为两个节点的场景——改 `bridgeWith` 的 `tree(...)` 夹具时，让两个节点都带 `groups: ['g1']`，这样点击色点后选中集为 2、右栏切到分组面板。
 
 **Phase B 完成。**
 
