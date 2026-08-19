@@ -127,6 +127,8 @@ export interface ViewNode {
   role?: string
   template?: string
   severity?: Severity
+  /** 该节点所属的分组 id（由 merge 从 Spec.groups 反查，不落盘） */
+  groups?: string[]
   children?: ViewNode[]
   truncated?: boolean
   unreadable?: boolean

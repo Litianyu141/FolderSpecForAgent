@@ -11,7 +11,7 @@ const sdir = (name: string, children: SpecNode[] = [], extra: Partial<SpecNode> 
 
 const spec = (nodes: SpecNode[]): Spec => ({
   version: 1, root: '.', ownership: 'human', title: '', preamble: [],
-  nodes, templates: [], rules: [],
+  nodes, templates: [], rules: [], groups: [],
 })
 
 const find = (n: ViewNode, path: string): ViewNode => {
@@ -114,5 +114,67 @@ describe('merge', () => {
     expect(v.path).toBe('')
     expect(v.name).toBe('myrepo')
     expect(v.origin).toBe('both')
+  })
+})
+
+const specG = (nodes: SpecNode[], groups: Spec['groups']): Spec => ({
+  version: 1, root: '.', ownership: 'human', title: '', preamble: [],
+  nodes, templates: [], rules: [], groups,
+})
+
+describe('merge 的分组派生', () => {
+  it('磁盘上存在的成员会带上 groups', () => {
+    const actual = dir('r', '', [file('a.ts', 'a.ts'), file('b.ts', 'b.ts')])
+    const v = merge(actual, NO_GIT, specG([], [
+      { id: 'g1', members: ['a.ts'], text: 't' },
+    ]))
+    expect(find(v, 'a.ts').groups).toEqual(['g1'])
+    expect(find(v, 'b.ts').groups).toBeUndefined()
+  })
+
+  it('一个节点可属于多个分组，顺序与文件中一致', () => {
+    const actual = dir('r', '', [file('a.ts', 'a.ts')])
+    const v = merge(actual, NO_GIT, specG([], [
+      { id: 'g1', members: ['a.ts'], text: 't1' },
+      { id: 'g2', members: ['a.ts'], text: 't2' },
+    ]))
+    expect(find(v, 'a.ts').groups).toEqual(['g1', 'g2'])
+  })
+
+  it('成员在磁盘上不存在时仍作为 spec-only 节点出现并带 groups', () => {
+    const actual = dir('r', '', [])
+    const v = merge(actual, NO_GIT, specG(
+      [sdir('docs', [{ name: 'plan.md', isDir: false, children: [] }])],
+      [{ id: 'g1', members: ['docs/plan.md'], text: 't' }],
+    ))
+    expect(find(v, 'docs/plan.md').origin).toBe('spec-only')
+    expect(find(v, 'docs/plan.md').groups).toEqual(['g1'])
+  })
+
+  it('分组成员指向根节点时不会崩', () => {
+    const v = merge(dir('r', '', []), NO_GIT, specG([], [
+      { id: 'g1', members: [''], text: 't' },
+    ]))
+    expect(v.groups).toEqual(['g1'])
+  })
+
+  it('merge 仍然不修改入参', () => {
+    const groups = [{ id: 'g1', members: ['a.ts'], text: 't' }]
+    const s = specG([], groups)
+    merge(dir('r', '', [file('a.ts', 'a.ts')]), NO_GIT, s)
+    expect(s.groups).toBe(groups)
+    expect(groups[0].members).toEqual(['a.ts'])
+  })
+
+  it('不同节点的 groups 数组互不共享引用，改一处不会串到另一处', () => {
+    const actual = dir('r', '', [file('a.ts', 'a.ts'), file('b.ts', 'b.ts')])
+    const v = merge(actual, NO_GIT, specG([], [
+      { id: 'g1', members: ['a.ts'], text: 't1' },
+      { id: 'g2', members: ['b.ts'], text: 't2' },
+    ]))
+    const a = find(v, 'a.ts')
+    const b = find(v, 'b.ts')
+    a.groups!.push('intruder')
+    expect(b.groups).toEqual(['g2'])
   })
 })
