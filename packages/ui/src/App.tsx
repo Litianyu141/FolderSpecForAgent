@@ -22,6 +22,27 @@ export interface AppProps {
 
 const EMPTY_SELECTION: SelectionState = { selected: [], anchor: null }
 
+/**
+ * 正在雕琢的这一组：成员集、锚点，以及它绑定到哪个既有分组（null = 还没落地成分组）。
+ *
+ * 它是**显示与写入共用的同一个真源**。曾经它只管写入、面板显示读 selection.selected，
+ * 而 selection 要等响应落地才更新——在途那 20–60ms 里两者发散：面板上列着三项，发出去的
+ * members 只有两项。用户看着三项按下提交，契约里落了两项。方向是"写得比面板少"，
+ * 没把他想留的写丢，但"所见即所写"这条可审计性没了。现在两边读同一份。
+ */
+interface PendingGroup {
+  /**
+   * 编辑会话号。每次"重新决定编辑目标"就换一个新号。
+   * 在途的写入靠它认出"我依据的前提还在不在"——光判 pending 是否为 null 不够：
+   * 用户换了目标、又开始编辑另一个分组时 pending 不为 null，旧写入落地照样会把它那一份
+   * 提交到新目标上。
+   */
+  session: number
+  members: string[]
+  anchor: string | null
+  groupId: string | null
+}
+
 export function App({ bridge, initialRoot }: AppProps) {
   const [root, setRoot] = useState(initialRoot)
   const [tree, setTree] = useState<ViewNode | null>(null)
@@ -41,19 +62,21 @@ export function App({ bridge, initialRoot }: AppProps) {
   const treeApiRef = useRef<TreeApi<ViewNode> | undefined>(undefined)
 
   /**
-   * 当前正在雕琢的这一组：成员集，以及它绑定到哪个既有分组（null = 还没落地成分组）。
-   * 分组的每一次写入都以它为准，而不是各自去读渲染时的 selection / groups 快照。
+   * PendingGroup 的两副本：
+   * - `pendingRef` 是**同步**真源。串行链里 await 之后必须读到最新值，React 状态那时还没提交。
+   * - `pending` 是**渲染**真源。面板必须显示与写入完全同一份成员集。
    *
-   * 三件事逼出了这个 ref，它们其实是同一个机制的三面：
+   * 两者只能经 `setPending` 一起改，别单独动其中一个。
    *
-   * 1. 收缩是"发请求 + 改选中集"两步。中间那一帧若让 GroupPanel 看到"成员少了、groups
-   *    还没更新"，matchingGroups 会失配、current 变 null，它按成员键重置的 effect 就把
-   *    用户的分组名与注释清成空串；等响应回来 current 虽恢复，成员键却不再变化、effect
-   *    不再重跑，字段停在空。那个空串随下一次提交写回，而 core 把"text 为空"当成删除该
-   *    分组——用户写的注释就此消失，正踩在本项目唯一那条红线上。所以选中集要等响应落地、
-   *    与 groups 同批更新。
-   * 2. 既然选中集要等，连续两次点击就不能各自从渲染快照出发，否则第二次会把第一次移掉的
-   *    成员又加回去。**新建态同样如此**，所以这里无论有没有绑定分组都要记。
+   * 这份状态存在的三个理由，其实是同一个机制的三面：
+   *
+   * 1. 移除成员是乐观更新：成员立刻从面板上消失，请求随后排队发出。GroupPanel 在那一帧里
+   *    会看到"成员少了、groups 还没更新"，matchingGroups 必然失配——所以编辑目标由这里
+   *    给定（`currentGroupId`），不让面板自己去猜。猜错的后果是它按成员键重置的 effect 把
+   *    用户的分组名与注释清成空串，那个空串一提交，core 的「清空 text 即删除」就把分组连同
+   *    注释一起抹掉，正踩在本项目唯一那条红线上。
+   * 2. 连续两次移除不能各自从渲染快照出发，否则第二次会把第一次移掉的成员又加回去。
+   *    **新建态同样如此**，所以无论有没有绑定分组都要记。
    * 3. 改名会让 core 把分组 rename 成新 id。缓存的旧 id 从此指向一个不存在的分组，而
    *    core 在 id 找不到时走的是「清空 text 即删除」的早退分支——对不存在的分组是空操作，
    *    **照样返回成功**。界面收缩了，契约纹丝不动，且没有任何提示。所以每次写成功后都要
@@ -61,8 +84,15 @@ export function App({ bridge, initialRoot }: AppProps) {
    *
    * 任何"重新决定编辑目标"的路径（选行、点分组入口、换工作区）都要把它清空。
    */
-  const pendingRef = useRef<{ members: string[]; groupId: string | null } | null>(null)
+  const [pending, setPendingState] = useState<PendingGroup | null>(null)
+  const pendingRef = useRef<PendingGroup | null>(null)
+  const sessionRef = useRef(0)
   const chainRef = useRef<Promise<void>>(Promise.resolve())
+
+  const setPending = useCallback((next: PendingGroup | null) => {
+    pendingRef.current = next
+    setPendingState(next)
+  }, [])
 
   // 读文件请求的序号。宿主对每条消息各起一个异步任务、彼此不排队（cli/src/server.ts），
   // 于是先发的大文件可以晚于后发的小文件到达。没有这道闸门，晚到的旧响应会盖掉新内容，
@@ -106,7 +136,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setGroups(r.groups)
       setParseErrors(r.parseErrors)
       setSelection(EMPTY_SELECTION)
-      pendingRef.current = null
+      setPending(null)
       // 与切到目录时同理：在途的 file/read 必须作废，否则它晚到时会往一个已经不存在的
       // 上下文里写——成功路径看不出来，失败路径会在新工作区里弹出旧工作区的错误横幅
       contentReqRef.current += 1
@@ -118,7 +148,7 @@ export function App({ bridge, initialRoot }: AppProps) {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [bridge])
+  }, [bridge, setPending])
 
   useEffect(() => { void openRoot(initialRoot) }, [openRoot, initialRoot])
 
@@ -178,8 +208,14 @@ export function App({ bridge, initialRoot }: AppProps) {
     // 外面复算已经错过两次，每次都把屏幕上没有的路径塞进选中集——而选中集会经
     // spec/setGroup 写进用户的 .folderspec.md（spec §5.3 的"所见即所选"）。
     const order = treeApiRef.current?.visibleNodes.map(n => n.id) ?? []
-    setSelection(prev => applyClick(prev, path, order, mods))
-    pendingRef.current = null
+    // 扩选是在**面板上此刻那一份**的基础上扩，不是在尚未落地的 selection 上扩，
+    // 否则收缩在途时 ctrl 加选会把刚被移除的成员一起带回来。
+    // base 必须在 setPending(null) 之前取：setSelection 的更新函数要等到渲染时才跑，
+    // 那时 pendingRef 早就被清空了。
+    const p = pendingRef.current
+    const base = p === null ? null : { selected: p.members, anchor: p.anchor }
+    setPending(null)
+    setSelection(prev => applyClick(base ?? prev, path, order, mods))
 
     const node = flatten(tree.children ?? []).get(path)
     if (!node) return
@@ -199,10 +235,19 @@ export function App({ bridge, initialRoot }: AppProps) {
     } else {
       void loadContent(path)
     }
-  }, [tree, loadContent])
+  }, [tree, loadContent, setPending])
+
+  /**
+   * 界面上此刻显示的这一份选中集：有在途的乐观改动就是它，否则是上一次落地的那份。
+   * 树的高亮、右栏的形态、分组面板的成员列表、扩选的基准——全都读这一个值，
+   * 界面上不该存在第二种"选中了什么"的说法。
+   */
+  const shown: SelectionState = pending === null
+    ? selection
+    : { selected: pending.members, anchor: pending.anchor }
 
   // 面板一次只编辑一个节点的注释；多选时走的是分组那条写路径（spec/setGroup）。
-  const selectedPath = selection.selected.length === 1 ? selection.selected[0] : null
+  const selectedPath = shown.selected.length === 1 ? shown.selected[0] : null
 
   const handlePatch = useCallback(async (patch: PanelPatch) => {
     if (selectedPath === null || tree === null) return
@@ -232,48 +277,63 @@ export function App({ bridge, initialRoot }: AppProps) {
     }
   }, [bridge])
 
-  /** 取当前正在雕琢的这一组；还没有就按此刻的选中集与分组建立一份 */
+  /** 取当前正在雕琢的这一组；还没有就按此刻的选中集与分组开一轮新的编辑会话 */
   const takePending = useCallback(() => {
-    if (pendingRef.current === null) {
-      pendingRef.current = {
-        members: selection.selected,
-        groupId: matchingGroups(selection.selected, groups)[0]?.id ?? null,
-      }
+    const cur = pendingRef.current
+    if (cur !== null) return cur
+    const next: PendingGroup = {
+      session: ++sessionRef.current,
+      members: selection.selected,
+      anchor: selection.anchor,
+      groupId: matchingGroups(selection.selected, groups)[0]?.id ?? null,
     }
-    return pendingRef.current
-  }, [selection.selected, groups])
+    setPending(next)
+    return next
+  }, [selection.selected, selection.anchor, groups, setPending])
 
   /**
    * 分组的所有写入走同一条串行链。串行不只是为了落地顺序：两次写并发时，后发的那次
    * 带的是基于旧状态算出的成员集，先失败的那次又只能事后补救。排队之后每一步都能看到
-   * 前一步的结果，失败也能靠代次号把后面整段作废。
+   * 前一步的结果。
+   *
+   * 每一步过两道闸，判据都是"我依据的那轮编辑会话还在不在"：
+   * - 开头一道，作废前一步失败之后排队的整段；
+   * - **await 之后再一道**。宿主往返要 20–60ms，那期间用户的点击完全插得进来（已用真实
+   *   core 探针实测）。少了这一道，落地回调会把用户在途做出的改选无声盖掉：右栏自己跳回
+   *   分组面板、编辑目标被换回上一个分组，随后写的注释就落在错的分组上并覆盖它原有的注释。
    */
   const runGroupWrite = useCallback((
-    build: (p: { members: string[]; groupId: string | null }) => SetGroupParams | null,
+    build: (p: PendingGroup) => SetGroupParams | null,
     after?: () => void,
   ) => {
+    const session = pendingRef.current?.session ?? -1
     chainRef.current = chainRef.current.then(async () => {
-      // 排在链条后面的每一步都在这里过闸：pending 被置空就说明它依据的前提没了
-      // （前一步写失败，或用户已经改选了别的东西），整步作废。
-      // 排队的步骤都在相邻的微任务里依次跑完，用户点击插不进来，所以这一道就够了。
       const p = pendingRef.current
-      if (p === null) return
+      if (p === null || p.session !== session) return
       const params = build(p)
       if (params !== null) {
         const id = await sendSetGroup(params)
+        const now = pendingRef.current
+        if (now === null || now.session !== session) return
         if (id === null) {
-          // 写失败：置空 pending，排在后面的步骤会在上面那道闸口一起作废，
-          // 下一次点击重新建立编辑目标。不动选中集——报了失败，界面就得继续与契约一致。
-          pendingRef.current = null
+          // 写失败：丢掉乐观覆盖层，显示退回上一次落地的那份（用户会看到被移除的成员
+          // 回到列表上），排在后面的步骤则在开头那道闸口一起作废。
+          setPending(null)
           return
         }
         // core 可能把分组改了名，缓存的 id 必须跟着走，否则下一次写会打在一个
         // 不存在的分组上——那是一次静默的空操作，不会报错
-        if (pendingRef.current !== null) pendingRef.current.groupId = id
+        setPending({ ...now, groupId: id })
       }
       after?.()
+    }).catch(e => {
+      // build/after 今天都抛不出来，但两条写路径已经合流到这一条链上：一旦日后有人往
+      // 回调里放进会抛的代码，未捕获的 rejection 会让 chainRef 永久停在 rejected，
+      // 此后**所有**分组写入都静默消失，还会留下 unhandled rejection。这里兜住，
+      // 链条继续可用。（这一句目前没有用例能判到，是明知故留的防御，别按"没测到就删"处理。）
+      setError(e instanceof Error ? e.message : String(e))
     })
-  }, [sendSetGroup])
+  }, [sendSetGroup, setPending])
 
   const handleGroupSubmit = useCallback((sub: GroupSubmit) => {
     takePending()
@@ -297,28 +357,29 @@ export function App({ bridge, initialRoot }: AppProps) {
   const handlePickGroup = useCallback((id: string) => {
     const g = groupsRef.current.find(x => x.id === id)
     if (!g) return
-    pendingRef.current = null
+    setPending(null)
     setSelection({ selected: [...g.members], anchor: g.members[g.members.length - 1] ?? null })
-  }, [])
+  }, [setPending])
 
   const handleRemoveMember = useCallback((path: string) => {
     const p = takePending()
     if (!p.members.includes(path)) return
     const rest = p.members.filter(x => x !== path)
-    pendingRef.current = { members: rest, groupId: p.groupId }
-    const anchorGone = selection.anchor === path
+    // 锚点被移掉了就作废，别让后续 Shift 从一个已经不在选中集里的位置起算
+    const anchor = p.anchor === path ? null : p.anchor
+    // 乐观更新：成员立刻从面板上消失。写入随后排队发出，读的是同一份 pending——
+    // "写进契约的成员集 == 提交那一刻面板上显示的那一份"由此成立，而不是靠两处各自维护。
+    setPending({ ...p, members: rest, anchor })
 
     runGroupWrite(
       // 绑定到既有分组才需要写；新建态只是在调整选中集，还没有分组可写。
       // 省略 name/text/severity：core 把 undefined 当"不变"，这里只动成员。
       cur => cur.groupId === null ? null : { id: cur.groupId, members: rest },
-      () => setSelection(prev => ({
-        selected: rest,
-        // 锚点被移掉了就作废，别让后续 Shift 从一个已经不在选中集里的位置起算
-        anchor: anchorGone ? null : prev.anchor,
-      })),
+      // 落地了才把这一份提交进 selection —— selection 是"上一次落地的那份"，
+      // 也就是写失败时显示要退回去的地方
+      () => setSelection({ selected: rest, anchor }),
     )
-  }, [takePending, runGroupWrite, selection.anchor])
+  }, [takePending, runGroupWrite, setPending])
 
   const handleSave = useCallback(async () => {
     try {
@@ -374,7 +435,7 @@ export function App({ bridge, initialRoot }: AppProps) {
           {tree && (
             <SpecTree
               data={tree.children ?? []}
-              selectedPaths={selection.selected}
+              selectedPaths={shown.selected}
               searchTerm={searchTerm}
               width={treeWidth}
               height={treeHeight}
@@ -399,10 +460,11 @@ export function App({ bridge, initialRoot }: AppProps) {
           onPointerDown={right.onPointerDown} />
 
         <div className="fs-pane-panel" style={{ flexBasis: `${right.width}px` }}>
-          {selection.selected.length >= 2 ? (
+          {shown.selected.length >= 2 ? (
             <GroupPanel
-              members={selection.selected}
+              members={shown.selected}
               groups={groups}
+              currentGroupId={pending?.groupId ?? null}
               disabled={readOnly}
               onSubmit={handleGroupSubmit}
               onRemoveMember={handleRemoveMember}

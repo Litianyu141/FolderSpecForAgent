@@ -13,6 +13,16 @@ export interface GroupSubmit {
 export interface GroupPanelProps {
   members: string[]
   groups: Group[]
+  /**
+   * 上层已经定下的编辑目标（null / 省略 = 由成员集自行判定）。
+   *
+   * 移除成员是乐观更新：members 立刻变少，而 groups 要等宿主往返 20–60ms 才更新。那一帧里
+   * matchingGroups 必然失配成"新建形态"，按成员键重置的 effect 随即把用户的分组名与注释
+   * 清成空串；等 groups 回来 current 虽恢复，成员键却不再变化、effect 不再重跑，字段停在空。
+   * 那个空串一提交，core 的「清空 text 即删除」就把分组连同注释一起抹掉——本项目唯一那条
+   * 红线。所以"在编辑哪个分组"由上层给定，面板不去猜。
+   */
+  currentGroupId?: string | null
   disabled: boolean
   onSubmit(p: GroupSubmit): void
   onRemoveMember(path: string): void
@@ -22,9 +32,14 @@ export interface GroupPanelProps {
  *  AnnotationPanel：把 text 放进依赖，自己那次提交的回声会冲掉用户失焦后继续输入的内容。 */
 const keyOf = (members: readonly string[]) => [...members].sort().join(' ')
 
-export function GroupPanel({ members, groups, disabled, onSubmit, onRemoveMember }: GroupPanelProps) {
+export function GroupPanel(
+  { members, groups, currentGroupId, disabled, onSubmit, onRemoveMember }: GroupPanelProps,
+) {
   const matches = matchingGroups(members, groups)
-  const current = matches[0] ?? null
+  // 上层指定的目标优先；它指向一个已经不存在的分组（比如注释被清空后 core 把它删了）
+  // 时退回按成员集判定，不至于卡在一个空壳上
+  const bound = currentGroupId == null ? null : groups.find(g => g.id === currentGroupId) ?? null
+  const current = bound ?? matches[0] ?? null
 
   const [name, setName] = useState('')
   const [text, setText] = useState('')

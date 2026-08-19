@@ -64,7 +64,9 @@ const G3: Group = { id: 'g1', members: ['src', 'docs', 'README.md'], text: '一�
  * 完全掩盖住了；而零延迟的桩测不出"请求在途的那一帧"——真实宿主的响应必然晚于本次
  * 点击引发的渲染，缺陷就长在那一帧里。
  */
-const groupBridge = (initial: Group[], delayMs = 20, failFirstSetGroup = false) => {
+const groupBridge = (
+  initial: Group[], delayMs = 20, failNth: number | null = null, nodes: ViewNode[] = FIXTURE,
+) => {
   let groups: Group[] = initial.map(g => ({ ...g, members: [...g.members] }))
   const calls: Array<{ method: string; params: unknown }> = []
   const self = {
@@ -77,12 +79,14 @@ const groupBridge = (initial: Group[], delayMs = 20, failFirstSetGroup = false) 
     on: () => () => {},
     request: (async (method: string, params: Record<string, unknown>) => {
       calls.push({ method, params })
-      if (method === 'workspace/open') return openResult({ groups })
+      if (method === 'workspace/open') return openResult({ groups, tree: tree(nodes) })
       if (method === 'file/read') return { kind: 'text', text: 'hello\nworld' }
-      if (method === 'spec/annotate') return { tree: tree(FIXTURE), dirty: true, groups }
+      if (method === 'spec/annotate') return { tree: tree(nodes), dirty: true, groups }
       if (method === 'spec/setGroup') {
         await new Promise(r => setTimeout(r, delayMs))
-        if (failFirstSetGroup && calls.filter(c => c.method === 'spec/setGroup').length === 1) {
+        // 第 failNth 次写入失败。挑第几次很重要：串行链上后一次的失败与前一次的失败
+        // 走的不是同一条路径（前者要回滚到"上一次落地的那份"，后者回滚到最初那份）。
+        if (failNth !== null && calls.filter(c => c.method === 'spec/setGroup').length === failNth) {
           throw new Error('写失败了')
         }
         const id = params.id as string | null
@@ -97,13 +101,27 @@ const groupBridge = (initial: Group[], delayMs = 20, failFirstSetGroup = false) 
           ...(params.text !== undefined ? { text: params.text as string } : {}),
           ...(params.severity ? { severity: params.severity as Severity } : {}),
         })
-        return { tree: tree(FIXTURE), dirty: true, groups, id: landedId }
+        return { tree: tree(nodes), dirty: true, groups, id: landedId }
       }
       throw new Error(`本用例未配置 ${method}`)
     }) as Bridge['request'],
   }
   return self as typeof self & Bridge
 }
+
+/** 分组面板此刻**显示**的成员列表。断言"所见即所写"时，这一份就是"所见"那一半 */
+const memberPathsOf = (container: HTMLElement) =>
+  Array.from(container.querySelectorAll('.fs-member-path')).map(e => e.textContent)
+
+/**
+ * 让串行链把当前这一步真的发出去。
+ *
+ * 真实用户的两次点击之间必然隔着宏任务，链条上排队的微任务早就跑过了，请求确实在途；
+ * 而测试里两条 fireEvent 之间栈根本没空过，不主动让一次微任务，第二次点击会赶在
+ * 请求发出**之前**改掉编辑目标，整步在闸口就被作废——那样测的是另一条路径，
+ * "在途窗口"根本没被触发。
+ */
+const flushChain = () => act(async () => { await Promise.resolve() })
 
 /** 选中 src + docs + README.md 三项，恰好等于 G3 的成员集 */
 const selectAllThree = (container: HTMLElement) => {
@@ -847,7 +865,7 @@ describe('App', () => {
   })
 
   it('串行链里前一次写失败，后一次不会带着累积结果生效', async () => {
-    const bridge = groupBridge([G3], 20, true)   // 第一次 setGroup 抛错
+    const bridge = groupBridge([G3], 20, 1)      // 第一次 setGroup 抛错
     const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
     await waitFor(() => screen.getByLabelText('工作区路径'))
 
@@ -869,5 +887,170 @@ describe('App', () => {
     await act(async () => { await new Promise(r => setTimeout(r, 60)) })
     expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs', 'README.md'])
     expect(screen.getByText(/已选中 3 项/)).toBeTruthy()
+  })
+
+  // ── 面板显示与写入是同一个真源（pending） ────────────────────────────────
+  //
+  // 过去 pendingRef 只管**写入**，面板显示读的是 selection.selected，而 selection
+  // 要等响应落地才更新。于是在途那 20–60ms 里两者发散：面板上列着三项，发出去的
+  // members 只有两项。方向是"写得比面板少"，少的正是刚被点掉的那一个，没有把用户想留
+  // 的写丢；受损的是"所见即所写"这条可审计性——用户看着三项按下提交，契约里落了两项。
+
+  it('移除成员后面板立刻少一项，不等写入落地', async () => {
+    const bridge = groupBridge([G3], 60)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+    expect(memberPathsOf(container)).toEqual(['src', 'docs', 'README.md'])
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+
+    // 这一行故意不 await：桩延迟 60ms，此刻写入必然还在途
+    expect(memberPathsOf(container)).toEqual(['src', 'docs'])
+    // 反过来确认夹具真的处在"在途"那一帧，而不是响应早就回来了
+    expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs', 'README.md'])
+  })
+
+  it('提交那一刻面板上显示的成员，就是写进契约的那一份', async () => {
+    const bridge = groupBridge([G3], 60)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+
+    // 收缩还在途时就改约束强度：这一刻面板上是什么，契约里就得是什么
+    const shownNow = memberPathsOf(container)
+    expect(shownNow).toEqual(['src', 'docs'])
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'warning' } })
+
+    await waitFor(() =>
+      expect(bridge.lastCall('spec/setGroup')).toMatchObject({ severity: 'warning' }))
+    expect(bridge.lastCall('spec/setGroup')).toMatchObject({ members: shownNow })
+  })
+
+  it('分组写入失败时，被移除的成员回到面板列表上', async () => {
+    const bridge = groupBridge([G3], 20, 1)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    expect(memberPathsOf(container)).toEqual(['src', 'docs'])   // 乐观显示
+
+    // 乐观更新的代价：写失败就必须把显示同步退回去，否则用户会以为已经生效
+    await waitFor(() => expect(screen.getByText(/写失败了/)).toBeTruthy())
+    await waitFor(() =>
+      expect(memberPathsOf(container)).toEqual(['src', 'docs', 'README.md']))
+  })
+
+  // ── 在途窗口里用户的改选不能被无声撤销 ────────────────────────────────────
+  //
+  // 写成功后那一段回调（把收缩结果提交进 selection）跑在 await **之后**，而闸口只在
+  // 步骤开头判过一次。那 20–60ms 里用户完全插得进来，插进来之后落地的回调会把他刚做的
+  // 改选盖掉——右栏自己跳回分组面板、编辑目标被换成上一个分组，随后写的注释落在错的
+  // 分组上并覆盖它原有的注释。下面三条分别对应普通单击 / ctrl 加选 / 点另一个分组的色点。
+
+  it('收缩在途时普通单击别的节点，写入落地后右栏不会被拽回分组面板', async () => {
+    const bridge = groupBridge([G3], 60)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    await flushChain()
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+
+    fireEvent.click(rowsOf(container)[1])          // src/a.ts，放弃多选
+    expect(screen.queryByLabelText('分组注释')).toBeNull()
+
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs']))
+    await act(async () => { await new Promise(r => setTimeout(r, 20)) })
+
+    expect(screen.queryByLabelText('分组注释')).toBeNull()
+    expect(container.querySelector('.fs-panel-path')?.textContent).toBe('src/a.ts')
+  })
+
+  it('收缩在途时 ctrl 加选，落地后加选不丢、被移除的成员也不复活', async () => {
+    const bridge = groupBridge([G3], 60)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    await flushChain()
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+
+    fireEvent.click(rowsOf(container)[1], { ctrlKey: true })    // src/a.ts
+    // 加选是在**面板上那一份**的基础上加，不是在尚未更新的 selection 上加，
+    // 否则刚被移除的 README.md 会跟着回来
+    expect(memberPathsOf(container)).toEqual(['src', 'docs', 'src/a.ts'])
+
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs']))
+    await act(async () => { await new Promise(r => setTimeout(r, 20)) })
+
+    expect(memberPathsOf(container)).toEqual(['src', 'docs', 'src/a.ts'])
+  })
+
+  it('收缩在途时点另一个分组的色点，落地后不会被拽回原分组', async () => {
+    const G2: Group = { id: 'g2', members: ['README.md', 'src/a.ts'], text: '另一组' }
+    const nodes = [SRC, DOCS, { ...README, groups: ['g2'] }]
+    const bridge = groupBridge([G3, G2], 60, null, nodes)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(screen.getByLabelText('从选中集移除 docs'))
+    await flushChain()
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+
+    fireEvent.click(screen.getByLabelText('选中分组 g2 的全部成员'))
+    expect(memberPathsOf(container)).toEqual(['README.md', 'src/a.ts'])
+
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src', 'README.md']))
+    await act(async () => { await new Promise(r => setTimeout(r, 20)) })
+
+    // 界面若在 ~60ms 后无提示地把编辑目标换回 g1，用户随后写的注释就落在 g1 上，
+    // 把 g1 原有的注释覆盖掉——本项目唯一那条红线，只是入口从解析换成了时序
+    expect(memberPathsOf(container)).toEqual(['README.md', 'src/a.ts'])
+    expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('g2')
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('另一组')
+  })
+
+  it('在途写入落地时，编辑目标已经换过一轮，它不能把结果提交到新目标上', async () => {
+    // 光判"pending 还在不在"不够：用户换了目标、又开始编辑**另一个**分组时 pending
+    // 不为 null，旧写入落地照样会把它那一份成员提交进 selection。平时看不出来
+    // （面板读的是 pending），直到新这一轮写失败、显示退回 selection —— 退到的是
+    // 上一轮的成员集，一份用户在这一轮从没见过的列表。所以闸口判的是编辑会话号。
+    const G2: Group = { id: 'g2', members: ['docs', 'README.md'], text: '另一组' }
+    const bridge = groupBridge([G3, G2], 60, 2)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))   // 第一轮：g1 收缩，在途
+    await flushChain()
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[3])                        // docs，另起一轮
+    fireEvent.click(rows[4], { ctrlKey: true })     // README.md —— 恰好等于 g2
+    expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('g2')
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))   // 第二轮：g2 收缩
+
+    await waitFor(() => expect(screen.getByText(/写失败了/)).toBeTruthy())
+    expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs'])   // 第一轮确实落地了
+
+    // 第二轮写失败 → 显示退回这一轮开始时的那份，而不是第一轮的 [src, docs]
+    await waitFor(() => expect(memberPathsOf(container)).toEqual(['docs', 'README.md']))
   })
 })

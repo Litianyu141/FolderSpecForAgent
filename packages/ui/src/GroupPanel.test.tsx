@@ -105,4 +105,24 @@ describe('GroupPanel', () => {
     rerender(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false} {...noop} />)
     expect((ta as HTMLTextAreaElement).value).toBe('正在输入还没失焦')
   })
+
+  // 下面两条守的是"编辑目标由上层给定"这条约定。移除成员是乐观更新：members 立刻变少，
+  // groups 要等宿主往返 20–60ms 才更新。那一帧里 matchingGroups 必然失配成新建形态，
+  // 重置 effect 随即把用户的分组名与注释清成空串；空串一提交，core 的「清空 text 即删除」
+  // 就把分组连同注释一起抹掉——本项目唯一那条红线。
+  it('绑定了 currentGroupId 时，成员集与它不再相等也仍然编辑它', () => {
+    render(<GroupPanel members={['src/a.ts']} groups={G} currentGroupId="parse"
+      disabled={false} {...noop} />)
+    expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('parse')
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('解析层')
+    expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('warning')
+  })
+
+  it('currentGroupId 指向一个已不存在的分组时，退回按成员集判定', () => {
+    // 注释被清空后 core 会把分组删掉，上层缓存的 id 从此指不到东西。
+    // 这时不能卡在一个空壳上，否则选中集明明等于另一个分组也回填不出来。
+    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} currentGroupId="已经没了"
+      disabled={false} {...noop} />)
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('解析层')
+  })
 })
