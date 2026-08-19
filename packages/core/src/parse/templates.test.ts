@@ -73,4 +73,49 @@ describe('parseTemplates', () => {
     if (r.ok) return
     expect(r.errors[0].message).toContain('exemplar 必须是字符串数组')
   })
+
+  it('root.variable 不是字符串时报错', () => {
+    const r = parseTemplates(block('case:\n  root: { variable: 123 }\n  children: {}'))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].message).toContain('root.variable 必须是字符串')
+  })
+
+  it('root.naming 不是字符串时报错', () => {
+    const r = parseTemplates(block('case:\n  root: { naming: 123 }\n  children: {}'))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].message).toContain('root.naming 必须是字符串')
+  })
+
+  it('模板顶层未知字段报错', () => {
+    const r = parseTemplates(block('case:\n  descriptin: typo\n  children: {}'))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].message).toContain('有未知字段 "descriptin"')
+  })
+
+  it('children 条目的未知字段报错', () => {
+    const r = parseTemplates(block('case:\n  children:\n    a.txt: { requird: true }'))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].message).toContain('有未知字段 "requird"')
+    expect(r.errors[0].message).toContain('a.txt')
+  })
+
+  it('多行模板的错误指向该模板的名字行', () => {
+    const text = [
+      'template1:',
+      '  children: {}',
+      'template2:',
+      '  description: 123',
+      '  children: {}',
+    ].join('\n')
+    const r = parseTemplates({ text, startLine: 10 })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    // template2 starts at line 10 + 2 = 12
+    const template2Error = r.errors.find(e => e.message.includes('template2'))
+    expect(template2Error?.line).toBe(12)
+  })
 })

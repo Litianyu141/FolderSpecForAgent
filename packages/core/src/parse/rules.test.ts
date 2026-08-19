@@ -61,4 +61,30 @@ describe('parseRules', () => {
     if (r.ok) return
     expect(r.errors[0].message).toContain('severity 只能是 error/warning/advisory')
   })
+
+  it('规则未知字段报错', () => {
+    const r = parseRules(block('- { id: x, sevrity: error, scope: "**", text: t }'))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    const msgs = r.errors.map(e => e.message).join(' | ')
+    expect(msgs).toContain('有未知字段 "sevrity"')
+  })
+
+  it('多行块式规则的错误行号指向该规则起始行', () => {
+    const text = [
+      '- id: rule1',
+      '  severity: error',
+      '  scope: "**"',
+      '  text: 规则一',
+      '- id: rule2',
+      '  severity: error',
+      '  scope: "**"',
+    ].join('\n')
+    const r = parseRules({ text, startLine: 20 })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    // rule2 starts at line 20 + 4 = 24 (0-based: lines 0-3 for rule1, line 4 starts rule2)
+    const rule2Error = r.errors.find(e => e.message.includes('rule2'))
+    expect(rule2Error?.line).toBe(24)
+  })
 })

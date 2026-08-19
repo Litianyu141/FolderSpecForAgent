@@ -1,10 +1,7 @@
 import { parseDocument } from 'yaml'
 import { isSeverity } from '../types.js'
+import { isPlainObject, lineAtOffset, topLevelItemOffsets } from './yaml-util.js'
 import type { ParseError, Result, Rule, YamlBlock } from '../types.js'
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 export function parseRules(block: YamlBlock | null): Result<Rule[]> {
   if (block === null) return { ok: true, value: [] }
@@ -29,9 +26,10 @@ export function parseRules(block: YamlBlock | null): Result<Rule[]> {
   const errors: ParseError[] = []
   const rules: Rule[] = []
   const seen = new Set<string>()
+  const offsets = topLevelItemOffsets(doc)
 
   raw.forEach((item, idx) => {
-    const at = { line: block.startLine + idx }
+    const at = { line: lineAtOffset(block, offsets[idx]) }
     if (!isPlainObject(item)) {
       errors.push({ ...at, message: `第 ${idx + 1} 条规则必须是映射` })
       return
@@ -46,6 +44,14 @@ export function parseRules(block: YamlBlock | null): Result<Rule[]> {
       return
     }
     seen.add(id)
+
+    // Check for unknown keys
+    const allowedKeys = new Set(['id', 'severity', 'scope', 'text'])
+    for (const key of Object.keys(item)) {
+      if (!allowedKeys.has(key)) {
+        errors.push({ ...at, message: `规则 "${id}" 有未知字段 "${key}"，只允许 id/severity/scope/text` })
+      }
+    }
 
     let bad = false
     if (!isSeverity(item.severity)) {
