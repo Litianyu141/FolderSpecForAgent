@@ -81,4 +81,35 @@ describe('splitSections', () => {
     expect(r.value.templatesYaml).toBeNull()
     expect(r.value.rulesYaml).toBeNull()
   })
+
+  it('区块外的游离文本报行号', () => {
+    const doc = '---\nfolderspec: 1\n---\n\n# T\n\n> pre\n\nsome stray text\n\n## 结构\n\n- `a/`\n'
+    const r = splitSections(doc)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].line).toBe(9)
+    expect(r.errors[0].message).toContain('区块外的游离内容')
+  })
+
+  it('yaml 代码块之后的游离文本同样报错', () => {
+    const doc = DOC + 'stray text after rules\n'
+    const r = splitSections(doc)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors.some(e => e.message.includes('区块外的游离内容'))).toBe(true)
+  })
+
+  it('front-matter 里的空行不报错', () => {
+    const doc = ['---', 'folderspec: 1', '', 'root: .', '---', '', '# 标题', '## 结构', '', '- `a/`', ''].join('\n')
+    const r = splitSections(doc)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.value.frontMatter).toEqual({ folderspec: '1', root: '.' })
+  })
+
+  it('区块之间的空行仍然被容忍', () => {
+    // The original DOC already has blank lines between sections and passes
+    const r = splitSections(DOC)
+    expect(r.ok).toBe(true)
+  })
 })

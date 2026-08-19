@@ -24,6 +24,7 @@ export function splitSections(md: string): Result<RawSections> {
   for (; i < lines.length; i++) {
     const t = lines[i]
     if (t.trim() === '---') { closed = true; i++; break }
+    if (t.trim() === '') continue
     const idx = t.indexOf(':')
     if (idx === -1) {
       errors.push({ line: i + 1, message: `front-matter 行必须是 "键: 值"，实际是 "${t}"` })
@@ -105,6 +106,10 @@ export function splitSections(md: string): Result<RawSections> {
       if (current === 'templates') templatesYaml = block
       else rulesYaml = block
       current = null
+      continue
+    }
+    if (t.trim() !== '' && current === null) {
+      errors.push({ line: i + 1, message: `区块外的游离内容：请把它放进 ## 结构 / ## 模板 / ## 规则 之一，或删除；实际是 "${t.trim()}"` })
     }
   }
 
