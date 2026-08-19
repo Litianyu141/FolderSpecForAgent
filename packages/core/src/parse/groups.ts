@@ -62,6 +62,15 @@ export function parseGroups(block: YamlBlock | null): Result<Group[]> {
     } else if ((members as string[]).some(m => m.split('/').includes('..'))) {
       errors.push({ ...at, message: `分组 "${id}" 的 members 不得包含 ".." 路径段` })
       bad = true
+    } else if ((members as string[]).some(m => m.startsWith('/') || /^[A-Za-z]:[\\/]/.test(m))) {
+      // 绝对路径（含 Windows 盘符形式 C:\ / C:/）不满足"工作区相对路径"的约定；
+      // 静默收下会导致 merge 反查永远匹配不上——界面上什么都不显示，也没有报错，
+      // 这正是本项目明令禁止的"静默丢数据"，所以必须在解析边界就拦下。
+      errors.push({ ...at, message: `分组 "${id}" 的 members 不得是绝对路径，必须是工作区相对 posix 路径` })
+      bad = true
+    } else if ((members as string[]).some(m => m.includes('\\'))) {
+      errors.push({ ...at, message: `分组 "${id}" 的 members 不得包含反斜杠 "\\"，必须使用 "/" 分隔的 posix 路径` })
+      bad = true
     }
 
     if (typeof item.text !== 'string' || item.text === '') {

@@ -66,6 +66,30 @@ describe('parseGroups', () => {
     expect(r.errors[0].message).toContain('不得包含 ".." 路径段')
   })
 
+  it('members 是以 / 开头的绝对路径时报错', () => {
+    const r = parseGroups(block('- { id: g, members: ["/etc/passwd"], text: t }'))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].message).toContain('不得是绝对路径')
+    expect(r.errors[0].line).toBe(30)
+  })
+
+  it('members 是 Windows 盘符形式的绝对路径时报错', () => {
+    const r = parseGroups(block("- { id: g, members: ['C:\\Users\\x'], text: t }"))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].message).toContain('不得是绝对路径')
+    expect(r.errors[0].line).toBe(30)
+  })
+
+  it('members 含反斜杠分隔符时报错', () => {
+    const r = parseGroups(block("- { id: g, members: ['src\\core\\a.ts'], text: t }"))
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors[0].message).toContain('反斜杠')
+    expect(r.errors[0].line).toBe(30)
+  })
+
   it('缺少必填字段时逐条报错', () => {
     const r = parseGroups(block('- { id: g }'))
     expect(r.ok).toBe(false)
