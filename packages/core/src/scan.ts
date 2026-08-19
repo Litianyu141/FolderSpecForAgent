@@ -3,7 +3,7 @@ import * as nodePath from 'node:path'
 import ignore from 'ignore'
 import type { Ignore } from 'ignore'
 import type { Dirent } from 'node:fs'
-import { normalizeWorkspacePath } from './workspace-path.js'
+import { normalizeWorkspacePath, resolveWithinWorkspace } from './workspace-path.js'
 import type { ActualNode, FileKind, ScanOpts } from './types.js'
 
 export const MAX_CHILDREN = 10_000
@@ -22,6 +22,12 @@ export async function scan(root: string, opts: ScanOpts = {}): Promise<ActualNod
   const subPath = normalizeWorkspacePath(opts.subPath ?? '')
   const depth = opts.depth ?? DEFAULT_DEPTH
   const maxChildren = opts.maxChildren ?? MAX_CHILDREN
+
+  // 只在入口处做一次 realpath 包容性校验（不是每个文件一次）：subPath 本身若经符号链接
+  // 指向工作区外，后面的 ignore 层读取与 walk() 都会在工作区外操作。子项在 walk() 里
+  // 遇到的符号链接已经被单独挡住（kind: 'symlink' 且不递归进入），这里补的是 subPath
+  // 自己就是/穿过符号链接的那种入口级绕过。
+  await resolveWithinWorkspace(root, subPath)
 
   const layers = await buildAncestorLayers(root, subPath)
   const node: ActualNode = {

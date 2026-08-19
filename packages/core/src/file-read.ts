@@ -1,6 +1,5 @@
 import * as fs from 'node:fs/promises'
-import * as nodePath from 'node:path'
-import { normalizeWorkspacePath } from './workspace-path.js'
+import { resolveWithinWorkspace } from './workspace-path.js'
 
 export const MAX_READ_BYTES = 1_048_576
 const SNIFF_BYTES = 8192
@@ -11,10 +10,14 @@ export type FileReadResult =
   | { kind: 'too-large'; size: number }
   | { kind: 'unreadable'; reason: string }
 
-/** 只读。本工具只写 .folderspec.md 一个文件，这里不会有任何写操作。 */
+/**
+ * 只读。本工具只写 .folderspec.md 一个文件，这里不会有任何写操作。
+ *
+ * 用 resolveWithinWorkspace 而不是 normalizeWorkspacePath：内容会直接回传前端，
+ * 必须挡住经符号链接逃出工作区的路径，纯词法校验看不见符号链接（见该函数的注释）。
+ */
 export async function readWorkspaceFile(root: string, subPath: string): Promise<FileReadResult> {
-  const rel = normalizeWorkspacePath(subPath)
-  const abs = nodePath.join(root, rel)
+  const abs = await resolveWithinWorkspace(root, subPath)
 
   let stat
   try {

@@ -6,6 +6,8 @@ import { scan, MAX_CHILDREN } from './scan.js'
 import type { ActualNode } from './types.js'
 
 let root: string
+/** 工作区外的临时目录，装着不该被枚举到的文件名——独立于 root 的另一个 mkdtemp */
+let outsideRoot: string
 
 const kid = (n: ActualNode, name: string): ActualNode => {
   const found = n.children?.find(c => c.name === name)
@@ -47,10 +49,15 @@ beforeAll(async () => {
     ...Array.from({ length: 2 }, (_, i) => fs.writeFile(nodePath.join(root, 'cap-ignored', `skip${i}.log`), '')),
   ])
   await fs.writeFile(nodePath.join(root, 'cap-ignored/.gitignore'), '*.log\n.gitignore\n')
+
+  outsideRoot = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'folderspec-scan-outside-'))
+  await fs.writeFile(nodePath.join(outsideRoot, 'secret-marker-file.txt'), '')
+  await fs.symlink(outsideRoot, nodePath.join(root, 'escape-dir'), 'dir')
 })
 
 afterAll(async () => {
   await fs.rm(root, { recursive: true, force: true })
+  await fs.rm(outsideRoot, { recursive: true, force: true })
 })
 
 describe('scan', () => {
@@ -171,5 +178,21 @@ describe('scan', () => {
 
   it('拒绝越界的 subPath', async () => {
     await expect(scan(root, { subPath: '../../..' })).rejects.toThrow(/不得包含 "\.\." 段/)
+  })
+
+  it('subPath 经符号链接指向工作区外时拒绝，且不枚举到工作区外的文件名', async () => {
+    // escape-dir 本身是指向 outsideRoot 的符号链接：subPath 的文本里没有任何 ".."，
+    // 纯词法校验拦不住，必须靠 resolveWithinWorkspace 的 realpath 比对（与 file-read
+    // 共用同一处实现）。这里泄漏的是文件名而非内容，比 file/read 轻，但同一类缺口。
+    let result: ActualNode | undefined
+    let threw = false
+    try {
+      result = await scan(root, { subPath: 'escape-dir', depth: 1 })
+    } catch {
+      threw = true
+    }
+    const leakedNames = result?.children?.map(c => c.name) ?? []
+    expect(leakedNames).not.toContain('secret-marker-file.txt')
+    expect(threw).toBe(true)
   })
 })
