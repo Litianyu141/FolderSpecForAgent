@@ -184,6 +184,11 @@ export function App({ bridge, initialRoot }: AppProps) {
           node={selectedNode}
           disabled={readOnly}
           onChange={patch => void handlePatch(patch)}
+          // ViewNode 只带分组 id（merge 的反查索引），没有 text/severity；
+          // 取全量 Group 列表需要新的 Api 往返，和分组面板本身一样属于多选状态
+          // 接线的后续任务范围，这里先留空，不在此提前假装能展示分组注释。
+          groupsOfNode={[]}
+          onPickGroup={() => {}}
         />
       </div>
     </div>

@@ -35,3 +35,21 @@
   width: 6px; height: 6px; border-radius: 50%; padding: 0; border: none;
   background: var(--fs-group-dot); flex-shrink: 0; margin-left: 2px; cursor: pointer;
 }
+
+/* 分组面板：多个成员集相同的分组时的提示条 */
+.fs-panel-note { margin: 0 0 12px; padding: 6px 8px; font-size: 12px; opacity: 0.8; background: var(--fs-row-hover-bg); border-radius: 3px; }
+
+/* 分组面板底部：当前选中集的成员列表，每项可单独移出选中集 */
+.fs-member-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.fs-member-list li { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 0; }
+.fs-member-path { font-size: 12px; word-break: break-all; }
+.fs-member-list button { flex-shrink: 0; border: none; background: transparent; cursor: pointer; opacity: 0.6; }
+.fs-member-list button:hover { opacity: 1; }
+
+/* AnnotationPanel 底部：单选节点所属的全部分组，只读、可点击跳转 */
+.fs-owning-groups { margin-top: 4px; }
+.fs-field-label { display: block; font-size: 13px; }
+.fs-owning-groups ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.fs-owning-groups li { display: flex; align-items: baseline; gap: 6px; }
+.fs-group-link { border: none; background: transparent; padding: 0; color: var(--fs-group-dot); cursor: pointer; text-decoration: underline; }
+.fs-group-text { font-size: 12px; opacity: 0.75; }

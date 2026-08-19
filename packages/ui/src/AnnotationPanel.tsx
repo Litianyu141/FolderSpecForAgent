@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { Severity, ViewNode } from '@folderspec/core/api'
+import type { Group, Severity, ViewNode } from '@folderspec/core/api'
 import { SEVERITY_BADGE } from './colors.js'
 
 export interface PanelPatch {
@@ -12,9 +12,13 @@ export interface AnnotationPanelProps {
   node: ViewNode | null
   disabled: boolean
   onChange(patch: PanelPatch): void
+  /** 该节点所属的全部分组，供底部只读入口展示；不属于任何分组时传空数组 */
+  groupsOfNode: Group[]
+  /** 点击某个所属分组：把选中集切到该分组的成员，由上层据此进入该分组的编辑形态 */
+  onPickGroup(id: string): void
 }
 
-export function AnnotationPanel({ node, disabled, onChange }: AnnotationPanelProps) {
+export function AnnotationPanel({ node, disabled, onChange, groupsOfNode, onPickGroup }: AnnotationPanelProps) {
   const [annotation, setAnnotation] = useState('')
   const [role, setRole] = useState('')
 
@@ -87,6 +91,20 @@ export function AnnotationPanel({ node, disabled, onChange }: AnnotationPanelPro
           <option value="error">{SEVERITY_BADGE.error} error — 必须遵守</option>
         </select>
       </label>
+
+      {groupsOfNode.length > 0 && (
+        <div className="fs-owning-groups">
+          <span className="fs-field-label">所属分组</span>
+          <ul>
+            {groupsOfNode.map(g => (
+              <li key={g.id}>
+                <button type="button" className="fs-group-link" onClick={() => onPickGroup(g.id)}>{g.id}</button>
+                <span className="fs-group-text">{g.text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
