@@ -20,3 +20,18 @@
 }
 .fs-splitter { flex: 0 0 4px; cursor: col-resize; background: transparent; }
 .fs-splitter:hover { background: var(--fs-panel-border); }
+
+/* 行高由 Tree 的 rowHeight={22} 决定；这里不设 height，避免与虚拟化预留的槽位错位 */
+.fs-row { font-size: 13px; gap: 4px; }
+.fs-row:hover { background: var(--fs-row-hover-bg); }
+.fs-caret { display: inline-flex; justify-content: center; width: 16px; flex-shrink: 0; }
+.fs-icon { display: inline-flex; align-items: center; width: 16px; flex-shrink: 0; opacity: .85; }
+/* 每级一根竖线，宽度必须与 Tree 的 indent={8} 一致 */
+.fs-indent-guide {
+  flex: 0 0 8px; align-self: stretch;
+  border-left: 1px solid var(--fs-indent-guide);
+}
+.fs-group-dot {
+  width: 6px; height: 6px; border-radius: 50%; padding: 0; border: none;
+  background: var(--fs-group-dot); flex-shrink: 0; margin-left: 2px; cursor: pointer;
+}

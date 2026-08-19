@@ -1,18 +1,28 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { NodeRow } from './NodeRow.js'
 import type { ViewNode } from '@folderspec/core/api'
 
 const make = (over: Partial<ViewNode> = {}): ViewNode =>
   ({ name: 'walk.ts', path: 'src/walk.ts', isDir: false, origin: 'actual-only', ...over })
 
-const renderRow = (data: ViewNode, opts: { selected?: boolean; open?: boolean } = {}) => {
+const renderRow = (
+  data: ViewNode,
+  opts: {
+    selected?: boolean
+    open?: boolean
+    level?: number
+    toggle?: () => void
+    onGroupClick?: (id: string) => void
+  } = {},
+) => {
   const node = {
     data,
     isSelected: opts.selected ?? false,
     isOpen: opts.open ?? false,
     isLeaf: !data.isDir,
-    toggle: vi.fn(),
+    level: opts.level ?? 0,
+    toggle: opts.toggle ?? vi.fn(),
   }
   return render(
     <NodeRow
@@ -21,6 +31,7 @@ const renderRow = (data: ViewNode, opts: { selected?: boolean; open?: boolean } 
       dragHandle={undefined}
       tree={{} as never}
       preview={false}
+      onGroupClick={opts.onGroupClick}
     />,
   )
 }
@@ -75,5 +86,45 @@ describe('NodeRow', () => {
   it('不可读目录显示提示', () => {
     renderRow(make({ name: 'secret', path: 'secret', isDir: true, unreadable: true }))
     expect(screen.getByTitle(/无法读取/)).toBeTruthy()
+  })
+
+  it('渲染文件图标', () => {
+    const { container } = renderRow(make({ name: 'a.ts', path: 'a.ts' }))
+    expect(container.querySelector('.fs-icon svg')).toBeTruthy()
+  })
+
+  it('属于分组时渲染分组色点，数量与分组数一致', () => {
+    const { container } = renderRow(make({ groups: ['g1', 'g2'] }))
+    expect(container.querySelectorAll('.fs-group-dot')).toHaveLength(2)
+  })
+
+  it('不属于任何分组时没有色点', () => {
+    const { container } = renderRow(make())
+    expect(container.querySelectorAll('.fs-group-dot')).toHaveLength(0)
+  })
+
+  it('点击色点上报该分组 id，且不触发整行的展开', () => {
+    // 必须是目录节点：整行 onClick 只在 d.isDir 时才调用 node.toggle()，
+    // 用文件节点做这个断言时 toggle 永远不会被调用，测试会在 stopPropagation
+    // 被删掉时也保持绿色——测不出它本该防住的回归。
+    const onGroupClick = vi.fn()
+    const toggle = vi.fn()
+    const { container } = renderRow(
+      make({ name: 'src', path: 'src', isDir: true, groups: ['g1'] }),
+      { onGroupClick, toggle },
+    )
+    fireEvent.click(container.querySelector('.fs-group-dot')!)
+    expect(onGroupClick).toHaveBeenCalledWith('g1')
+    expect(toggle).not.toHaveBeenCalled()
+  })
+
+  it('缩进引导线的条数等于层级', () => {
+    const { container } = renderRow(make(), { level: 3 })
+    expect(container.querySelectorAll('.fs-indent-guide')).toHaveLength(3)
+  })
+
+  it('根层级没有引导线', () => {
+    const { container } = renderRow(make(), { level: 0 })
+    expect(container.querySelectorAll('.fs-indent-guide')).toHaveLength(0)
   })
 })

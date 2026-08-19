@@ -1,4 +1,6 @@
+import { useCallback } from 'react'
 import { Tree } from 'react-arborist'
+import type { NodeRendererProps } from 'react-arborist'
 import type { ViewNode } from '@folderspec/core/api'
 import { NodeRow } from './NodeRow.js'
 
@@ -12,6 +14,7 @@ export interface TreeProps {
   onSelect(path: string, node: ViewNode): void
   onExpand(path: string): void
   onMove(from: string, toParent: string, isDir: boolean): void
+  onGroupClick?: (id: string) => void
 }
 
 export function flatten(nodes: ViewNode[]): Map<string, ViewNode> {
@@ -58,7 +61,13 @@ export function makeDisableDrop(disabled: boolean) {
 }
 
 export function SpecTree(props: TreeProps) {
-  const { data, selectedPath, searchTerm, width, height, disabled, onSelect, onExpand, onMove } = props
+  const { data, selectedPath, searchTerm, width, height, disabled, onSelect, onExpand, onMove, onGroupClick } = props
+  // react-arborist 以子渲染器的引用作为身份，每次渲染换一个新函数会让整棵树重挂载，
+  // 选中态与展开态全部丢失，所以必须用 useCallback 稳定这个引用。
+  const renderNode = useCallback(
+    (p: NodeRendererProps<ViewNode>) => <NodeRow {...p} onGroupClick={onGroupClick} />,
+    [onGroupClick],
+  )
   return (
     <Tree<ViewNode>
       data={data}
@@ -68,8 +77,8 @@ export function SpecTree(props: TreeProps) {
       openByDefault={false}
       width={width}
       height={height}
-      indent={16}
-      rowHeight={24}
+      indent={8}
+      rowHeight={22}
       searchTerm={searchTerm}
       searchMatch={(node, term) => matchesSearch(node.data, term)}
       disableDrag={disabled}
@@ -78,7 +87,7 @@ export function SpecTree(props: TreeProps) {
       onToggle={id => { const n = flatten(data).get(id); if (n?.isDir && n.children === undefined) onExpand(id) }}
       onSelect={nodes => { const n = nodes[0]; if (n) onSelect(n.data.path, n.data) }}
     >
-      {NodeRow}
+      {renderNode}
     </Tree>
   )
 }
