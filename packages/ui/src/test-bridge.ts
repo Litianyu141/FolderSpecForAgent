@@ -16,6 +16,12 @@ export class FakeBridge implements Bridge {
     return handler(params)
   }
 
+  /** 事后改写某个方法的回应；用来在测试里让指定的一次调用失败，验证错误落到横幅上 */
+  setHandler<K extends ApiMethod>(method: K, fn: (params: Api[K]['params']) => Api[K]['result']): void {
+    // 与 request() 同款断言：K 是泛型时 TS 无法把 Handlers[K] 收窄到这一个方法的签名
+    this.handlers[method] = fn as Handlers[K]
+  }
+
   on(event: BridgeEvent, cb: (payload: unknown) => void): () => void {
     const set = this.listeners.get(event) ?? new Set()
     set.add(cb)

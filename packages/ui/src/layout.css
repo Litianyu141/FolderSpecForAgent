@@ -4,6 +4,14 @@
 .fs-header { flex: 0 0 auto; }
 .fs-body { display: flex; flex: 1 1 auto; min-height: 0; }
 
+/* overflow: hidden 是这一栏的关键，min-width: 0 顶不上它：后者只防止本栏被子节点的固有
+ * 宽度撑大，不会裁掉子节点已经画出来的、比本栏盒子更宽的内容。react-arborist 给 <Tree>
+ * 根节点（[role="tree"]）设的是一个显式像素宽度（App.tsx 的 treeWidth），一旦这个数字比
+ * 本栏真实可用宽度更大——ResizeObserver 尚未首次回报时用的是估算值，或宿主的经典非覆盖式
+ * 滚动条占掉了几像素——树的整块内容就会比本栏宽。没有 overflow: hidden 时这部分不会被裁，
+ * 会直接画到隔壁内容栏上，选中行的高亮背景从下面透出来，正是曾被用户反馈的"高亮块盖住了
+ * 右边的注释框"。有了它，本栏自己的盒子成为裁切边界（更长的单行仍可在树自身的横向滚动里
+ * 看到）。 */
 .fs-pane-tree {
   flex: 0 0 260px; min-width: 160px; max-width: 60%;
   display: flex; flex-direction: column; min-height: 0; overflow: hidden;

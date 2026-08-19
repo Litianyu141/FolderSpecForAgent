@@ -85,6 +85,23 @@ describe('FakeBridge', () => {
     expect(externalChange).toBe(0)
   })
 
+  it('setHandler 覆盖已有方法的回应，可用来让某个方法抛错', async () => {
+    const bridge = new FakeBridge({ 'spec/save': () => ({ written: true }) })
+
+    bridge.setHandler('spec/save', () => { throw new Error('写盘炸了') })
+
+    // 抛出必须落成拒绝的 Promise，而不是同步抛出——App 的 try/catch 包的是 await
+    await expect(bridge.request('spec/save', {})).rejects.toThrow('写盘炸了')
+  })
+
+  it('setHandler 也能给构造时未配置的方法补上回应', async () => {
+    const bridge = new FakeBridge()
+
+    bridge.setHandler('spec/raw', () => ({ markdown: '# x' }))
+
+    expect(await bridge.request('spec/raw', {})).toEqual({ markdown: '# x' })
+  })
+
   it('lastCall 返回该方法最近一次的 params，没有调用过时返回 undefined', async () => {
     const bridge = new FakeBridge({
       'tree/expand': ({ path }) => ({ tree: view({ path }) }),

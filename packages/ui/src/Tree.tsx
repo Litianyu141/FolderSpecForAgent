@@ -16,6 +16,12 @@ export interface TreeProps {
   onExpand(path: string): void
   onMove(from: string, toParent: string, isDir: boolean): void
   onGroupClick?: (id: string) => void
+  /**
+   * 每次展开/折叠都通知一次（含折叠，react-arborist 只给 id、不给新状态）。
+   * 上层需要它是因为 Shift 区间选择以"当前可见顺序"为准，而可见顺序取决于哪些目录是展开的，
+   * 那份状态只存在于 react-arborist 内部；不镜像出来，跨层的区间选择就只能按顶层节点算。
+   */
+  onToggle?: (path: string) => void
 }
 
 export function flatten(nodes: ViewNode[]): Map<string, ViewNode> {
@@ -62,7 +68,10 @@ export function makeDisableDrop(disabled: boolean) {
 }
 
 export function SpecTree(props: TreeProps) {
-  const { data, selectedPaths, searchTerm, width, height, disabled, onSelect, onExpand, onMove, onGroupClick } = props
+  const {
+    data, selectedPaths, searchTerm, width, height, disabled,
+    onSelect, onExpand, onMove, onGroupClick, onToggle,
+  } = props
 
   // selectedPaths/onSelect 几乎每次点击都变。react-arborist 把 renderNode（下面的
   // useCallback 返回值）当成每一行的组件类型使用——引用一变，当前可见的每一行都会被
@@ -106,7 +115,11 @@ export function SpecTree(props: TreeProps) {
       disableDrag={disabled}
       disableDrop={makeDisableDrop(disabled)}
       onMove={makeMoveHandler(data, onMove)}
-      onToggle={id => { const n = flatten(data).get(id); if (n?.isDir && n.children === undefined) onExpand(id) }}
+      onToggle={id => {
+        onToggle?.(id)
+        const n = flatten(data).get(id)
+        if (n?.isDir && n.children === undefined) onExpand(id)
+      }}
     >
       {renderNode}
     </Tree>

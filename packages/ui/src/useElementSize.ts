@@ -7,7 +7,10 @@ export interface Size { width: number; height: number }
  * jsdom 没有实现 ResizeObserver，此时回退到传入值——测试环境依赖树能真实渲染出行，
  * 尺寸为 0 会让依赖真实渲染的 App 测试全部失效。观察到 0 尺寸时同样保留回退值。
  */
-export function useElementSize<T extends HTMLElement>(fallback: Size): [React.RefObject<T | null>, Size] {
+// 返回类型写 RefObject<T> 而不是 RefObject<T | null>：两者的 current 都是 T | null，结构完全
+// 一样，但 TS 对同一个泛型接口走的是型变判定而非结构判定，RefObject<T | null> 会被判成不能赋给
+// JSX ref 需要的 RefObject<T>，逼每个调用方在 ref={} 上写一次断言。内部仍是可空的 useRef。
+export function useElementSize<T extends HTMLElement>(fallback: Size): [React.RefObject<T>, Size] {
   const ref = useRef<T | null>(null)
   const [size, setSize] = useState<Size>(fallback)
 

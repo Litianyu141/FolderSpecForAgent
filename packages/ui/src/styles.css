@@ -21,19 +21,6 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; font: 13px/1.5 system-ui, sans-serif; color: var(--fs-fg); background: var(--fs-bg); }
-.fs-layout { display: flex; height: 100vh; }
-/* overflow: hidden 是这里的关键：min-width: 0 只防止 .fs-left 自己被子节点的固有宽度撑大，
- * 并不会裁掉子节点已经画出来的、比 .fs-left 实际盒子更宽的内容。react-arborist 给 <Tree>
- * 的根节点（[role="tree"]）设置的是一个显式像素宽度（来自 App.tsx measure() 算出的
- * size.width），一旦这个数字比 .fs-left 真实可用的宽度更大——例如宿主环境里
- * window.innerWidth 和实际布局宽度不一致（经典非覆盖式滚动条会占掉几像素但不体现在
- * window.innerWidth 里）——树的整块内容就会比 .fs-left 宽。没有 overflow: hidden 时，
- * 这部分多出来的宽度不会被裁切，会直接画到隔壁 .fs-right 的区域里；.fs-right 自己没有
- * 设背景色（透明），选中行的高亮背景就会从它下面透出来，正是用户反馈的"高亮块盖住了右边
- * 注释框"。加上 overflow: hidden 后，.fs-left 自己的盒子成为裁切边界，任何超宽内容都会被
- * 老老实实地裁在 .fs-left 内部（更长的单行内容仍可在树自身的横向滚动里被看到）。 */
-.fs-left { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; overflow: hidden; border-right: 1px solid var(--fs-border); }
-.fs-right { flex: 0 0 320px; padding: 12px; overflow: auto; }
 .fs-toolbar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--fs-border); }
 .fs-toolbar input { flex: 1 1 auto; min-width: 0; }
 .fs-row { display: flex; align-items: center; gap: 6px; height: 100%; padding-right: 8px; cursor: pointer; white-space: nowrap; }

@@ -2,12 +2,28 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { App } from './App.js'
 import { FakeBridge } from './test-bridge.js'
-import type { OpenResult, ViewNode } from '@folderspec/core/api'
+import type { Group, OpenResult, ViewNode } from '@folderspec/core/api'
 
 const tree = (children: ViewNode[]): ViewNode =>
   ({ name: 'repo', path: '', isDir: true, origin: 'both', children })
 
-const SRC: ViewNode = { name: 'src', path: 'src', isDir: true, origin: 'actual-only', children: [] }
+// 固定树夹具：src/ 与 docs/ 同属分组 g1（行尾各带一个色点），README.md 不属于任何分组。
+// 三个顶层节点缺一不可：色点用例要求"点一下就恰好选中两项"，而新建分组的用例要求选中集
+// **不等于** 任何既有分组的成员集——否则面板会回填 g1 并以 id: 'g1' 提交，"新建"这条路径
+// 根本走不到，测试看着绿其实什么都没测。src 带子节点是为了让 shift 区间用例能跨越展开层。
+const SRC: ViewNode = {
+  name: 'src', path: 'src', isDir: true, origin: 'actual-only', groups: ['g1'],
+  children: [
+    { name: 'a.ts', path: 'src/a.ts', isDir: false, origin: 'actual-only' },
+    { name: 'b.ts', path: 'src/b.ts', isDir: false, origin: 'actual-only' },
+  ],
+}
+const DOCS: ViewNode =
+  { name: 'docs', path: 'docs', isDir: true, origin: 'actual-only', groups: ['g1'], children: [] }
+const README: ViewNode = { name: 'README.md', path: 'README.md', isDir: false, origin: 'actual-only' }
+const FIXTURE = [SRC, DOCS, README]
+
+const G1: Group = { id: 'g1', members: ['src', 'docs'], text: '一体的两个目录' }
 
 // 目录，children 未定义——代表"尚未扫描"，触发 tree/expand 的唯一形状
 // （见 Tree.tsx 的 onToggle：只有 n.children === undefined 才会调用 onExpand）
@@ -19,22 +35,38 @@ const openResult = (over: Partial<OpenResult> = {}): OpenResult => ({
   hasSpec: false,
   specPath: '/tmp/repo/.folderspec.md',
   parseErrors: null,
-  tree: tree([SRC]),
+  tree: tree(FIXTURE),
+  groups: [G1],
   ...over,
 })
 
 const bridgeWith = (over: Partial<Record<string, unknown>> = {}) => new FakeBridge({
   'workspace/open': () => openResult(over as Partial<OpenResult>),
-  'spec/annotate': () => ({ tree: tree([{ ...SRC, annotation: '核心源码', origin: 'both' }]), dirty: true }),
-  'spec/move': () => ({ tree: tree([SRC]), dirty: true }),
+  'spec/annotate': () => ({
+    tree: tree([{ ...SRC, annotation: '核心源码', origin: 'both' }, DOCS, README]),
+    dirty: true, groups: [G1],
+  }),
+  'spec/move': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1] }),
   'spec/save': () => ({ written: true }),
-  'tree/expand': () => ({ tree: tree([SRC]) }),
+  'tree/expand': () => ({ tree: tree(FIXTURE) }),
+  'spec/setGroup': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], id: 'g1' }),
+  'spec/deleteGroup': () => ({ tree: tree(FIXTURE), dirty: true, groups: [] }),
+  'file/read': () => ({ kind: 'text', text: 'hello\nworld' }),
 } as never)
+
+const rowsOf = (container: HTMLElement) => Array.from(container.querySelectorAll('.fs-row'))
 
 const clickFirstRow = (container: HTMLElement) => {
   const row = container.querySelector('.fs-row')
   expect(row).toBeTruthy()
   fireEvent.click(row!)
+}
+
+/** 先普通点 src、再 ctrl 点 README.md：两项，且与 g1 的成员集不同 */
+const selectTwoUnrelated = (container: HTMLElement) => {
+  const rows = rowsOf(container)
+  fireEvent.click(rows[0])
+  fireEvent.click(rows[2], { ctrlKey: true })
 }
 
 describe('App', () => {
@@ -146,10 +178,10 @@ describe('App', () => {
         opens += 1
         return opens === 1 ? openResult() : openResult({ parseErrors: [{ line: 1, message: 'x' }] })
       },
-      'spec/annotate': () => ({ tree: tree([SRC]), dirty: true }),
-      'spec/move': () => ({ tree: tree([SRC]), dirty: true }),
+      'spec/annotate': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1] }),
+      'spec/move': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1] }),
       'spec/save': () => ({ written: true }),
-      'tree/expand': () => ({ tree: tree([SRC]) }),
+      'tree/expand': () => ({ tree: tree(FIXTURE) }),
     } as never)
 
     render(<App bridge={bridge} initialRoot="/tmp/repo" />)
@@ -239,5 +271,171 @@ describe('App', () => {
     clickFirstRow(container)
 
     await waitFor(() => expect(screen.getByText('展开失败')).toBeTruthy())
+  })
+
+  it('单击文件后中间栏请求并显示其内容', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[2])   // README.md
+
+    await waitFor(() => expect(bridge.lastCall('file/read')).toEqual({ path: 'README.md' }))
+    await waitFor(() => expect(container.querySelectorAll('.fs-code-line')).toHaveLength(2))
+    // 按 .fs-code-text 断言而不是 getByText：Prism 可能把某些词切成子 token，
+    // 逐行的 code 元素文本内容才是不受语法着色影响的稳定断言点
+    expect(container.querySelectorAll('.fs-code-text')[1].textContent).toBe('world')
+  })
+
+  it('单击目录不请求文件内容', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[0])   // src/
+    await waitFor(() => screen.getByLabelText('注释'))
+
+    expect(bridge.calls.some(c => c.method === 'file/read')).toBe(false)
+  })
+
+  it('ctrl 多选后右栏切换为分组面板', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectTwoUnrelated(container)
+
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+  })
+
+  it('分组面板提交后发出 spec/setGroup，成员就是当前选中集', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectTwoUnrelated(container)
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '这两个是一体的' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({
+      id: null, text: '这两个是一体的', members: ['src', 'README.md'],
+    }))
+  })
+
+  it('选中集恰好等于某个既有分组时，回填它并以它的 id 提交', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])                       // src
+    fireEvent.click(rows[1], { ctrlKey: true })    // docs —— 与 g1 的成员集相同
+
+    const ta = await screen.findByLabelText('分组注释')
+    // 回填证明 groups 真的过了桥：ViewNode.groups 只有 id，text 只能来自 OpenResult.groups
+    expect((ta as HTMLTextAreaElement).value).toBe('一体的两个目录')
+    expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('g1')
+
+    fireEvent.change(ta, { target: { value: '改过的注释' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({
+      id: 'g1', text: '改过的注释',
+    }))
+  })
+
+  it('点击行尾的分组色点，选中该分组的全部成员并进入分组面板', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const dot = container.querySelector('.fs-group-dot')
+    expect(dot, '固定树夹具里至少要有一个节点带 groups').toBeTruthy()
+    fireEvent.click(dot!)
+
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+    expect(screen.getByText('src')).toBeTruthy()
+    expect(screen.getByText('docs')).toBeTruthy()
+  })
+
+  it('单选时注释面板列出所属分组，点击它切到该分组的成员', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    clickFirstRow(container)                       // src 属于 g1
+    await waitFor(() => screen.getByLabelText('注释'))
+    // 注释首行来自 Group.text，ViewNode.groups 里没有——这一条守着 Step 0 的整条数据通路
+    expect(screen.getByText('一体的两个目录')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('g1'))
+
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+  })
+
+  it('从分组面板移除成员后退回单选的注释面板', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectTwoUnrelated(container)
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+
+    await waitFor(() => expect(screen.getByLabelText('注释')).toBeTruthy())
+  })
+
+  it('shift 区间跨越已展开的子节点', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[0])           // 点 src：既选中它，也把它展开
+    await waitFor(() => expect(rowsOf(container)).toHaveLength(5))
+
+    fireEvent.click(rowsOf(container)[4], { shiftKey: true })   // README.md
+
+    // 区间以"当前可见顺序"为准：src、src/a.ts、src/b.ts、docs、README.md 共 5 项。
+    // 若 App 不跟踪展开态，可见顺序会退化成 3 个顶层节点，这里就会是"已选中 3 项"。
+    await waitFor(() => expect(screen.getByText(/已选中 5 项/)).toBeTruthy())
+  })
+
+  it('拖动左侧分隔条改变树栏宽度', async () => {
+    const { container } = render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    const pane = container.querySelector('.fs-pane-tree') as HTMLElement
+    const before = pane.style.flexBasis
+    const splitter = container.querySelectorAll('.fs-splitter')[0] as HTMLElement
+    // 必须自己造 MouseEvent，不能用 fireEvent.pointerDown：jsdom 没有实现 PointerEvent，
+    // testing-library 退化成 window.Event 构造，clientX/pointerId 全被丢掉（实测按下时
+    // 收到的合成事件里 clientX 是 undefined），起点坐标成了 NaN，拖多远宽度都不会变——
+    // 一条永远绿的假测试。用 MouseEvent 冒泡到 React 的根监听器则能带上 clientX。
+    fireEvent(splitter, new MouseEvent('pointerdown', { clientX: 260, bubbles: true }))
+    fireEvent(splitter, new MouseEvent('pointermove', { clientX: 320 }))
+    fireEvent(splitter, new MouseEvent('pointerup', {}))
+    expect(before).toBe('260px')
+    expect(pane.style.flexBasis).toBe('320px')
+  })
+
+  it('file/read 失败时显示错误横幅', async () => {
+    const bridge = bridgeWith()
+    bridge.setHandler('file/read', () => { throw new Error('读取炸了') })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowsOf(container)[2])
+
+    await waitFor(() => expect(screen.getByText(/读取炸了/)).toBeTruthy())
+  })
+
+  it('spec/setGroup 失败时显示错误横幅', async () => {
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/setGroup', () => { throw new Error('建组炸了') })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectTwoUnrelated(container)
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: 'x' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(screen.getByText(/建组炸了/)).toBeTruthy())
   })
 })
