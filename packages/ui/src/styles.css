@@ -1,0 +1,28 @@
+:root {
+  --fs-git-ignored: #7a7a7a;
+  --fs-git-untracked: #3fa34d;
+  --fs-git-modified: #d1a000;
+  --fs-git-added: #3fa34d;
+  --fs-git-deleted: #c74e39;
+  --fs-git-conflicted: #c74e39;
+  --fs-annotated: #4aa3ff;
+  --fs-fg: #1f1f1f;
+  --fs-bg: #ffffff;
+  --fs-border: #d4d4d4;
+  --fs-selected-bg: #e4ecf7;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.5 system-ui, sans-serif; color: var(--fs-fg); background: var(--fs-bg); }
+.fs-layout { display: flex; height: 100vh; }
+.fs-left { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; border-right: 1px solid var(--fs-border); }
+.fs-right { flex: 0 0 320px; padding: 12px; overflow: auto; }
+.fs-toolbar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--fs-border); }
+.fs-toolbar input { flex: 1 1 auto; min-width: 0; }
+.fs-row { display: flex; align-items: center; gap: 6px; height: 100%; padding-right: 8px; cursor: pointer; white-space: nowrap; }
+.fs-row[data-selected='true'] { background: var(--fs-selected-bg); }
+.fs-row[data-origin='spec-only'] { border: 1px dashed currentColor; border-radius: 3px; opacity: 0.85; }
+.fs-row[data-annotated='true'] .fs-name { color: var(--fs-annotated); font-weight: 600; }
+.fs-annotation { opacity: 0.65; overflow: hidden; text-overflow: ellipsis; }
+.fs-banner { padding: 8px 12px; background: #fde8e8; color: #7a1c1c; border-bottom: 1px solid var(--fs-border); }
+.fs-banner ul { margin: 4px 0 0; padding-left: 18px; }

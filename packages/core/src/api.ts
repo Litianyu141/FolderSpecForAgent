@@ -1,5 +1,7 @@
 import type { ParseError, Severity, ViewNode } from './types.js'
 
+export type { GitState, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewNode } from './types.js'
+
 export interface OpenResult {
   root: string
   rootName: string
