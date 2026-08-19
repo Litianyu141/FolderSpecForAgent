@@ -45,7 +45,13 @@ export function ContentPane({ node, content, loading }: ContentPaneProps) {
 
 function CodeView({ text, fileName }: { text: string; fileName: string }) {
   const lang = languageFor(fileName)
-  const lines = text.split('\n')
+  // 末尾换行不是一行内容：几乎所有文件都以 \n 结尾，不剥掉就会多出一行编号比真实末行大 1 的
+  // 空行，而「行号绝对可靠」正是当初选逐行高亮而非整段高亮的全部理由。只剥一个末尾换行——
+  // 文件真的以两个换行结尾时，最后那个空行是真实内容，应当渲染出来。
+  // CRLF 一并在这里收口（同 parse/sections.ts 的先例）：只按 \n 拆会在每行残留 \r，
+  // 污染复制粘贴的结果，也会把 \r 喂进 Prism 的逐行分词。
+  const body = text.replace(/\r?\n$/, '')
+  const lines = body.split(/\r\n|\n/)
   return (
     <pre className="fs-code">
       {lines.map((line, i) => (
