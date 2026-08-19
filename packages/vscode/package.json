@@ -27,8 +27,8 @@
     "test:e2e": "tsc -p tsconfig.test.json && node dist-test/test/runTest.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": { "@folderspec/core": "workspace:*" },
   "devDependencies": {
+    "@folderspec/core": "workspace:*",
     "@folderspec/ui": "workspace:*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.10.2",

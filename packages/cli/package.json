@@ -1,23 +1,32 @@
 {
   "name": "folderspec",
   "version": "0.1.0",
+  "description": "把仓库的结构意图声明成一个 .folderspec.md 文件，供人和 AI Agent 一起遵守。只读工具，本身不改动仓库任何文件。",
+  "keywords": ["folderspec", "ai-agent", "repository-structure", "documentation", "cli"],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Litianyu141/FolderSpecForAgent.git",
+    "directory": "packages/cli"
+  },
   "type": "module",
-  "bin": { "folderspec": "./dist/main.js" },
+  "engines": { "node": ">=20" },
+  "bin": { "folderspec": "dist/main.js" },
   "files": ["dist"],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-ui.mjs",
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node20 --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=dist/main.js && chmod +x dist/main.js && node scripts/copy-ui.mjs",
+    "prepublishOnly": "pnpm build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {
-    "@folderspec/core": "workspace:*",
-    "ws": "^8.18.0"
-  },
   "devDependencies": {
+    "@folderspec/core": "workspace:*",
     "@folderspec/ui": "workspace:*",
     "@types/node": "^22.10.2",
     "@types/ws": "^8.5.13",
+    "esbuild": "^0.24.0",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "ws": "^8.18.0"
   }
 }
