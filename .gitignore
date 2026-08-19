@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# SDD 工作区（本地脚手架，不入库）
+.superpowers/
