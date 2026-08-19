@@ -300,3 +300,101 @@ describe('注入进内联 <script> 的值必须转义 "<"', () => {
     expect(script).not.toContain('<')
   })
 })
+
+describe('注入值必须用函数替换而非字符串替换——否则 $ 展开会把 jsonForScript 的转义打回去', () => {
+  it('工作区路径含 a$`b 时，$` 替换不会再次激活 </script> 突破口', async () => {
+    // String.replace 的字符串替换参数会展开 $&、$`、$'、$$：
+    // - $& 替换为匹配的全文本
+    // - $` 替换为匹配前的所有文本（在这里会包含已转义的 jsonForScript）
+    // - $' 替换为匹配后的所有文本
+    // - $$ 替换为单个 $
+    //
+    // root 若是 a$`b，字面量含 $`；用字符串替换注入到
+    // .replace('</head>', `<script>...${jsonForScript('a$`b')}...</script></head>`)
+    // 时，jsonForScript 会把 $` 保留在字符串里（因为 JSON.stringify 不处理它）。
+    // 然后 replace 的字符串参数（第二参数）在扩展时会把这个 $` 当成特殊字符解释，
+    // 展开成"匹配前的文本"——包括含 </script> 的 HTML 前缀。结果就是脚本被截断。
+    //
+    // 用函数替换而非字符串替换可以完全避免这种扩展。
+    const outer = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'folderspec-dollar-'))
+    const evilRoot = nodePath.join(outer, 'a$`b')
+    await fs.mkdir(evilRoot, { recursive: true })
+
+    const evil = await startServer({ root: evilRoot, uiDir })
+    try {
+      const html = await (await fetch(evil.url)).text()
+      const scriptStart = html.indexOf('<script>') + '<script>'.length
+      const scriptEnd = html.indexOf('</script>')
+      const script = html.slice(scriptStart, scriptEnd)
+
+      // 脚本体内不能出现任何字面量 '<'，否则标签被截断了
+      expect(script).not.toContain('<')
+
+      // 整份文档里 <script> 与 </script> 必须一一对应
+      expect((html.match(/<script/g) ?? []).length).toBe((html.match(/<\/script>/g) ?? []).length)
+      expect((html.match(/<script/g) ?? []).length).toBe(1)
+
+      // root 值必须完整轮转回去
+      expect(script).toContain('a$`b')
+
+      // 从 HTML 提取 __folderspecRoot 的值，验证它解析回原路径
+      const rootMatch = script.match(/window\.__folderspecRoot=(.*?);/)
+      expect(rootMatch).not.toBeNull()
+      const parsed = JSON.parse(rootMatch![1])
+      expect(parsed).toBe(evilRoot)
+    } finally {
+      await evil.close()
+      await fs.rm(outer, { recursive: true, force: true })
+    }
+  })
+
+  it('工作区路径含 a$\'b 时不会触发 $\' 展开', async () => {
+    const outer = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'folderspec-dollar2-'))
+    const evilRoot = nodePath.join(outer, 'a$\'b')
+    await fs.mkdir(evilRoot, { recursive: true })
+
+    const evil = await startServer({ root: evilRoot, uiDir })
+    try {
+      const html = await (await fetch(evil.url)).text()
+      const scriptStart = html.indexOf('<script>') + '<script>'.length
+      const scriptEnd = html.indexOf('</script>')
+      const script = html.slice(scriptStart, scriptEnd)
+
+      expect(script).not.toContain('<')
+      expect((html.match(/<script/g) ?? []).length).toBe(1)
+      expect((html.match(/<\/script>/g) ?? []).length).toBe(1)
+
+      const rootMatch = script.match(/window\.__folderspecRoot=(.*?);/)
+      const parsed = JSON.parse(rootMatch![1])
+      expect(parsed).toBe(evilRoot)
+    } finally {
+      await evil.close()
+      await fs.rm(outer, { recursive: true, force: true })
+    }
+  })
+
+  it('工作区路径含 a$&b 时不会触发 $& 展开', async () => {
+    const outer = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'folderspec-dollar3-'))
+    const evilRoot = nodePath.join(outer, 'a$&b')
+    await fs.mkdir(evilRoot, { recursive: true })
+
+    const evil = await startServer({ root: evilRoot, uiDir })
+    try {
+      const html = await (await fetch(evil.url)).text()
+      const scriptStart = html.indexOf('<script>') + '<script>'.length
+      const scriptEnd = html.indexOf('</script>')
+      const script = html.slice(scriptStart, scriptEnd)
+
+      expect(script).not.toContain('<')
+      expect((html.match(/<script/g) ?? []).length).toBe(1)
+      expect((html.match(/<\/script>/g) ?? []).length).toBe(1)
+
+      const rootMatch = script.match(/window\.__folderspecRoot=(.*?);/)
+      const parsed = JSON.parse(rootMatch![1])
+      expect(parsed).toBe(evilRoot)
+    } finally {
+      await evil.close()
+      await fs.rm(outer, { recursive: true, force: true })
+    }
+  })
+})

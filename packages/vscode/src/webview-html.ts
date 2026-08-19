@@ -63,5 +63,7 @@ export function buildWebviewHtml(opts: WebviewHtmlOpts): string {
     `<style>${THEME_BRIDGE}</style>`,
   ].join('\n')
 
-  return html.replace('<head>', `<head>\n${head}`)
+  // 用函数替换而非字符串替换：字符串替换会展开 $&、$`、$'、$$，
+  // 把 jsonForScript 刚转义掉的 '<' 又放回去，重新打开 </script> 突破口。
+  return html.replace('<head>', () => `<head>\n${head}`)
 }

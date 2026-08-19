@@ -206,10 +206,12 @@ async function serveStatic(
 
     const ext = nodePath.extname(abs)
     if (ext === '.html') {
+      // 用函数替换而非字符串替换：字符串替换会展开 $&、$`、$'、$$，
+      // 把 jsonForScript 刚转义掉的 '<' 又放回去，重新打开 </script> 突破口。
       const injected = String(body).replace(
         '</head>',
-        `<script>window.__folderspecRoot=${jsonForScript(root)};`
-        + `window.__folderspecToken=${jsonForScript(token)};</script></head>`,
+        () => `<script>window.__folderspecRoot=${jsonForScript(root)};`
+          + `window.__folderspecToken=${jsonForScript(token)};</script></head>`,
       )
       res.writeHead(200, { 'content-type': MIME['.html'] }).end(injected)
       return

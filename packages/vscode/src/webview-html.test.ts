@@ -83,4 +83,82 @@ describe('buildWebviewHtml 注入值的转义', () => {
     // 转义后所有 script 依然带 nonce（没有被截断出一个无 nonce 的新标签）
     expect((html.match(/nonce="NONCE123"/g) ?? []).length).toBe(2)
   })
+
+  it('root 含 a$`b 时，$` 展开不会再次激活 </script> 突破口', () => {
+    // String.replace 的字符串替换参数会展开 $&、$`、$'、$$。
+    // 用函数替换而非字符串替换可以完全避免这种扩展。
+    const evilRoot = '/workspace/a$`b'
+    const html = buildWebviewHtml({
+      indexHtml: INDEX,
+      assetBase: 'https://vscode-webview.example/media/ui',
+      cspSource: 'https://vscode-webview.example',
+      nonce: 'NONCE123',
+      root: evilRoot,
+    })
+
+    const open = html.indexOf('window.__folderspecRoot')
+    const body = html.slice(open, html.indexOf('</script>', open))
+
+    // 脚本体内不能出现任何字面量 '<'
+    expect(body).not.toContain('<')
+
+    // 必须是 2 个 script：INDEX 自带一个，注入的算第二个
+    expect((html.match(/<script/g) ?? []).length).toBe(2)
+    expect((html.match(/<\/script>/g) ?? []).length).toBe(2)
+
+    // 所有 script 都必须带 nonce（没有被截断出新的标签）
+    expect((html.match(/nonce="NONCE123"/g) ?? []).length).toBe(2)
+
+    // root 值必须完整轮转回去
+    const rootMatch = body.match(/window\.__folderspecRoot=(.*?);/)
+    expect(rootMatch).not.toBeNull()
+    const parsed = JSON.parse(rootMatch![1])
+    expect(parsed).toBe(evilRoot)
+  })
+
+  it('root 含 a$\'b 时，$\' 展开不会再次激活 </script> 突破口', () => {
+    const evilRoot = '/workspace/a$\'b'
+    const html = buildWebviewHtml({
+      indexHtml: INDEX,
+      assetBase: 'https://vscode-webview.example/media/ui',
+      cspSource: 'https://vscode-webview.example',
+      nonce: 'NONCE123',
+      root: evilRoot,
+    })
+
+    const open = html.indexOf('window.__folderspecRoot')
+    const body = html.slice(open, html.indexOf('</script>', open))
+
+    expect(body).not.toContain('<')
+    expect((html.match(/<script/g) ?? []).length).toBe(2)
+    expect((html.match(/<\/script>/g) ?? []).length).toBe(2)
+    expect((html.match(/nonce="NONCE123"/g) ?? []).length).toBe(2)
+
+    const rootMatch = body.match(/window\.__folderspecRoot=(.*?);/)
+    const parsed = JSON.parse(rootMatch![1])
+    expect(parsed).toBe(evilRoot)
+  })
+
+  it('root 含 a$&b 时，$& 展开不会再次激活 </script> 突破口', () => {
+    const evilRoot = '/workspace/a$&b'
+    const html = buildWebviewHtml({
+      indexHtml: INDEX,
+      assetBase: 'https://vscode-webview.example/media/ui',
+      cspSource: 'https://vscode-webview.example',
+      nonce: 'NONCE123',
+      root: evilRoot,
+    })
+
+    const open = html.indexOf('window.__folderspecRoot')
+    const body = html.slice(open, html.indexOf('</script>', open))
+
+    expect(body).not.toContain('<')
+    expect((html.match(/<script/g) ?? []).length).toBe(2)
+    expect((html.match(/<\/script>/g) ?? []).length).toBe(2)
+    expect((html.match(/nonce="NONCE123"/g) ?? []).length).toBe(2)
+
+    const rootMatch = body.match(/window\.__folderspecRoot=(.*?);/)
+    const parsed = JSON.parse(rootMatch![1])
+    expect(parsed).toBe(evilRoot)
+  })
 })
