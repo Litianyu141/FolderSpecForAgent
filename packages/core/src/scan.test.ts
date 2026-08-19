@@ -168,4 +168,8 @@ describe('scan', () => {
     expect(t.children!.map(c => c.name).sort()).toEqual(['keep0.txt', 'keep1.txt', 'keep2.txt'])
     expect(t.truncated).toBeUndefined()
   })
+
+  it('拒绝越界的 subPath', async () => {
+    await expect(scan(root, { subPath: '../../..' })).rejects.toThrow(/不得包含 "\.\." 段/)
+  })
 })

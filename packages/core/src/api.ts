@@ -1,6 +1,8 @@
 import type { ParseError, Severity, ViewNode } from './types.js'
+import type { FileReadResult } from './file-read.js'
 
-export type { GitState, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewNode } from './types.js'
+export type { GitState, Group, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewNode } from './types.js'
+export type { FileReadResult } from './file-read.js'
 
 export interface OpenResult {
   root: string
@@ -32,6 +34,16 @@ export interface EditResult {
   dirty: boolean
 }
 
+export interface SetGroupParams {
+  /** null 表示新建并自动取名，实际 id 由 result 返回 */
+  id: string | null
+  members: string[]
+  /** 用户手填的组名；省略或全为空白则沿用 id 或自动取名 */
+  name?: string | null
+  text?: string | null
+  severity?: Severity | null
+}
+
 export interface Api {
   'workspace/open': { params: { root: string }; result: OpenResult }
   'tree/get': { params: Record<string, never>; result: { tree: ViewNode } }
@@ -40,6 +52,9 @@ export interface Api {
   'spec/move': { params: MoveParams; result: EditResult }
   'spec/save': { params: Record<string, never>; result: { written: boolean } }
   'spec/raw': { params: Record<string, never>; result: { markdown: string } }
+  'spec/setGroup': { params: SetGroupParams; result: EditResult & { id: string } }
+  'spec/deleteGroup': { params: { id: string }; result: EditResult }
+  'file/read': { params: { path: string }; result: FileReadResult }
 }
 
 export type ApiMethod = keyof Api

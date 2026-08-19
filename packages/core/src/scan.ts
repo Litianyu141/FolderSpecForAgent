@@ -3,6 +3,7 @@ import * as nodePath from 'node:path'
 import ignore from 'ignore'
 import type { Ignore } from 'ignore'
 import type { Dirent } from 'node:fs'
+import { normalizeWorkspacePath } from './workspace-path.js'
 import type { ActualNode, FileKind, ScanOpts } from './types.js'
 
 export const MAX_CHILDREN = 10_000
@@ -18,7 +19,7 @@ interface IgnoreLayer {
 }
 
 export async function scan(root: string, opts: ScanOpts = {}): Promise<ActualNode> {
-  const subPath = toPosix(opts.subPath ?? '')
+  const subPath = normalizeWorkspacePath(opts.subPath ?? '')
   const depth = opts.depth ?? DEFAULT_DEPTH
   const maxChildren = opts.maxChildren ?? MAX_CHILDREN
 
@@ -136,10 +137,6 @@ function isIgnored(layers: IgnoreLayer[], relPath: string, isDir: boolean): bool
     if (ig.ignores(sub)) return true
   }
   return false
-}
-
-function toPosix(p: string): string {
-  return p.split(nodePath.sep).join('/').replace(/^\/+|\/+$/g, '')
 }
 
 function basename(posixPath: string): string {

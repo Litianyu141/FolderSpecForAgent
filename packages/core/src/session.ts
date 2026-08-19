@@ -5,9 +5,11 @@ import { serializeSpec } from './serialize.js'
 import { scan, DEFAULT_DEPTH } from './scan.js'
 import { gitStatus } from './git.js'
 import { merge } from './merge.js'
-import { emptySpec, moveNode, setAnnotation } from './spec-edit.js'
-import type { AnnotationPatch } from './spec-edit.js'
-import type { Api, ApiMethod, AnnotateParams, EditResult, MoveParams, OpenResult } from './api.js'
+import { emptySpec, moveNode, setAnnotation, setGroup, deleteGroup } from './spec-edit.js'
+import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
+import { readWorkspaceFile } from './file-read.js'
+import type { FileReadResult } from './file-read.js'
+import type { Api, ApiMethod, AnnotateParams, EditResult, MoveParams, OpenResult, SetGroupParams } from './api.js'
 import type { ActualNode, GitStates, ParseError, Spec, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
@@ -211,6 +213,31 @@ export class Session {
     return { tree: this.tree(), dirty: true }
   }
 
+  setGroup(params: SetGroupParams): EditResult & { id: string } {
+    this.assertWritable()
+    for (const m of params.members) assertRepresentablePath(m)
+    const patch: GroupPatch = {}
+    if (params.name !== undefined) patch.name = params.name === null ? null : normalizeAnnotation(params.name)
+    if (params.text !== undefined) patch.text = params.text === null ? null : normalizeAnnotation(params.text)
+    if (params.severity !== undefined) patch.severity = params.severity
+    const r = setGroup(this.spec, params.id, params.members, patch)
+    this.spec = r.spec
+    this.dirty = true
+    return { tree: this.tree(), dirty: true, id: r.id }
+  }
+
+  deleteGroup(id: string): EditResult {
+    this.assertWritable()
+    this.spec = deleteGroup(this.spec, id)
+    this.dirty = true
+    return { tree: this.tree(), dirty: true }
+  }
+
+  async readFile(path: string): Promise<FileReadResult> {
+    this.assertOpened()
+    return readWorkspaceFile(this.root, path)
+  }
+
   /**
    * 自校验（serialize → parse）必须长在 raw() 上，而不是 save() 上。
    *
@@ -261,6 +288,12 @@ export class Session {
         return (await this.save()) as Api[K]['result']
       case 'spec/raw':
         return { markdown: this.raw() } as Api[K]['result']
+      case 'spec/setGroup':
+        return this.setGroup(params as SetGroupParams) as Api[K]['result']
+      case 'spec/deleteGroup':
+        return this.deleteGroup((params as { id: string }).id) as Api[K]['result']
+      case 'file/read':
+        return (await this.readFile((params as { path: string }).path)) as Api[K]['result']
       default:
         throw new Error(`未知方法 "${String(method)}"`)
     }

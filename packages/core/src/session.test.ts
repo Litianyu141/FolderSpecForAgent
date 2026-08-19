@@ -409,3 +409,65 @@ describe('节点名可表示性（当前格式无法转义反引号与换行）'
     expect(text).toContain('- `src/` — 正常注释')
   })
 })
+
+describe('Session 的分组与文件读取', () => {
+  it('setGroup 新建分组并返回自动 id', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.setGroup({ id: null, members: ['src/core', 'src/deep'], text: '两个子目录' })
+    expect(r.id).toBe('src')
+    expect(r.dirty).toBe(true)
+  })
+
+  it('setGroup 透传 name，改名后返回新 id', async () => {
+    const s = new Session(root); await s.open()
+    const { id } = s.setGroup({ id: null, members: ['src'], text: 't' })
+    const r = s.setGroup({ id, members: ['src'], name: '解析层' })
+    expect(r.id).toBe('解析层')
+  })
+
+  it('setGroup 会把注释里的换行归一化为空格', async () => {
+    const s = new Session(root); await s.open()
+    s.setGroup({ id: null, members: ['src'], text: '一行\n二行' })
+    expect(s.raw()).toContain('一行 二行')
+  })
+
+  it('deleteGroup 删除分组', async () => {
+    const s = new Session(root); await s.open()
+    const { id } = s.setGroup({ id: null, members: ['src'], text: 't' })
+    s.deleteGroup(id)
+    expect(s.raw()).not.toContain('## 分组')
+  })
+
+  it('只读模式下 setGroup 抛错', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
+    const s = new Session(root); await s.open()
+    expect(() => s.setGroup({ id: null, members: ['src'], text: 't' })).toThrow('只读模式')
+  })
+
+  it('只读模式下仍可读取文件内容', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
+    await fs.writeFile(nodePath.join(root, 'README.md'), 'hello')
+    const s = new Session(root); await s.open()
+    expect(await s.readFile('README.md')).toEqual({ kind: 'text', text: 'hello' })
+  })
+
+  it('未 open 时 readFile 抛错', async () => {
+    await expect(new Session(root).readFile('README.md')).rejects.toThrow('会话尚未打开')
+  })
+
+  it('readFile 拒绝越界路径', async () => {
+    const s = new Session(root); await s.open()
+    await expect(s.readFile('../../../etc/passwd')).rejects.toThrow(/不得包含 "\.\." 段/)
+  })
+
+  it('handle 能分发全部三个新方法', async () => {
+    const s = new Session(root); await s.open()
+    // members 是单个顶层路径（无公共父目录），deriveGroupId 按既有规则回退为 'group'
+    // （见 spec-edit.test.ts「成员都在根下时回退为 group」）；这里只关心 handle() 的分发。
+    const g = await s.handle('spec/setGroup', { id: null, members: ['src'], text: 't' })
+    expect((g as { id: string }).id).toBe('group')
+    await s.handle('spec/deleteGroup', { id: 'group' })
+    const f = await s.handle('file/read', { path: 'README.md' })
+    expect((f as { kind: string }).kind).toBeDefined()
+  })
+})
