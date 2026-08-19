@@ -10,6 +10,13 @@
   --fs-bg: #ffffff;
   --fs-border: #d4d4d4;
   --fs-selected-bg: #e4ecf7;
+  --fs-sidebar-bg: #f3f3f3;
+  --fs-editor-bg: #ffffff;
+  --fs-panel-border: #e0e0e0;
+  --fs-row-hover-bg: #e8e8e8;
+  --fs-indent-guide: #d0d0d0;
+  --fs-group-dot: #b180d7;
+  --fs-line-number: #9a9a9a;
 }
 
 * { box-sizing: border-box; }

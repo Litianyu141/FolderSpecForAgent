@@ -5,6 +5,7 @@ import { App } from './App.js'
 import { createWebSocketBridge } from './ws-bridge.js'
 import { createVscodeBridge } from './vscode-bridge.js'
 import './styles.css'
+import './layout.css'
 
 declare global {
   interface Window {
