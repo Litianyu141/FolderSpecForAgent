@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { splitSections } from './sections.js'
+import { parseStructure } from './structure.js'
 
 const DOC = [
   '---',
@@ -111,5 +112,28 @@ describe('splitSections', () => {
     // The original DOC already has blank lines between sections and passes
     const r = splitSections(DOC)
     expect(r.ok).toBe(true)
+  })
+
+  it('CRLF 文档与 LF 文档解析结果完全相同', () => {
+    const lfResult = splitSections(DOC)
+    const crlfDoc = DOC.replace(/\n/g, '\r\n')
+    const crlfResult = splitSections(crlfDoc)
+    expect(lfResult).toEqual(crlfResult)
+  })
+
+  it('CRLF 下 front-matter 的值不带残留 \\r', () => {
+    const crlfDoc = DOC.replace(/\n/g, '\r\n')
+    const r = splitSections(crlfDoc)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.frontMatter.folderspec).toBe('1')
+  })
+
+  it('CRLF 结构行通过 splitSections 和 parseStructure 组合解析', () => {
+    const crlfDoc = DOC.replace(/\n/g, '\r\n')
+    const sr = splitSections(crlfDoc)
+    if (!sr.ok) throw new Error(JSON.stringify(sr.errors))
+    const pr = parseStructure(sr.value.structure)
+    if (!pr.ok) throw new Error(JSON.stringify(pr.errors))
+    expect(pr.value[0]).toEqual({ name: 'src', isDir: true, annotation: '核心源码', children: [] })
   })
 })

@@ -11,7 +11,7 @@ const SECTION_ALIASES: Record<string, 'structure' | 'templates' | 'rules'> = {
 
 export function splitSections(md: string): Result<RawSections> {
   const errors: ParseError[] = []
-  const lines = md.split('\n')
+  const lines = md.split(/\r?\n/)
   let i = 0
 
   // ---- front-matter ----
