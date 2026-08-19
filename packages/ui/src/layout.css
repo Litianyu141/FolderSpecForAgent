@@ -53,3 +53,14 @@
 .fs-owning-groups li { display: flex; align-items: baseline; gap: 6px; }
 .fs-group-link { border: none; background: transparent; padding: 0; color: var(--fs-group-dot); cursor: pointer; text-decoration: underline; }
 .fs-group-text { font-size: 12px; opacity: 0.75; }
+
+/* 中间栏：只读文件预览。逐行高亮而非整段高亮是有意的取舍——行号与内容必须严格对齐，
+   整段高亮产出的 HTML 会跨行嵌套 token，按 \n 拆行时标签会断。 */
+.fs-content { padding: 8px 12px; font-size: 13px; }
+.fs-content-empty { padding: 24px; opacity: .6; }
+.fs-content-path { font-weight: 600; margin-bottom: 8px; }
+.fs-content-note { opacity: .75; }
+.fs-code { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 18px; }
+.fs-code-line { display: flex; white-space: pre; }
+.fs-line-no { flex: 0 0 44px; text-align: right; padding-right: 12px; color: var(--fs-line-number); user-select: none; }
+.fs-code-text { flex: 1 1 auto; }
