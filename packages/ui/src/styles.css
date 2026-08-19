@@ -28,3 +28,8 @@ body { margin: 0; font: 13px/1.5 system-ui, sans-serif; color: var(--fs-fg); bac
 .fs-annotation { opacity: 0.65; overflow: hidden; text-overflow: ellipsis; }
 .fs-banner { padding: 8px 12px; background: #fde8e8; color: #7a1c1c; border-bottom: 1px solid var(--fs-border); }
 .fs-banner ul { margin: 4px 0 0; padding-left: 18px; }
+.fs-panel-empty { color: var(--fs-fg); opacity: 0.6; }
+.fs-panel-path { margin: 0 0 4px; font-size: 14px; word-break: break-all; }
+.fs-panel-origin { margin: 0 0 12px; opacity: 0.65; }
+.fs-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.fs-field textarea, .fs-field input, .fs-field select { font: inherit; padding: 4px 6px; border: 1px solid var(--fs-border); border-radius: 3px; }
