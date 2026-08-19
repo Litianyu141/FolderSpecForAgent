@@ -3,6 +3,12 @@ export interface WebviewHtmlOpts {
   assetBase: string
   cspSource: string
   nonce: string
+  /** 工作区绝对路径，注入给 UI 当 App 的 initialRoot；不注入的话 UI 会退回 '.' 占位值，
+   *  而 '.' 一旦被当成 workspace/open 的目标 resolve，解析基准是扩展宿主进程的 cwd，
+   *  和真正的工作区毫无关系（见 editor.ts 的 shouldSwitchSession 注释）。CLI 宿主一直
+   *  是这么做的（server.ts 往返回的 HTML 里塞 <script>window.__folderspecRoot=...）；
+   *  VSCode 宿主之前漏了这一步。 */
+  root: string
 }
 
 /** 把 UI 的 --fs-* 变量指到 VSCode 主题色上，UI 本身对宿主一无所知 */
@@ -23,7 +29,7 @@ const THEME_BRIDGE = `
 `
 
 export function buildWebviewHtml(opts: WebviewHtmlOpts): string {
-  const { indexHtml, assetBase, cspSource, nonce } = opts
+  const { indexHtml, assetBase, cspSource, nonce, root } = opts
 
   const csp = [
     `default-src 'none'`,
@@ -39,6 +45,9 @@ export function buildWebviewHtml(opts: WebviewHtmlOpts): string {
 
   const head = [
     `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
+    // 必须带 nonce：严格 CSP 下没有 nonce 的内联脚本会被直接拦下，root 就送不到 UI，
+    // 又会退回 initialRoot ?? '.' 的占位值——正是这次要修的那个 bug。
+    `<script nonce="${nonce}">window.__folderspecRoot=${JSON.stringify(root)};</script>`,
     `<style>${THEME_BRIDGE}</style>`,
   ].join('\n')
 
