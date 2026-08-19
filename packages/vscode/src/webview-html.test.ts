@@ -56,3 +56,31 @@ describe('buildWebviewHtml', () => {
     expect(nonces.length).toBe(scripts.length)
   })
 })
+
+describe('buildWebviewHtml 注入值的转义', () => {
+  it('root 字面量含 "</script>" 时不能提前闭合 script 标签', () => {
+    // `a<` 目录里套一个 `script>` 目录，拼起来就是一个真实可创建、且字面量含
+    // "</script>" 的绝对路径。JSON.stringify 不转义 '/'，不额外处理 '<' 的话，
+    // 这段注入脚本会被 HTML 分词器在这里截断，后面的内容变成新的元素。
+    // 这里的 CSP nonce 会拦住它执行，但同一份注入代码在 CLI 宿主那边没有任何 CSP。
+    const evilRoot = '/workspace/a</script><script>alert(1)</script>'
+    const html = buildWebviewHtml({
+      indexHtml: INDEX,
+      assetBase: 'https://vscode-webview.example/media/ui',
+      cspSource: 'https://vscode-webview.example',
+      nonce: 'NONCE123',
+      root: evilRoot,
+    })
+
+    const open = html.indexOf('window.__folderspecRoot')
+    const body = html.slice(open, html.indexOf('</script>', open))
+    expect(body).toContain('a\\u003c/script>')
+    expect(body).not.toContain('<')
+
+    // INDEX 自带一个 script，注入的算第二个；一个都不能多出来
+    expect((html.match(/<script/g) ?? []).length).toBe(2)
+    expect((html.match(/<\/script>/g) ?? []).length).toBe(2)
+    // 转义后所有 script 依然带 nonce（没有被截断出一个无 nonce 的新标签）
+    expect((html.match(/nonce="NONCE123"/g) ?? []).length).toBe(2)
+  })
+})

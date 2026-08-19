@@ -28,6 +28,18 @@ const THEME_BRIDGE = `
 }
 `
 
+/**
+ * 注入到内联 <script> 里的值必须额外转义 '<'。
+ *
+ * JSON.stringify 不转义 '/'：一个字面量含 "</script>" 的工作区路径会提前闭合这个标签，
+ * 后面的内容被当成新的 HTML 元素解析。这里的 CSP nonce 会拦住注入脚本的执行，但那是
+ * 第二道防线——同一份注入代码在 CLI 宿主那边完全没有 CSP。两边都转义，别指望某一层
+ * 的兜底（CLI 那边的同款函数见 packages/cli/src/server.ts 的 jsonForScript）。
+ */
+function jsonForScript(v: unknown): string {
+  return JSON.stringify(v).replace(/</g, '\\u003c')
+}
+
 export function buildWebviewHtml(opts: WebviewHtmlOpts): string {
   const { indexHtml, assetBase, cspSource, nonce, root } = opts
 
@@ -47,7 +59,7 @@ export function buildWebviewHtml(opts: WebviewHtmlOpts): string {
     `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
     // 必须带 nonce：严格 CSP 下没有 nonce 的内联脚本会被直接拦下，root 就送不到 UI，
     // 又会退回 initialRoot ?? '.' 的占位值——正是这次要修的那个 bug。
-    `<script nonce="${nonce}">window.__folderspecRoot=${JSON.stringify(root)};</script>`,
+    `<script nonce="${nonce}">window.__folderspecRoot=${jsonForScript(root)};</script>`,
     `<style>${THEME_BRIDGE}</style>`,
   ].join('\n')
 

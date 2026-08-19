@@ -2,9 +2,23 @@ import type { Api, ApiMethod, Bridge, BridgeEvent } from '@folderspec/core/api'
 
 const CONNECTION_LOST_MESSAGE = '与本地服务的连接已断开，请重新启动 folderspec'
 
+/**
+ * 把本次启动的一次性令牌拼到 WebSocket URL 上。
+ *
+ * 浏览器不对 WebSocket 施加同源策略，所以服务端要求升级请求带上令牌（见 CLI 的
+ * server.ts）。令牌由宿主注入在同一份 HTML 里（window.__folderspecToken），跨源页面
+ * 读不到它。VSCode 宿主走的是另一个 Bridge，不会经过这里，因此令牌缺失时保持原样
+ * 发出——由服务端拒绝，而不是在这里静默换一种行为。
+ */
+function withToken(url: string): string {
+  const token = (globalThis as { __folderspecToken?: string }).__folderspecToken
+  if (!token) return url
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+}
+
 /** 浏览器宿主用的 Bridge：走同源 WebSocket */
 export function createWebSocketBridge(url: string): Bridge {
-  const socket = new WebSocket(url)
+  const socket = new WebSocket(withToken(url))
   const pending = new Map<number, { resolve(v: unknown): void; reject(e: Error): void }>()
   const listeners = new Map<BridgeEvent, Set<(p: unknown) => void>>()
   let nextId = 1

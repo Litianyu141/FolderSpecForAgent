@@ -94,6 +94,29 @@ afterEach(() => {
   } else {
     delete (globalThis as { WebSocket?: unknown }).WebSocket
   }
+  delete (globalThis as { __folderspecToken?: string }).__folderspecToken
+})
+
+describe('一次性令牌', () => {
+  it('宿主注入了 __folderspecToken 时，它必须被拼到 WebSocket URL 上', () => {
+    // 服务端要求升级请求带上令牌（浏览器不对 WebSocket 施加同源策略，随机端口挡不住
+    // 任何一个跨源页面）。不拼上去的话，UI 自己也连不上——这条用例同时是那条防线的
+    // 客户端一半。
+    ;(globalThis as { __folderspecToken?: string }).__folderspecToken = 'deadbeef'
+    createWebSocketBridge('ws://x/')
+    expect(FakeWebSocket.instances[0]!.url).toBe('ws://x/?token=deadbeef')
+  })
+
+  it('URL 本来就带查询参数时用 & 拼接', () => {
+    ;(globalThis as { __folderspecToken?: string }).__folderspecToken = 'deadbeef'
+    createWebSocketBridge('ws://x/?a=1')
+    expect(FakeWebSocket.instances[0]!.url).toBe('ws://x/?a=1&token=deadbeef')
+  })
+
+  it('没有注入令牌时 URL 保持原样，由服务端去拒绝', () => {
+    createWebSocketBridge('ws://x/')
+    expect(FakeWebSocket.instances[0]!.url).toBe('ws://x/')
+  })
 })
 
 describe('createWebSocketBridge', () => {

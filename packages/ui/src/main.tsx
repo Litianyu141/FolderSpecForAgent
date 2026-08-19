@@ -9,6 +9,8 @@ import './styles.css'
 declare global {
   interface Window {
     __folderspecRoot?: string
+    /** CLI 宿主注入的一次性令牌；ws-bridge 会把它拼到 WebSocket URL 上 */
+    __folderspecToken?: string
     acquireVsCodeApi?: unknown
   }
 }
