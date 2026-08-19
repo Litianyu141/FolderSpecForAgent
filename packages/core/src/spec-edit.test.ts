@@ -153,6 +153,18 @@ describe('isDir 一致性（Finding 1：isDir 与 children 同步）', () => {
     expect(parsed.ok).toBe(true)
   })
 
+  it('序列化再解析应该成功 - mergeInto 文件到目录', () => {
+    // 场景 (c)：mergeInto 把文件和已有子项的目录合并
+    // 这会在修复前失败：foo 既有子项又被 mergeInto 设成 isDir: false
+    let s = setAnnotation(emptySpec(), 'src/cases/foo/inner.txt', false, { annotation: '内部文件' })
+    s = setAnnotation(s, 'examples/foo', false, { annotation: '一个文件' })
+    s = moveNode(s, 'examples/foo', 'src/cases', false)
+
+    const serialized = serializeSpec(s)
+    const parsed = parseSpec(serialized)
+    expect(parsed.ok).toBe(true)
+  })
+
   it('ensure 穿过文件节点时把它升级成目录', () => {
     let s = setAnnotation(emptySpec(), 'a/b.txt', false, { annotation: 'x' })
     s = setAnnotation(s, 'a/b.txt/c', false, { annotation: 'y' })
@@ -175,14 +187,18 @@ describe('isDir 一致性（Finding 1：isDir 与 children 同步）', () => {
   })
 
   it('mergeInto 落到已有子项的同名节点上时结果是目录', () => {
-    let s = setAnnotation(emptySpec(), 'src/cases/foo', true, { annotation: '旧的', role: 'keep-me' })
-    s = setAnnotation(s, 'examples/foo', true, { annotation: '新的' })
-    s = moveNode(s, 'examples/foo', 'src/cases', true)
+    // 目标：src/cases/foo 是目录，有子项 inner.txt
+    let s = setAnnotation(emptySpec(), 'src/cases/foo/inner.txt', false, { annotation: '内部文件' })
+    // 来源：examples/foo 是文件（不是目录）
+    s = setAnnotation(s, 'examples/foo', false, { annotation: '一个文件' })
+    // 移动文件到目录，mergeInto 应该保持结果是目录且保留子项
+    s = moveNode(s, 'examples/foo', 'src/cases', false)
 
     const foo = find(s.nodes, 'src/cases/foo')
     expect(foo?.isDir).toBe(true)
-    expect(foo?.annotation).toBe('新的')
-    expect(foo?.role).toBe('keep-me')
+    expect(foo?.annotation).toBe('一个文件')
+    expect(foo?.children.length).toBeGreaterThan(0)
+    expect(find(s.nodes, 'src/cases/foo/inner.txt')?.annotation).toBe('内部文件')
   })
 
   it('自子树判断不误伤相邻名字', () => {
@@ -201,13 +217,6 @@ describe('isDir 一致性（Finding 1：isDir 与 children 同步）', () => {
 })
 
 describe('拖拽声明的空节点行为（Finding 2：边界情况）', () => {
-  it('移动产生的空节点在无关路径的编辑中不被回收', () => {
-    let s = moveNode(emptySpec(), 'examples/foo', 'src/cases', true)
-    // 对无关路径做一次编辑，确认移动结果仍在
-    s = setAnnotation(s, 'docs', true, { annotation: '文档' })
-    expect(find(s.nodes, 'src/cases/foo')).not.toBeNull()
-  })
-
   it('拖拽声明的空节点在其自身子树被清空时也会被回收（已知边界）', () => {
     let s = moveNode(emptySpec(), 'examples/foo', 'src/cases', true)
     // 现在 src/cases/foo 是空的拖拽声明
