@@ -460,6 +460,35 @@ describe('Session 的分组与文件读取', () => {
     await expect(s.readFile('../../../etc/passwd')).rejects.toThrow(/不得包含 "\.\." 段/)
   })
 
+  it('open 返回当前契约的全部分组', async () => {
+    const s = new Session(root); await s.open()
+    s.setGroup({ id: null, members: ['src/core', 'src/deep'], text: '两个子目录' })
+    const r = await s.open()
+    expect(r.groups).toEqual([])   // open 会重读磁盘，未保存的编辑不该出现
+  })
+
+  it('setGroup 的返回值里带上更新后的分组', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.setGroup({ id: null, members: ['src/core', 'src/deep'], text: '两个子目录' })
+    expect(r.groups).toHaveLength(1)
+    expect(r.groups[0]).toMatchObject({ id: 'src', text: '两个子目录' })
+  })
+
+  it('交出去的是拷贝，改它不会污染 Spec', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.setGroup({ id: null, members: ['src'], text: 't' })
+    r.groups[0].text = '被外部改了'
+    expect(s.raw()).toContain('t')
+    expect(s.raw()).not.toContain('被外部改了')
+  })
+
+  it('annotate 的返回值也带 groups', async () => {
+    const s = new Session(root); await s.open()
+    s.setGroup({ id: null, members: ['src'], text: 't' })
+    const r = s.annotate({ path: 'src', isDir: true, annotation: '注释' })
+    expect(r.groups).toHaveLength(1)
+  })
+
   it('handle 能分发全部三个新方法', async () => {
     const s = new Session(root); await s.open()
     // members 是单个顶层路径（无公共父目录），deriveGroupId 按既有规则回退为 'group'

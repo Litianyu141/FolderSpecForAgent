@@ -1,4 +1,4 @@
-import type { ParseError, Severity, ViewNode } from './types.js'
+import type { Group, ParseError, Severity, ViewNode } from './types.js'
 import type { FileReadResult } from './file-read.js'
 
 export type { GitState, Group, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewNode } from './types.js'
@@ -12,6 +12,8 @@ export interface OpenResult {
   /** 非 null 表示契约文件解析失败，当前处于只读模式 */
   parseErrors: ParseError[] | null
   tree: ViewNode
+  /** 当前契约里的全部分组。UI 需要完整的 text/severity，ViewNode.groups 只有 id */
+  groups: Group[]
 }
 
 export interface AnnotateParams {
@@ -32,6 +34,8 @@ export interface MoveParams {
 export interface EditResult {
   tree: ViewNode
   dirty: boolean
+  /** 当前契约里的全部分组。UI 需要完整的 text/severity，ViewNode.groups 只有 id */
+  groups: Group[]
 }
 
 export interface SetGroupParams {

@@ -10,7 +10,7 @@ import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
 import type { Api, ApiMethod, AnnotateParams, EditResult, MoveParams, OpenResult, SetGroupParams } from './api.js'
-import type { ActualNode, GitStates, ParseError, Spec, ViewNode } from './types.js'
+import type { ActualNode, GitStates, Group, ParseError, Spec, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
 
@@ -147,6 +147,7 @@ export class Session {
       specPath: this.specPath,
       parseErrors: this.parseErrors,
       tree: this.tree(),
+      groups: this.groupsSnapshot(),
     }
   }
 
@@ -185,7 +186,7 @@ export class Session {
     }
     this.spec = setAnnotation(this.spec, path, isDir, patch)
     this.dirty = true
-    return { tree: this.tree(), dirty: true }
+    return { tree: this.tree(), dirty: true, groups: this.groupsSnapshot() }
   }
 
   move(params: MoveParams): EditResult {
@@ -210,7 +211,7 @@ export class Session {
     if (to !== params.from) this.hidden.add(params.from)
 
     this.dirty = true
-    return { tree: this.tree(), dirty: true }
+    return { tree: this.tree(), dirty: true, groups: this.groupsSnapshot() }
   }
 
   setGroup(params: SetGroupParams): EditResult & { id: string } {
@@ -223,14 +224,14 @@ export class Session {
     const r = setGroup(this.spec, params.id, params.members, patch)
     this.spec = r.spec
     this.dirty = true
-    return { tree: this.tree(), dirty: true, id: r.id }
+    return { tree: this.tree(), dirty: true, groups: this.groupsSnapshot(), id: r.id }
   }
 
   deleteGroup(id: string): EditResult {
     this.assertWritable()
     this.spec = deleteGroup(this.spec, id)
     this.dirty = true
-    return { tree: this.tree(), dirty: true }
+    return { tree: this.tree(), dirty: true, groups: this.groupsSnapshot() }
   }
 
   async readFile(path: string): Promise<FileReadResult> {
@@ -297,6 +298,15 @@ export class Session {
       default:
         throw new Error(`未知方法 "${String(method)}"`)
     }
+  }
+
+  /**
+   * 分组随每次读写一起过桥（UI 需要 ViewNode.groups 里没有的 text/severity）。
+   * 必须是深拷贝：直接交出内部数组，宿主或 UI 侧任何一次就地改动都会改到这份
+   * 即将被序列化写进用户文件的 Spec —— 本工具唯一能造成的伤害正是弄丢人写的注释。
+   */
+  private groupsSnapshot(): Group[] {
+    return structuredClone(this.spec.groups)
   }
 
   private assertOpened(): void {
