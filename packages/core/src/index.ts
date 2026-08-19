@@ -1,1 +1,12 @@
 export const CORE_VERSION = '0.1.0'
+
+export * from './types.js'
+export * from './api.js'
+export { parseSpec, parseStructure, parseTemplates, parseRules, splitSections, SUPPORTED_VERSION, ANNOTATION_SEPARATOR } from './parse/index.js'
+export { serializeSpec } from './serialize.js'
+export { scan, MAX_CHILDREN, DEFAULT_DEPTH } from './scan.js'
+export { gitStatus } from './git.js'
+export { merge } from './merge.js'
+export { emptySpec, setAnnotation, moveNode, findSpecNode } from './spec-edit.js'
+export type { AnnotationPatch } from './spec-edit.js'
+export { Session, SPEC_FILENAME } from './session.js'
