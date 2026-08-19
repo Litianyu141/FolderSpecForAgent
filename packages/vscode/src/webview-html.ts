@@ -25,6 +25,13 @@ const THEME_BRIDGE = `
   --fs-bg: var(--vscode-editor-background, #ffffff);
   --fs-border: var(--vscode-panel-border, #d4d4d4);
   --fs-selected-bg: var(--vscode-list-activeSelectionBackground, #e4ecf7);
+  --fs-sidebar-bg: var(--vscode-sideBar-background, #f3f3f3);
+  --fs-editor-bg: var(--vscode-editor-background, #ffffff);
+  --fs-panel-border: var(--vscode-panel-border, #e0e0e0);
+  --fs-row-hover-bg: var(--vscode-list-hoverBackground, #e8e8e8);
+  --fs-indent-guide: var(--vscode-tree-indentGuidesStroke, #d0d0d0);
+  --fs-group-dot: var(--vscode-charts-purple, #b180d7);
+  --fs-line-number: var(--vscode-editorLineNumber-foreground, #9a9a9a);
 }
 `
 

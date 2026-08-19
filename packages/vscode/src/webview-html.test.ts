@@ -46,6 +46,16 @@ describe('buildWebviewHtml', () => {
     expect(html).toContain('--fs-fg: var(--vscode-foreground')
   })
 
+  it('新增的表面色 token 也映射到 VSCode 主题变量', () => {
+    const html = build()
+    expect(html).toContain('--fs-sidebar-bg: var(--vscode-sideBar-background')
+    expect(html).toContain('--fs-editor-bg: var(--vscode-editor-background')
+    expect(html).toContain('--fs-panel-border: var(--vscode-panel-border')
+    expect(html).toContain('--fs-row-hover-bg: var(--vscode-list-hoverBackground')
+    expect(html).toContain('--fs-indent-guide: var(--vscode-tree-indentGuidesStroke')
+    expect(html).toContain('--fs-line-number: var(--vscode-editorLineNumber-foreground')
+  })
+
   it('注入真实的工作区根路径，且脚本带 nonce（CLI 宿主靠这个脚本让 UI 拿到真实 root，VSCode 之前漏了）', () => {
     const html = build()
     expect(html).toContain(`window.__folderspecRoot=${JSON.stringify(ROOT)}`)
