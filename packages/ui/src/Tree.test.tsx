@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { makeMoveHandler, matchesSearch } from './Tree.js'
+import { makeDisableDrop, makeMoveHandler, matchesSearch } from './Tree.js'
 import type { ViewNode } from '@folderspec/core/api'
 
 const tree: ViewNode[] = [
@@ -37,10 +37,40 @@ describe('makeMoveHandler', () => {
     expect(onMove).toHaveBeenCalledTimes(2)
   })
 
+  it('多选拖拽的每次调用参数与 id 顺序一一对应', () => {
+    const onMove = vi.fn()
+    makeMoveHandler(tree, onMove)({ dragIds: ['src/core', 'README.md'], parentId: 'examples' })
+    expect(onMove).toHaveBeenNthCalledWith(1, 'src/core', 'examples', true)
+    expect(onMove).toHaveBeenNthCalledWith(2, 'README.md', 'examples', false)
+  })
+
   it('忽略树里找不到的 id', () => {
     const onMove = vi.fn()
     makeMoveHandler(tree, onMove)({ dragIds: ['ghost'], parentId: 'src' })
     expect(onMove).not.toHaveBeenCalled()
+  })
+})
+
+describe('makeDisableDrop', () => {
+  it('允许放到合成的根节点上（react-arborist 顶层拖放目标没有 isDir 字段）', () => {
+    // 复刻 react-arborist create-root.js 里合成根节点的 data 形状：只有 id，没有 isDir。
+    const rootLike: { data: { id: string; isDir?: boolean } } = { data: { id: '__REACT_ARBORIST_INTERNAL_ROOT__' } }
+    expect(makeDisableDrop(false)({ parentNode: rootLike })).toBe(false)
+  })
+
+  it('禁止放到文件上', () => {
+    expect(makeDisableDrop(false)({ parentNode: { data: { isDir: false } } })).toBe(true)
+  })
+
+  it('允许放到目录上', () => {
+    expect(makeDisableDrop(false)({ parentNode: { data: { isDir: true } } })).toBe(false)
+  })
+
+  it('disabled 为 true 时一律禁止', () => {
+    const rootLike: { data: { id: string; isDir?: boolean } } = { data: { id: '__REACT_ARBORIST_INTERNAL_ROOT__' } }
+    expect(makeDisableDrop(true)({ parentNode: rootLike })).toBe(true)
+    expect(makeDisableDrop(true)({ parentNode: { data: { isDir: false } } })).toBe(true)
+    expect(makeDisableDrop(true)({ parentNode: { data: { isDir: true } } })).toBe(true)
   })
 })
 

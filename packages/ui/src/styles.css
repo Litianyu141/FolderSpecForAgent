@@ -23,6 +23,8 @@ body { margin: 0; font: 13px/1.5 system-ui, sans-serif; color: var(--fs-fg); bac
 .fs-row[data-selected='true'] { background: var(--fs-selected-bg); }
 .fs-row[data-origin='spec-only'] { border: 1px dashed currentColor; border-radius: 3px; opacity: 0.85; }
 .fs-row[data-annotated='true'] .fs-name { color: var(--fs-annotated); font-weight: 600; }
+.fs-caret { display: inline-flex; justify-content: center; width: 12px; flex-shrink: 0; }
+.fs-badge { flex-shrink: 0; }
 .fs-annotation { opacity: 0.65; overflow: hidden; text-overflow: ellipsis; }
 .fs-banner { padding: 8px 12px; background: #fde8e8; color: #7a1c1c; border-bottom: 1px solid var(--fs-border); }
 .fs-banner ul { margin: 4px 0 0; padding-left: 18px; }

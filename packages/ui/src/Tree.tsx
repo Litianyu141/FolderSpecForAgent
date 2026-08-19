@@ -47,6 +47,16 @@ export function matchesSearch(node: ViewNode, term: string): boolean {
   return node.name.toLowerCase().includes(t) || (node.annotation ?? '').toLowerCase().includes(t)
 }
 
+/**
+ * react-arborist 在放到顶层时传进来的是一个合成根节点，它的 data 只有 { id }，
+ * 没有 isDir 字段。所以这里必须用严格的 === false：只有确知目标是文件才禁止放入，
+ * 否则 undefined 会被 ! 判成"不是目录"，把"拖到工作区根"整个功能悄悄禁掉。
+ */
+export function makeDisableDrop(disabled: boolean) {
+  return ({ parentNode }: { parentNode: { data: { isDir?: boolean } } }) =>
+    disabled || parentNode.data.isDir === false
+}
+
 export function SpecTree(props: TreeProps) {
   const { data, selectedPath, searchTerm, width, height, disabled, onSelect, onExpand, onMove } = props
   return (
@@ -63,7 +73,7 @@ export function SpecTree(props: TreeProps) {
       searchTerm={searchTerm}
       searchMatch={(node, term) => matchesSearch(node.data, term)}
       disableDrag={disabled}
-      disableDrop={({ parentNode }) => disabled || !parentNode.data.isDir}
+      disableDrop={makeDisableDrop(disabled)}
       onMove={makeMoveHandler(data, onMove)}
       onToggle={id => { const n = flatten(data).get(id); if (n?.isDir && n.children === undefined) onExpand(id) }}
       onSelect={nodes => { const n = nodes[0]; if (n) onSelect(n.data.path, n.data) }}
