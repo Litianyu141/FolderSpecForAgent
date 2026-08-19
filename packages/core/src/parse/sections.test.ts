@@ -136,4 +136,25 @@ describe('splitSections', () => {
     if (!pr.ok) throw new Error(JSON.stringify(pr.errors))
     expect(pr.value[0]).toEqual({ name: 'src', isDir: true, annotation: '核心源码', children: [] })
   })
+
+  it('切出分组区', () => {
+    const doc = DOC.replace('## 规则', '## 分组')
+    const r = splitSections(doc)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.groupsYaml).not.toBeNull()
+    expect(r.value.rulesYaml).toBeNull()
+  })
+
+  it('接受英文别名 ## Groups', () => {
+    const doc = DOC.replace('## 规则', '## Groups')
+    const r = splitSections(doc)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.groupsYaml).not.toBeNull()
+  })
+
+  it('分组区缺失时为 null 而非报错', () => {
+    const r = splitSections(DOC)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.groupsYaml).toBeNull()
+  })
 })

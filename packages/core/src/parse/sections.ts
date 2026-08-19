@@ -1,12 +1,14 @@
 import type { Line, ParseError, RawSections, Result, YamlBlock } from '../types.js'
 
-const SECTION_ALIASES: Record<string, 'structure' | 'templates' | 'rules'> = {
+const SECTION_ALIASES: Record<string, 'structure' | 'templates' | 'rules' | 'groups'> = {
   '结构': 'structure',
   'Structure': 'structure',
   '模板': 'templates',
   'Templates': 'templates',
   '规则': 'rules',
   'Rules': 'rules',
+  '分组': 'groups',
+  'Groups': 'groups',
 }
 
 export function splitSections(md: string): Result<RawSections> {
@@ -58,7 +60,8 @@ export function splitSections(md: string): Result<RawSections> {
   const structure: Line[] = []
   let templatesYaml: YamlBlock | null = null
   let rulesYaml: YamlBlock | null = null
-  let current: 'structure' | 'templates' | 'rules' | null = null
+  let groupsYaml: YamlBlock | null = null
+  let current: 'structure' | 'templates' | 'rules' | 'groups' | null = null
   let seenStructure = false
 
   for (; i < lines.length; i++) {
@@ -67,7 +70,7 @@ export function splitSections(md: string): Result<RawSections> {
     if (h) {
       const kind = SECTION_ALIASES[h[1]]
       if (!kind) {
-        errors.push({ line: i + 1, message: `未知区块标题 "## ${h[1]}"，只允许 结构/模板/规则` })
+        errors.push({ line: i + 1, message: `未知区块标题 "## ${h[1]}"，只允许 结构/模板/规则/分组` })
         current = null
         continue
       }
@@ -79,11 +82,11 @@ export function splitSections(md: string): Result<RawSections> {
       if (t.trim() !== '') structure.push({ line: i + 1, text: t })
       continue
     }
-    if (current === 'templates' || current === 'rules') {
+    if (current === 'templates' || current === 'rules' || current === 'groups') {
       if (t.trim() === '') continue
       if (!/^```ya?ml\s*$/.test(t.trim())) {
         if (t.trim().startsWith('```')) {
-          errors.push({ line: i + 1, message: '模板区与规则区必须是 ```yaml 代码块' })
+          errors.push({ line: i + 1, message: '模板区、规则区与分组区必须是 ```yaml 代码块' })
         } else {
           errors.push({ line: i + 1, message: `区块内只允许 \`\`\`yaml 代码块，实际是 "${t.trim()}"` })
         }
@@ -104,12 +107,13 @@ export function splitSections(md: string): Result<RawSections> {
       }
       const block: YamlBlock = { text: body.join('\n').replace(/\n+$/, ''), startLine }
       if (current === 'templates') templatesYaml = block
-      else rulesYaml = block
+      else if (current === 'rules') rulesYaml = block
+      else groupsYaml = block
       current = null
       continue
     }
     if (t.trim() !== '' && current === null) {
-      errors.push({ line: i + 1, message: `区块外的游离内容：请把它放进 ## 结构 / ## 模板 / ## 规则 之一，或删除；实际是 "${t.trim()}"` })
+      errors.push({ line: i + 1, message: `区块外的游离内容：请把它放进 ## 结构 / ## 模板 / ## 规则 / ## 分组 之一，或删除；实际是 "${t.trim()}"` })
     }
   }
 
@@ -117,5 +121,5 @@ export function splitSections(md: string): Result<RawSections> {
     errors.push({ line: lines.length, message: '缺少 "## 结构" 区块' })
   }
   if (errors.length) return { ok: false, errors }
-  return { ok: true, value: { frontMatter, title, preamble, structure, templatesYaml, rulesYaml } }
+  return { ok: true, value: { frontMatter, title, preamble, structure, templatesYaml, rulesYaml, groupsYaml } }
 }

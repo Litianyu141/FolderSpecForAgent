@@ -66,6 +66,10 @@ const specArb: fc.Arbitrary<Spec> = fc.record({
   nodes: fc.uniqueArray(nodeArb, { maxLength: 4, selector: n => n.name }),
   templates: fc.array(templateArb, { maxLength: 2 }),
   rules: fc.array(ruleArb, { maxLength: 3 }),
+  // ## 分组 区的序列化（Task 2）尚未接入，这里先固定为空数组，
+  // 避免这条 property test 断言一个 serializeSpec 还写不出来的字段。
+  // Task 2 落地后应改为随机生成，让它重新覆盖分组区的往返。
+  groups: fc.constant([]),
 }).map(s => ({
   ...s,
   templates: s.templates.filter((t, i, all) => all.findIndex(o => o.name === t.name) === i),
@@ -153,6 +157,7 @@ describe('回归：round-trip property test 发现的反例', () => {
         exemplar: [],
       }],
       rules: [],
+      groups: [],
     }
     const text = serializeSpec(spec)
     const back = parseSpec(text)
@@ -171,6 +176,7 @@ describe('回归：round-trip property test 发现的反例', () => {
         { name: '0', children: [], exemplar: [] },
       ],
       rules: [],
+      groups: [],
     }
     const text = serializeSpec(spec)
     const back = parseSpec(text)

@@ -21,6 +21,7 @@ export function emptySpec(): Spec {
     nodes: [],
     templates: [],
     rules: [],
+    groups: [],
   }
 }
 

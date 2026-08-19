@@ -33,6 +33,14 @@ export interface Rule {
   text: string
 }
 
+export interface Group {
+  id: string
+  /** 工作区相对 posix 路径 */
+  members: string[]
+  text: string
+  severity?: Severity
+}
+
 export interface Spec {
   version: number
   root: string
@@ -42,6 +50,7 @@ export interface Spec {
   nodes: SpecNode[]
   templates: Template[]
   rules: Rule[]
+  groups: Group[]
 }
 
 export interface ParseError {
@@ -68,6 +77,7 @@ export interface RawSections {
   structure: Line[]
   templatesYaml: YamlBlock | null
   rulesYaml: YamlBlock | null
+  groupsYaml: YamlBlock | null
 }
 
 export const SEVERITIES: readonly Severity[] = ['error', 'warning', 'advisory']

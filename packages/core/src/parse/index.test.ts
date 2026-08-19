@@ -60,6 +60,25 @@ describe('parseSpec', () => {
   })
 })
 
+describe('parseSpec 分组区', () => {
+  it('串联分组区', () => {
+    const doc = DOC.replace('## 规则', '## 分组').replace(
+      '- { id: r1, severity: error, scope: "**", text: 规则一 }',
+      '- { id: g1, members: [src/a.ts], text: 分组一 }',
+    )
+    const r = parseSpec(doc)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.groups).toEqual([{ id: 'g1', members: ['src/a.ts'], text: '分组一' }])
+    expect(r.value.rules).toEqual([])
+  })
+
+  it('没有分组区时 groups 为空数组', () => {
+    const r = parseSpec(DOC)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.groups).toEqual([])
+  })
+})
+
 describe('parseSpec 拒绝同名兄弟节点', () => {
   // 行号一目了然地对齐：1..5 是 front-matter，6 空行，7 是 "## 结构"，8 空行，
   // 9/10/11 是三个结构行。
