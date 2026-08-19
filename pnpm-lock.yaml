@@ -16,6 +16,10 @@ importers:
         version: 2.1.9
 
   packages/core:
+    dependencies:
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
     devDependencies:
       typescript:
         specifier: ^5.6.3
@@ -514,6 +518,11 @@ packages:
     engines: {node: '>=8'}
     hasBin: true
 
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
 snapshots:
 
   '@esbuild/aix-ppc64@0.21.5':
@@ -901,3 +910,5 @@ snapshots:
     dependencies:
       siginfo: 2.0.0
       stackback: 0.0.2
+
+  yaml@2.9.0: {}
