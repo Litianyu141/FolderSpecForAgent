@@ -3,18 +3,20 @@ import { createRoot } from 'react-dom/client'
 import type { Bridge } from '@folderspec/core/api'
 import { App } from './App.js'
 import { createWebSocketBridge } from './ws-bridge.js'
+import { createVscodeBridge } from './vscode-bridge.js'
 import './styles.css'
 
 declare global {
   interface Window {
-    __folderspecBridge?: Bridge
     __folderspecRoot?: string
+    acquireVsCodeApi?: unknown
   }
 }
 
-// VSCode 宿主会预先注入 __folderspecBridge；浏览器宿主则连同源 WebSocket
-const bridge = window.__folderspecBridge
-  ?? createWebSocketBridge(`ws://${window.location.host}/`)
+// 宿主自识别：VSCode webview 里有 acquireVsCodeApi，浏览器里没有
+const bridge: Bridge = typeof window.acquireVsCodeApi === 'function'
+  ? createVscodeBridge()
+  : createWebSocketBridge(`ws://${window.location.host}/`)
 
 const el = document.getElementById('root')
 if (!el) throw new Error('缺少 #root 挂载点')
