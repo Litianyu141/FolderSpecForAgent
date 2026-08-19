@@ -22,13 +22,14 @@
     ]
   },
   "scripts": {
-    "build": "node scripts/copy-ui.mjs && esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "build": "pnpm -C ../core build && pnpm -C ../ui build && node scripts/copy-ui.mjs && esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "vscode:prepublish": "pnpm build",
     "test": "vitest run",
     "test:e2e": "tsc -p tsconfig.test.json && node dist-test/test/runTest.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": { "@folderspec/core": "workspace:*" },
   "devDependencies": {
+    "@folderspec/core": "workspace:*",
     "@folderspec/ui": "workspace:*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.10.2",

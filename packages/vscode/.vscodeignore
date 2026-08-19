@@ -1,0 +1,13 @@
+# 只有 dist/ 和 media/ 是运行时真正需要的产物；其余一律不进 .vsix。
+
+.gitignore
+.vscode-test/**
+dist-test/**
+scripts/**
+src/**
+tsconfig*.json
+vitest.config.ts
+**/*.test.*
+**/*.map
+**/.DS_Store
+node_modules/**
