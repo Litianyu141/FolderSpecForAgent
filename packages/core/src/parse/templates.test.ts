@@ -118,4 +118,24 @@ describe('parseTemplates', () => {
     const template2Error = r.errors.find(e => e.message.includes('template2'))
     expect(template2Error?.line).toBe(12)
   })
+
+  // 回归：round-trip property test 发现的反例（详见 roundtrip.test.ts）。
+  // 形如整数的键（如 "0"）在被转换成普通 JS 对象后，会被 ECMAScript 的
+  // 整数键排序规则重排到最前面，与它在 YAML 文档里的原始顺序无关。
+  it('顶层模板名形如整数时仍按文档中的原始顺序返回', () => {
+    const r = parseTemplates(block('b:\n  children: {}\n"0":\n  children: {}'))
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.map(t => t.name)).toEqual(['b', '0'])
+  })
+
+  it('children 子项名形如整数时仍按文档中的原始顺序返回', () => {
+    const r = parseTemplates(block([
+      'case:',
+      '  children:',
+      '    a: { required: false }',
+      '    "0": { required: false }',
+    ].join('\n')))
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value[0]?.children.map(c => c.name)).toEqual(['a', '0'])
+  })
 })

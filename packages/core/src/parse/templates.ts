@@ -1,5 +1,6 @@
-import { parseDocument } from 'yaml'
+import { isMap, parseDocument } from 'yaml'
 import { isPlainObject, lineAtOffset, topLevelKeyOffsets } from './yaml-util.js'
+import type { Document } from 'yaml'
 import type { ParseError, Result, Template, TemplateChild, YamlBlock } from '../types.js'
 
 /** 把 yaml 块内的相对行号换算成整个文件的行号 */
@@ -10,6 +11,23 @@ function yamlErrors(doc: ReturnType<typeof parseDocument>, block: YamlBlock): Pa
   }))
 }
 
+/** 取出映射键节点对应的字符串值 */
+function keyString(key: unknown): string {
+  if (key !== null && typeof key === 'object' && 'value' in key) {
+    return String((key as { value: unknown }).value)
+  }
+  return String(key)
+}
+
+/**
+ * 把一个 YAML 值节点换算成 JS 值。
+ * 用于不需要保留内部键顺序的场景（叶子映射的键都是固定字面量，如 role/required）。
+ */
+function nodeToJS(doc: Document, node: unknown): unknown {
+  if (node === null || node === undefined) return node
+  return (node as { toJS: (doc: Document) => unknown }).toJS(doc)
+}
+
 export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
   if (block === null) return { ok: true, value: [] }
 
@@ -18,7 +36,7 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
 
   const raw: unknown = doc.toJS()
   if (raw === null || raw === undefined) return { ok: true, value: [] }
-  if (!isPlainObject(raw)) {
+  if (!isMap(doc.contents)) {
     return { ok: false, errors: [{ line: block.startLine, message: '模板区顶层必须是映射（模板名 → 定义）' }] }
   }
 
@@ -26,13 +44,20 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
   const templates: Template[] = []
   const keyOffsets = topLevelKeyOffsets(doc)
 
-  for (const [name, def] of Object.entries(raw)) {
+  // 按 YAML 文档中的原始顺序遍历顶层键：先用 doc.toJS() 转成 JS 对象再遍历，
+  // 会被 ECMAScript「形如数组下标的键排到最前面」的规则打乱顺序——例如模板名
+  // "0" 会被排到 "a" 前面，哪怕它在文档里排在后面。因此必须直接遍历 AST 节点的
+  // items，而不是 Object.entries(doc.toJS())。
+  for (const pair of doc.contents.items) {
+    const name = keyString(pair.key)
     const at = { line: lineAtOffset(block, keyOffsets.get(name)) }
 
-    if (!isPlainObject(def)) {
+    const defNode = pair.value
+    if (!isMap(defNode)) {
       errors.push({ ...at, message: `模板 "${name}" 的定义必须是映射` })
       continue
     }
+    const def = defNode.toJS(doc) as Record<string, unknown>
     const tpl: Template = { name, children: [], exemplar: [] }
 
     // Check for unknown keys at template level
@@ -81,10 +106,15 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
     }
 
     if (def.children !== undefined) {
-      if (!isPlainObject(def.children)) {
+      const childrenPair = defNode.items.find(p => keyString(p.key) === 'children')
+      const childrenNode = childrenPair?.value
+      if (!isMap(childrenNode)) {
         errors.push({ ...at, message: `模板 "${name}" 的 children 必须是映射` })
       } else {
-        for (const [rawName, spec] of Object.entries(def.children)) {
+        // 子项名同样可能形如整数（如 "0"），理由同上，按 AST 顺序遍历
+        for (const childPair of childrenNode.items) {
+          const rawName = keyString(childPair.key)
+          const spec = nodeToJS(doc, childPair.value)
           if (!isPlainObject(spec)) {
             errors.push({ ...at, message: `模板 "${name}" 的子项 "${rawName}" 必须是映射` })
             continue
