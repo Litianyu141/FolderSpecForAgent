@@ -191,8 +191,22 @@ export class Session {
     assertRepresentablePath(params.from)
     assertRepresentablePath(params.toParent)
     this.spec = moveNode(this.spec, params.from, params.toParent, params.isDir)
-    // 旧位置在当次会话中隐藏；重新 open 后自然消失（不落盘）
-    this.hidden.add(params.from)
+
+    const name = params.from.split('/').filter(Boolean).pop() ?? ''
+    const to = params.toParent === '' ? name : `${params.toParent}/${name}`
+
+    // 目标路径如果正好是此前某次拖拽留下的隐藏旧位置，这次移动等于把节点还回去；
+    // 必须先解除隐藏，否则该路径会同时在 actual 侧（磁盘上真实存在）和 spec 侧
+    // （契约又把它声明了回去）被 merge 跳过，节点第二次凭空消失。典型触发方式：
+    // 把节点拖到别处、再从新位置拖回原父级——第二次 move() 的 from 是当前视图
+    // 路径（新位置），不是磁盘上的原路径，所以不能指望下面对 from 的处理顺带清掉它。
+    this.hidden.delete(to)
+
+    // 只有当节点真的换了位置时才隐藏旧路径。拖回原父级时新旧路径相同，
+    // 若照样加进 hidden，merge 会把磁盘侧和 spec 侧双双跳过，
+    // 节点就从界面上凭空消失（文件和契约其实都还在）。
+    if (to !== params.from) this.hidden.add(params.from)
+
     this.dirty = true
     return { tree: this.tree(), dirty: true }
   }
