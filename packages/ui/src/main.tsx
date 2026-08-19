@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Bridge } from '@folderspec/core/api'
 import { App } from './App.js'
+import { createWebSocketBridge } from './ws-bridge.js'
 import './styles.css'
 
 declare global {
@@ -11,8 +12,9 @@ declare global {
   }
 }
 
+// VSCode 宿主会预先注入 __folderspecBridge；浏览器宿主则连同源 WebSocket
 const bridge = window.__folderspecBridge
-if (!bridge) throw new Error('宿主未注入 window.__folderspecBridge')
+  ?? createWebSocketBridge(`ws://${window.location.host}/`)
 
 const el = document.getElementById('root')
 if (!el) throw new Error('缺少 #root 挂载点')
