@@ -1,0 +1,243 @@
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { App } from './App.js'
+import { FakeBridge } from './test-bridge.js'
+import type { OpenResult, ViewNode } from '@folderspec/core/api'
+
+const tree = (children: ViewNode[]): ViewNode =>
+  ({ name: 'repo', path: '', isDir: true, origin: 'both', children })
+
+const SRC: ViewNode = { name: 'src', path: 'src', isDir: true, origin: 'actual-only', children: [] }
+
+// 目录，children 未定义——代表"尚未扫描"，触发 tree/expand 的唯一形状
+// （见 Tree.tsx 的 onToggle：只有 n.children === undefined 才会调用 onExpand）
+const UNSCANNED: ViewNode = { name: 'lib', path: 'lib', isDir: true, origin: 'unscanned' }
+
+const openResult = (over: Partial<OpenResult> = {}): OpenResult => ({
+  root: '/tmp/repo',
+  rootName: 'repo',
+  hasSpec: false,
+  specPath: '/tmp/repo/.folderspec.md',
+  parseErrors: null,
+  tree: tree([SRC]),
+  ...over,
+})
+
+const bridgeWith = (over: Partial<Record<string, unknown>> = {}) => new FakeBridge({
+  'workspace/open': () => openResult(over as Partial<OpenResult>),
+  'spec/annotate': () => ({ tree: tree([{ ...SRC, annotation: '核心源码', origin: 'both' }]), dirty: true }),
+  'spec/move': () => ({ tree: tree([SRC]), dirty: true }),
+  'spec/save': () => ({ written: true }),
+  'tree/expand': () => ({ tree: tree([SRC]) }),
+} as never)
+
+const clickFirstRow = (container: HTMLElement) => {
+  const row = container.querySelector('.fs-row')
+  expect(row).toBeTruthy()
+  fireEvent.click(row!)
+}
+
+describe('App', () => {
+  it('挂载时打开初始工作区', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(bridge.lastCall('workspace/open')).toEqual({ root: '/tmp/repo' }))
+  })
+
+  it('工具栏回填当前根路径', async () => {
+    render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() =>
+      expect((screen.getByLabelText('工作区路径') as HTMLInputElement).value).toBe('/tmp/repo'))
+  })
+
+  it('点击载入按钮用新路径重新打开', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    fireEvent.change(screen.getByLabelText('工作区路径'), { target: { value: '/tmp/other' } })
+    fireEvent.click(screen.getByText('载入'))
+    await waitFor(() => expect(bridge.lastCall('workspace/open')).toEqual({ root: '/tmp/other' }))
+  })
+
+  it('解析失败时显示只读横幅并列出行号', async () => {
+    const bridge = bridgeWith({ parseErrors: [{ line: 7, message: '未知标签 [planned]' }] })
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+    expect(screen.getByText(/第 7 行：未知标签 \[planned\]/)).toBeTruthy()
+  })
+
+  it('只读模式下保存按钮禁用', async () => {
+    const bridge = bridgeWith({ parseErrors: [{ line: 1, message: 'x' }] })
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true))
+  })
+
+  it('只读模式下面板控件被禁用', async () => {
+    const bridge = bridgeWith({ parseErrors: [{ line: 1, message: 'x' }] })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+    expect((screen.getByLabelText('注释') as HTMLTextAreaElement).disabled).toBe(true)
+    expect((screen.getByLabelText('语义角色') as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByLabelText('约束强度') as HTMLSelectElement).disabled).toBe(true)
+  })
+
+  it('无未保存改动时保存按钮禁用', async () => {
+    render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true))
+  })
+
+  it('搜索框把词传给树', async () => {
+    render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('搜索'))
+    fireEvent.change(screen.getByLabelText('搜索'), { target: { value: 'core' } })
+    expect((screen.getByLabelText('搜索') as HTMLInputElement).value).toBe('core')
+  })
+
+  it('面板改动经 bridge 发出 spec/annotate 并刷新树', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    // 直接触发 App 暴露给树的选中回调，避开虚拟列表的测量问题
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+
+    const ta = screen.getByLabelText('注释')
+    fireEvent.change(ta, { target: { value: '核心源码' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(bridge.lastCall('spec/annotate')).toMatchObject({
+      path: 'src', isDir: true, annotation: '核心源码',
+    }))
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('点击保存调用 spec/save 并清除脏标记', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: 'x' } })
+    fireEvent.blur(screen.getByLabelText('注释'))
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+
+    fireEvent.click(screen.getByText('保存'))
+    await waitFor(() => expect(bridge.calls.some(c => c.method === 'spec/save')).toBe(true))
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true))
+  })
+
+  it('收到 external-change 事件时提示可重载', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    act(() => { bridge.emit('external-change', {}) })
+    await waitFor(() => expect(screen.getByText(/已在外部修改/)).toBeTruthy())
+  })
+
+  it('横幅出现时会重新测量头部高度', async () => {
+    // 用同一个根重新载入，第二次返回 parseErrors，只触发只读横幅这一条状态变化——
+    // 不掺入 externalChange，这样测试才是专门盯着 parseErrors 这个依赖项的。
+    let opens = 0
+    const bridge = new FakeBridge({
+      'workspace/open': () => {
+        opens += 1
+        return opens === 1 ? openResult() : openResult({ parseErrors: [{ line: 1, message: 'x' }] })
+      },
+      'spec/annotate': () => ({ tree: tree([SRC]), dirty: true }),
+      'spec/move': () => ({ tree: tree([SRC]), dirty: true }),
+      'spec/save': () => ({ written: true }),
+      'tree/expand': () => ({ tree: tree([SRC]) }),
+    } as never)
+
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect')
+    const before = spy.mock.calls.length
+
+    fireEvent.click(screen.getByText('载入'))
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    expect(spy.mock.calls.length).toBeGreaterThan(before)
+    spy.mockRestore()
+  })
+
+  it('有未保存改动时点重新载入会先确认，取消则不重载', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: 'x' } })
+    fireEvent.blur(screen.getByLabelText('注释'))
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    act(() => { bridge.emit('external-change', {}) })
+    await waitFor(() => screen.getByText(/已在外部修改/))
+
+    const openCallsBefore = bridge.calls.filter(c => c.method === 'workspace/open').length
+    fireEvent.click(screen.getByText('重新载入'))
+
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(bridge.calls.filter(c => c.method === 'workspace/open').length).toBe(openCallsBefore)
+    confirmSpy.mockRestore()
+  })
+
+  it('确认后正常重载', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: 'x' } })
+    fireEvent.blur(screen.getByLabelText('注释'))
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    act(() => { bridge.emit('external-change', {}) })
+    await waitFor(() => screen.getByText(/已在外部修改/))
+
+    const openCallsBefore = bridge.calls.filter(c => c.method === 'workspace/open').length
+    fireEvent.click(screen.getByText('重新载入'))
+
+    expect(confirmSpy).toHaveBeenCalled()
+    await waitFor(() => expect(bridge.calls.filter(c => c.method === 'workspace/open').length)
+      .toBe(openCallsBefore + 1))
+    confirmSpy.mockRestore()
+  })
+
+  it('没有未保存改动时重新载入不弹确认', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true) // 哨兵值：不该被调用
+    act(() => { bridge.emit('external-change', {}) })
+    await waitFor(() => screen.getByText(/已在外部修改/))
+
+    const openCallsBefore = bridge.calls.filter(c => c.method === 'workspace/open').length
+    fireEvent.click(screen.getByText('重新载入'))
+
+    expect(confirmSpy).not.toHaveBeenCalled()
+    await waitFor(() => expect(bridge.calls.filter(c => c.method === 'workspace/open').length)
+      .toBe(openCallsBefore + 1))
+    confirmSpy.mockRestore()
+  })
+
+  it('tree/expand 失败时显示错误横幅', async () => {
+    const bridge = new FakeBridge({
+      'workspace/open': () => openResult({ tree: tree([UNSCANNED]) }),
+      'tree/expand': () => { throw new Error('展开失败') },
+    } as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    clickFirstRow(container)
+
+    await waitFor(() => expect(screen.getByText('展开失败')).toBeTruthy())
+  })
+})

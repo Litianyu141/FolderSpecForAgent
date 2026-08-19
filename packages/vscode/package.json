@@ -1,0 +1,43 @@
+{
+  "name": "folderspec-vscode",
+  "displayName": "FolderSpec",
+  "description": "可视化声明仓库结构意图，产出给 AI Agent 遵守的结构契约",
+  "version": "0.1.0",
+  "publisher": "folderspec",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Visualization", "Other"],
+  "main": "./dist/extension.js",
+  "activationEvents": ["onCommand:folderspec.open"],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "folderspec.editor",
+        "displayName": "FolderSpec 结构契约",
+        "selector": [{ "filenamePattern": ".folderspec.md" }],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      { "command": "folderspec.open", "title": "FolderSpec：打开结构契约" }
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/copy-ui.mjs && esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "test": "vitest run",
+    "test:e2e": "tsc -p tsconfig.test.json && node dist-test/test/runTest.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": { "@folderspec/core": "workspace:*" },
+  "devDependencies": {
+    "@folderspec/ui": "workspace:*",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^2.4.1",
+    "esbuild": "^0.24.0",
+    "glob": "^11.0.0",
+    "mocha": "^10.8.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
