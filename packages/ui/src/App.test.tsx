@@ -3179,11 +3179,17 @@ describe('本轮新增写入口的只读闸门', () => {
     expect(nameInput()).toBeTruthy() // 先确认它真的开着，别测了个空
 
     fireEvent.click(screen.getByText('原始结构'))
-    await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
 
+    // **等 DOM 真的变了，而不是等请求发出去。** readOnly 是 view/setMode 的响应落地
+    // 之后才置上的，而 lastCall 在请求发出的那一刻就记上了——等它只能证明"发出去了"。
+    // 本地 FakeBridge 快到两者看不出差别，CI 上一次稍慢的往返就会让断言跑在重渲染之前：
+    // v0.6.0 的 release workflow 正是挂在这一条上（本地 993 全绿、CI 红）。
+    // 复现方式：给 FakeBridge.request 加 60ms 延迟，这条立刻变红。
+    //
     // 输入框里那个冻结的 parentPath 此刻已经无处可去；留在屏幕上而按钮全灰，
     // 用户只会以为界面卡了
-    expect(screen.queryByLabelText('名称')).toBeNull()
+    await waitFor(() => expect(screen.queryByLabelText('名称')).toBeNull())
+    expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' })
     expect(bridge.calls.some(c => c.method === 'spec/createNode')).toBe(false)
   })
 })
