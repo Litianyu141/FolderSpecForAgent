@@ -85,6 +85,21 @@ describe('buildWebviewHtml', () => {
     expect(html).toContain('--fs-code-font-size: var(--vscode-editor-font-size')
   })
 
+  it('THEME_BRIDGE 的 <style> 必须排在 UI 产物的 <link rel="stylesheet"> 之后', () => {
+    // 这两者都是 :root 选择器，特异度相同——CSS 级联规则下后出现的赢。之前
+    // THEME_BRIDGE 被塞在 <head> 最前面，UI 产物的 <link> 停在原来的位置（更靠后），
+    // 于是 styles.css 里那份写死的 CLI 默认色反而覆盖了 THEME_BRIDGE 对 --vscode-*
+    // 的映射——在真实 webview 里整套主题桥接从未生效过，只是没人用渲染后的浏览器
+    // 核实过，之前的测试全是 toContain 字符串存在性检查，测不出级联顺序的问题。
+    // 用真实 Playwright 渲染 + getComputedStyle 核实过这个断言必须成立，见 theme-report.md。
+    const html = build()
+    const styleIdx = html.indexOf('<style>')
+    const linkIdx = html.indexOf('<link rel="stylesheet"')
+    expect(styleIdx).toBeGreaterThan(-1)
+    expect(linkIdx).toBeGreaterThan(-1)
+    expect(styleIdx).toBeGreaterThan(linkIdx)
+  })
+
   it('注入真实的工作区根路径，且脚本带 nonce（CLI 宿主靠这个脚本让 UI 拿到真实 root，VSCode 之前漏了）', () => {
     const html = build()
     expect(html).toContain(`window.__folderspecRoot=${JSON.stringify(ROOT)}`)

@@ -92,15 +92,25 @@ export function buildWebviewHtml(opts: WebviewHtmlOpts): string {
     .replace(/(src|href)="\.\/(.*?)"/g, (_m, attr: string, path: string) => `${attr}="${assetBase}/${path}"`)
     .replace(/<script(?![^>]*\bnonce=)/g, `<script nonce="${nonce}"`)
 
-  const head = [
+  const headStart = [
     `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
     // 必须带 nonce：严格 CSP 下没有 nonce 的内联脚本会被直接拦下，root 就送不到 UI，
     // 又会退回 initialRoot ?? '.' 的占位值——正是这次要修的那个 bug。
     `<script nonce="${nonce}">window.__folderspecRoot=${jsonForScript(root)};</script>`,
-    `<style>${THEME_BRIDGE}</style>`,
   ].join('\n')
+
+  // THEME_BRIDGE 必须排在 </head> 之前而不是 <head> 之后：它和 UI 产物那份
+  // <link rel="stylesheet">（indexHtml 自带、指向 styles.css 编译出的 :root 默认值）
+  // 特异度完全相同（都是 :root 选择器），CSS 级联规则下后出现的赢。之前把它塞在
+  // <head> 最前面、<link> 留在原位（更靠后），实际效果是 styles.css 里写死的 CLI
+  // 默认色反过来覆盖了这里对 --vscode-* 的映射——在真实 webview 里主题桥接从未生效，
+  // 只是这里的测试一直是 toContain 字符串存在性检查，测不出级联顺序，直到用真实
+  // Playwright 渲染 + getComputedStyle 核实才发现（见 theme-report.md）。
+  const themeStyle = `<style>${THEME_BRIDGE}</style>`
 
   // 用函数替换而非字符串替换：字符串替换会展开 $&、$`、$'、$$，
   // 把 jsonForScript 刚转义掉的 '<' 又放回去，重新打开 </script> 突破口。
-  return html.replace('<head>', () => `<head>\n${head}`)
+  return html
+    .replace('<head>', () => `<head>\n${headStart}`)
+    .replace('</head>', () => `${themeStyle}\n</head>`)
 }
