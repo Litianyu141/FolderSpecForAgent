@@ -1134,6 +1134,12 @@ describe('App', () => {
     expect(memberPathsOf(container)).toEqual(['src', 'docs'])
     // 反过来确认夹具真的处在"在途"那一帧，而不是响应早就回来了
     expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs', 'README.md'])
+
+    // 收尾：桩延迟 60ms，测试体到这里跑完时那笔 spec/setGroup 还在途，它的落地会在
+    // act 之外更新 react-arborist 的 List，React 因此报 "not wrapped in act"。等它
+    // 回来，让落地留在 act 里。上面那三句断言（含"故意不 await"的那一句）一个字没动——
+    // 它们仍然排在这句 await 之前，在途那一帧照样被钉着。
+    await act(async () => { await new Promise(r => setTimeout(r, 80)) })
   })
 
   it('提交那一刻面板上显示的成员，就是写进契约的那一份', async () => {
@@ -2174,6 +2180,14 @@ describe('App 界面语言切换（右上角开关）', () => {
     expect(screen.getByLabelText('Workspace path')).toBeTruthy()
     // 切语言是纯前端状态，不经过 bridge——没有多打一次 workspace/open
     expect(bridge.calls.filter(c => c.method === 'workspace/open').length).toBe(openCallsBefore)
+
+    // 上面每一句断言都刻意排在 fireEvent 之后、不带 await：界面文案是**同步**切的，
+    // 一旦有人把它改成"等 spec/setLang 回来再切"，这些断言必须立刻变红。
+    // 但点击同时还发出了一笔 spec/setLang（契约 front-matter 里的 lang 字段，见
+    // App.handleSetLang 那两条线），它的落地回调会在测试体跑完之后才更新 state，
+    // React 因此报 "not wrapped in act"。收尾冲一次微任务，让那笔落地留在 act 里——
+    // 断言一个字没动，只是不再把噪声打进测试输出。
+    await flushChain()
   })
 
   it('切到 English 再切回中文，文案回到今天原本的样子', async () => {
@@ -2189,6 +2203,9 @@ describe('App 界面语言切换（右上角开关）', () => {
     expect(screen.getByText('撤销')).toBeTruthy()
     expect(screen.getByText('重做')).toBeTruthy()
     expect(screen.getByLabelText('工作区路径')).toBeTruthy()
+
+    // 两次点击各发出一笔 spec/setLang，收尾一起冲掉，理由同上一条用例
+    await flushChain()
   })
 
   // 本轮唯一的安全属性钉在这里：切到英文界面，用户自己写的中文注释必须原样显示，
