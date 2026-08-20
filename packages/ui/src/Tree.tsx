@@ -16,6 +16,8 @@ export interface TreeProps {
   onExpand(path: string): void
   onMove(from: string, toParent: string, isDir: boolean): void
   onGroupClick?: (id: string) => void
+  /** 某一行上按了右键。坐标是视口坐标，上层用它给菜单定位 */
+  onContextMenuNode?: (path: string, x: number, y: number) => void
   /**
    * 把 react-arborist 的 TreeApi 交出去。上层要的是 `visibleNodes`——Shift 区间必须以
    * 屏幕上真实的行序为准，而那份顺序由库自己算：它同时受展开态、搜索过滤、以及
@@ -72,7 +74,7 @@ export function makeDisableDrop(disabled: boolean) {
 export function SpecTree(props: TreeProps) {
   const {
     data, selectedPaths, searchTerm, width, height, disabled,
-    onSelect, onExpand, onMove, onGroupClick, apiRef,
+    onSelect, onExpand, onMove, onGroupClick, onContextMenuNode, apiRef,
   } = props
 
   // selectedPaths/onSelect 几乎每次点击都变。react-arborist 把 renderNode（下面的
@@ -87,6 +89,10 @@ export function SpecTree(props: TreeProps) {
   selectedPathsRef.current = selectedPaths
   const onSelectRef = useRef(onSelect)
   onSelectRef.current = onSelect
+  // 同上：这个回调闭包着 App 里的 tree/readOnly，每次渲染都是新引用。走 ref 才不会
+  // 让整棵可见树因为"右键处理器换了个身份"而卸载重挂。
+  const onContextMenuRef = useRef(onContextMenuNode)
+  onContextMenuRef.current = onContextMenuNode
 
   const renderNode = useCallback(
     (p: NodeRendererProps<ViewNode>) => (
@@ -95,6 +101,7 @@ export function SpecTree(props: TreeProps) {
         onGroupClick={onGroupClick}
         selectedPaths={selectedPathsRef.current}
         onRowClick={(path, mods) => onSelectRef.current(path, mods)}
+        onRowContextMenu={(path, x, y) => onContextMenuRef.current?.(path, x, y)}
       />
     ),
     [onGroupClick],

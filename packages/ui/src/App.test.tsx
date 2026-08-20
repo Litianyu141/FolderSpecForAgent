@@ -46,6 +46,47 @@ const openResult = (over: Partial<OpenResult> = {}): OpenResult => ({
   ...over,
 })
 
+/**
+ * 把一条新建出来的声明插进固定夹具，模拟 core 侧 merge 的产出：新声明在磁盘上并不
+ * 存在，所以 origin 是 'spec-only'（虚线那一档）；它的父目录因为 ensure() 补出了
+ * spec 节点，从 'actual-only' 升格成 'both'。
+ *
+ * 桩**必须真的把它插进树里**：不插的话，"创建后自动选中新节点"那条用例里
+ * `flatten(tree).get(r.path)` 查不到，AnnotationPanel 退回空态，断言"右栏能给它写
+ * 注释"就变成了断言一个不存在的路径——正是本项目记录里那类"检查了周边、没检查目标"。
+ *
+ * 只处理 parentPath 为 '' 或某个顶层节点两种情形，本文件的用例只用到这两种。
+ */
+const withCreated = (parentPath: string, name: string, isDir: boolean): ViewNode[] => {
+  const created: ViewNode = {
+    name,
+    path: parentPath === '' ? name : `${parentPath}/${name}`,
+    isDir,
+    origin: 'spec-only',
+    ...(isDir ? { children: [] } : {}),
+  }
+  if (parentPath === '') return [...FIXTURE, created]
+  return FIXTURE.map(n => n.path === parentPath
+    ? { ...n, origin: 'both' as const, children: [...(n.children ?? []), created] }
+    : n)
+}
+
+/** 与 core 的 createNode 同一条拼接规则（spec-edit.ts）：根下不带前导斜杠。
+ *  桩里自己拼 `${parentPath}/${name}` 会在根下拼出 '/cases'，那正是 api.ts 里
+ *  spec/createNode 特意返回 path 字段所要防的那种不一致——桩若也犯这个错，
+ *  "UI 用的是 core 给的 path"这条就测不出来了。 */
+const createdPath = (parentPath: string, name: string) =>
+  parentPath === '' ? name : `${parentPath}/${name}`
+
+/**
+ * 让一次响应晚 ms 毫秒才落地。真实宿主的往返必然晚于本次点击引发的渲染，"在途那一帧"
+ * 里的缺陷只长在那个窗口里——零延迟的桩测不出来（与 groupBridge 上那段是同一条判据）。
+ * 类型上骗过 FakeBridge 的同步 Handlers 签名：request() 本身是 async，返回 Promise
+ * 时它会照常 await，运行时完全成立。
+ */
+const delayed = <T,>(value: T, ms = 20): T =>
+  (new Promise(resolve => { setTimeout(() => resolve(value), ms) }) as unknown as T)
+
 // canUndo: true 是四个写操作桩的如实反映——core 侧真实 Session 提交一次编辑之后
 // undoStack 必然非空（见 session.test.ts「四个写操作的返回值都带上 canUndo / canRedo」）。
 // 桩若省略这两个字段，App 里任何"编辑后撤销按钮该启用"的断言都测不出对应缺陷。
@@ -64,6 +105,18 @@ const bridgeWith = (over: Partial<Record<string, unknown>> = {}) => new FakeBrid
   'view/setMode': ({ mode }: { mode: ViewMode }) => ({ tree: tree(FIXTURE), mode }),
   'spec/undo': () => ({ tree: tree(FIXTURE), dirty: false, groups: [G1], canUndo: false, canRedo: true }),
   'spec/redo': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false }),
+  // 下面三条是本轮（右键菜单 + 语言开关接线）接上的方法。加进这个共用工厂而不是逐条
+  // 用例里补：App 现在会在既有流程里就调到它们（点语言开关必调 spec/setLang），
+  // 桩缺一条，FakeBridge 会抛 "未配置方法"，那条报错会落到错误横幅上，把一批与本轮
+  // 无关的既有用例污染成"界面上多了一条红横幅"。**既有用例的断言一个字没动。**
+  'spec/createNode': ({ parentPath, name, isDir }: { parentPath: string; name: string; isDir: boolean }) => ({
+    tree: tree(withCreated(parentPath, name, isDir)),
+    dirty: true, groups: [G1], canUndo: true, canRedo: false,
+    path: createdPath(parentPath, name),
+  }),
+  'spec/removeNode': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false }),
+  // 切语言确实会置脏（core 会改写 lang 字段、可能连带换掉标题/导言），桩如实反映
+  'spec/setLang': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false }),
 } as never)
 
 const rowsOf = (container: HTMLElement) => Array.from(container.querySelectorAll('.fs-row'))
@@ -2156,5 +2209,545 @@ describe('App 界面语言切换（右上角开关）', () => {
     clickFirstRow(container) // FIXTURE 顺序固定，第一行是带注释的 src
     await waitFor(() => screen.getByLabelText('Annotation'))
     expect((screen.getByLabelText('Annotation') as HTMLTextAreaElement).value).toBe('核心源码')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 本轮：右键菜单（新建声明 / 取消声明）+ 语言开关接上 core
+// ---------------------------------------------------------------------------
+
+/** 菜单项按可见文案取。用 role 而不是 getByText：三条都是 <button role="menuitem">，
+ *  禁用态也留在可访问性树里，"灰着"与"没渲染"这两种结果因此能被区分开。 */
+const menuItem = (name: string) => screen.getByRole('menuitem', { name }) as HTMLButtonElement
+
+/** 在某一行上按右键。坐标随便给一个非零值，只为验证浮层确实读了事件坐标 */
+const rightClickRow = (container: HTMLElement, rowName: string) =>
+  fireEvent.contextMenu(rowByName(container, rowName), { clientX: 120, clientY: 240 })
+
+const nameInput = () => screen.getByLabelText('名称') as HTMLInputElement
+const createBtn = () => screen.getByRole('button', { name: '创建' }) as HTMLButtonElement
+
+describe('右键菜单：新建声明（仅契约）', () => {
+  it('右键点在目录上：菜单写明目标，新建落在该目录下', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    // 菜单顶部就是它作用的对象——右键刻意不改选中集，没有高亮可依赖
+    expect(container.querySelector('.fs-context-menu-header')?.textContent).toBe('src')
+    // 「仅契约」三个字是用户点名要的，它防的正是"以为点完磁盘上会冒出一个目录"
+    expect(menuItem('新建目录（仅契约）')).toBeTruthy()
+
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    expect(screen.getByText('在「src」下新建目录（仅契约）')).toBeTruthy()
+
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(bridge.lastCall('spec/createNode'))
+      .toEqual({ parentPath: 'src', name: 'cases', isDir: true }))
+  })
+
+  it('右键点在文件上：新建落到它的父目录，对话框标题写明真实目标', async () => {
+    // 夹具必须是**嵌套**的文件（src/a.ts），不能拿顶层文件充数：顶层文件的父目录是
+    // ''，与"空白区域 → 根"给出同一个答案，用它当夹具的话，即便实现根本没算父目录、
+    // 直接退回根，用例照样绿——本项目记录里那类"检查了周边、没检查目标"的形状。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowByName(container, 'src/')) // 展开，让 a.ts 出现在树上
+    rightClickRow(container, 'a.ts')
+
+    // 菜单说的是"你右键点中的那一个"
+    expect(container.querySelector('.fs-context-menu-header')?.textContent).toBe('src/a.ts')
+
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    // 对话框说的是"真正会写到哪儿"。这一行就是"我明明点的是这个文件"那层困惑的解药
+    expect(screen.getByText('在「src」下新建目录（仅契约）')).toBeTruthy()
+
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(bridge.lastCall('spec/createNode'))
+      .toEqual({ parentPath: 'src', name: 'cases', isDir: true }))
+  })
+
+  it('树的空白区域右键：建在工作区根下', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const pane = container.querySelector('.fs-pane-tree') as HTMLElement
+    fireEvent.contextMenu(pane, { clientX: 30, clientY: 400 })
+
+    expect(container.querySelector('.fs-context-menu-header')?.textContent).toBe('工作区根')
+    // 空白处没有节点被点中，「取消声明」整条不该出现（根节点本来也移不掉）
+    expect(screen.queryByRole('menuitem', { name: '取消声明' })).toBeNull()
+
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    expect(screen.getByText('在「工作区根」下新建目录（仅契约）')).toBeTruthy()
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(bridge.lastCall('spec/createNode'))
+      .toEqual({ parentPath: '', name: 'cases', isDir: true }))
+    // 根下建出来的节点，路径是 'cases' 而不是 '/cases'。这条断言承的是"选中新节点时
+    // 用的是 core 回来的 r.path、不是 UI 自己拼的 parentPath + name"——两边拼接规则
+    // 在根这一档正好分叉（api.ts 的 spec/createNode 就是为这件事加的 path 字段），
+    // 非根的情形下自己拼恰好也对，测不出来。
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('cases'))
+  })
+
+  it('顶栏「新建」按钮等价于在根下建', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByText('新建'))
+    fireEvent.click(menuItem('新建文件（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'CHANGELOG.md' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(bridge.lastCall('spec/createNode'))
+      .toEqual({ parentPath: '', name: 'CHANGELOG.md', isDir: false }))
+  })
+
+  it('「新建文件（仅契约）」提交的 isDir 是 false，不是目录', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建文件（仅契约）'))
+    expect(screen.getByText('在「src」下新建文件（仅契约）')).toBeTruthy()
+    fireEvent.change(nameInput(), { target: { value: 'index.ts' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(bridge.lastCall('spec/createNode'))
+      .toEqual({ parentPath: 'src', name: 'index.ts', isDir: false }))
+  })
+
+  it('Esc 取消：对话框消失，一个写请求都没发出去', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.keyDown(nameInput(), { key: 'Escape' })
+
+    expect(screen.queryByLabelText('名称')).toBeNull()
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/createNode')).toBe(false)
+  })
+
+  it('名字全是空白时不提交：创建按钮不可点，回车也发不出请求', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: '   ' } })
+
+    expect(createBtn().disabled).toBe(true)
+    fireEvent.keyDown(nameInput(), { key: 'Enter' })
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/createNode')).toBe(false)
+    // 对话框留着，用户补个名字就能继续——不是悄悄关掉
+    expect(screen.getByLabelText('名称')).toBeTruthy()
+  })
+
+  it('创建成功后自动选中新节点，右栏立刻能给它写注释', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.click(createBtn())
+
+    // 选中的是 core 回来的那个 path，不是 UI 自己拼的（根路径是 '' 时两边拼接规则
+    // 一旦不一致就会选中错的节点，见 api.ts 的 spec/createNode）
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('src/cases'))
+    expect((screen.getByLabelText('注释') as HTMLTextAreaElement).disabled).toBe(false)
+    // 它是"契约里的声明"，磁盘上并不存在——面板据 origin 如实说明，正是本功能的全部意义
+    expect(screen.getByText('spec 中声明，磁盘上不存在——可能待创建，也可能已被删除')).toBeTruthy()
+    // 对话框收掉，脏标记亮起
+    expect(screen.queryByLabelText('名称')).toBeNull()
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('提交在途时创建按钮禁用，回车也提交不出第二笔', async () => {
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/createNode', ((p: { parentPath: string; name: string; isDir: boolean }) =>
+      delayed({
+        tree: tree(withCreated(p.parentPath, p.name, p.isDir)),
+        dirty: true, groups: [G1], canUndo: true, canRedo: false,
+        path: createdPath(p.parentPath, p.name),
+      })) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.keyDown(nameInput(), { key: 'Enter' })
+
+    // 在途那一帧：按钮已经灰了
+    expect(createBtn().disabled).toBe(true)
+    fireEvent.keyDown(nameInput(), { key: 'Enter' })
+
+    await waitFor(() => expect(screen.queryByLabelText('名称')).toBeNull())
+    expect(bridge.calls.filter(c => c.method === 'spec/createNode').length).toBe(1)
+  })
+})
+
+describe('右键菜单：取消声明', () => {
+  it('契约里没有声明过的节点（origin: actual-only）上不可点，点了也不发请求', async () => {
+    // README.md 在 FIXTURE 里是 actual-only —— 磁盘上有、契约里没有
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'README.md')
+    const item = menuItem('取消声明')
+    expect(item.disabled).toBe(true)
+    // 灰着还得说得出原因，否则只是把"点了没反应"换成"灰着没理由"
+    expect(item.getAttribute('title')).toBe('这个节点在契约里还没有任何声明，没有可取消的东西')
+
+    fireEvent.click(item)
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/removeNode')).toBe(false)
+  })
+
+  it('已声明的节点（origin: both）上可点，发出 spec/removeNode 并回填脏标记与撤销栈', async () => {
+    const bridge = bridgeWith({
+      tree: tree([{ ...SRC, origin: 'both', annotation: '核心源码' }, DOCS, README]),
+    })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('取消声明').disabled).toBe(false)
+    fireEvent.click(menuItem('取消声明'))
+
+    await waitFor(() => expect(bridge.lastCall('spec/removeNode')).toEqual({ path: 'src' }))
+    // EditResult 照常回填：脏标记亮、撤销可用（core 侧 removeNode 走的是同一套收口）
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false)
+    // 点完菜单要收掉，不能悬在屏幕上
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('spec-only 节点（契约里有、磁盘上没有）同样可以取消声明', async () => {
+    const GHOST: ViewNode = { name: 'cases', path: 'cases', isDir: true, origin: 'spec-only', children: [] }
+    const bridge = bridgeWith({ tree: tree([...FIXTURE, GHOST]) })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'cases/')
+    expect(menuItem('取消声明').disabled).toBe(false)
+    fireEvent.click(menuItem('取消声明'))
+    await waitFor(() => expect(bridge.lastCall('spec/removeNode')).toEqual({ path: 'cases' }))
+  })
+})
+
+describe('新建 / 取消声明：core 的报错必须原样显示在界面上', () => {
+  // 三条都断言"那段话真的出现在界面上"，不是断言"调用抛错了"——后者测的是 core 不是 UI。
+
+  it('懒加载边界：「请先展开该节点再重试」原样出现，输入框与已经打好的名字都留着', async () => {
+    const MSG = '`lib` 尚未扫描到，无法确认磁盘上是文件还是目录；请先展开该节点再重试'
+    const bridge = bridgeWith({ tree: tree([...FIXTURE, UNSCANNED]) })
+    bridge.setHandler('spec/createNode', (() => { throw new Error(MSG) }) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'lib/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.click(createBtn())
+
+    // 这条报错是**可执行**的（"先展开该节点再重试"），一个字都不能改写或吞掉
+    await waitFor(() => expect(screen.getByText(MSG)).toBeTruthy())
+    // 名字留着：失败不该让用户重打一遍
+    expect(nameInput().value).toBe('cases')
+    expect(createBtn().disabled).toBe(false)
+  })
+
+  it('名字非法：core 在输入边界抛的那句原样出现在界面上', async () => {
+    const MSG = '名字 "a`b" 含有反引号或换行，当前契约格式无法表示'
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/createNode', (() => { throw new Error(MSG) }) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'a`b' } })
+    fireEvent.click(createBtn())
+
+    // UI 不在本地复述这几条规则，也不悄悄把名字改干净——"悄悄改掉一个标识符比报错更糟"
+    await waitFor(() => expect(screen.getByText(MSG)).toBeTruthy())
+    // 名字留在框里，改一个字就能重试
+    expect(nameInput().value).toBe('a`b')
+  })
+
+  it('子树保护：removeNode 拒绝的那段话（含"请先分别移除这些子节点自己的声明"）原样出现', async () => {
+    const MSG =
+      '`src` 下还有带注释/角色/模板/严重级别的子节点，移除会连带丢失这些声明：' +
+      '请先分别移除这些子节点自己的声明，再移除该节点本身'
+    const bridge = bridgeWith({ tree: tree([{ ...SRC, origin: 'both' }, DOCS, README]) })
+    bridge.setHandler('spec/removeNode', (() => { throw new Error(MSG) }) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('取消声明'))
+
+    // 吞掉这一条，用户会以为「取消声明」坏了，转去手改 .folderspec.md——
+    // 那才是真正会弄丢注释的路径。报错原文自带出路，必须原样呈现。
+    await waitFor(() => expect(screen.getByText(MSG)).toBeTruthy())
+  })
+})
+
+describe('本轮新增写入口的只读闸门', () => {
+  // readOnly 有两条来源（App.tsx：`parseErrors !== null || viewMode === 'disk'`），
+  // 两条都要覆盖：少接一个，用户就能在「原始结构」视图下改掉契约，而那个视图的全部
+  // 意义就是"让你对比、不让你改"。
+
+  it('「原始结构」视图下：顶栏新建按钮与菜单里三条全部禁用', async () => {
+    const bridge = bridgeWith({ tree: tree([{ ...SRC, origin: 'both' }, DOCS, README]) })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByText('原始结构'))
+    await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+    expect((screen.getByText('新建') as HTMLButtonElement).disabled).toBe(true)
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('新建目录（仅契约）').disabled).toBe(true)
+    expect(menuItem('新建文件（仅契约）').disabled).toBe(true)
+    // 这一行在可写态下是**可点**的（上面"origin: both 可点"那条用例钉着），
+    // 所以这里的 true 不是恒真——它承的是 readOnly 那一半的重
+    expect(menuItem('取消声明').disabled).toBe(true)
+
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.click(menuItem('取消声明'))
+    await flushChain()
+    expect(screen.queryByLabelText('名称')).toBeNull()
+    expect(bridge.calls.some(c => c.method === 'spec/removeNode')).toBe(false)
+  })
+
+  it('契约解析失败的只读态下：同样全部禁用', async () => {
+    const bridge = bridgeWith({
+      parseErrors: [{ line: 7, message: '未知标签 [planned]' }],
+      tree: tree([{ ...SRC, origin: 'both' }, DOCS, README]),
+    })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    expect((screen.getByText('新建') as HTMLButtonElement).disabled).toBe(true)
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('新建目录（仅契约）').disabled).toBe(true)
+    expect(menuItem('新建文件（仅契约）').disabled).toBe(true)
+    expect(menuItem('取消声明').disabled).toBe(true)
+    expect(menuItem('取消声明').getAttribute('title'))
+      .toBe('当前不可编辑：契约解析失败，或正处在「原始结构」视图')
+  })
+
+  it('新建输入框开着时切到「原始结构」：输入框随即收起，这条写入口不可达', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    expect(nameInput()).toBeTruthy() // 先确认它真的开着，别测了个空
+
+    fireEvent.click(screen.getByText('原始结构'))
+    await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+    // 输入框里那个冻结的 parentPath 此刻已经无处可去；留在屏幕上而按钮全灰，
+    // 用户只会以为界面卡了
+    expect(screen.queryByLabelText('名称')).toBeNull()
+    expect(bridge.calls.some(c => c.method === 'spec/createNode')).toBe(false)
+  })
+})
+
+describe('新建输入框的时序（草稿 / 选中 / 异步写入）', () => {
+  it('输入框开着时点了别的节点：写入目标不跟着选中集跑', async () => {
+    // 目标在右键那一刻就冻结了。若实现改成"提交时按当前选中的节点算"，这里就会
+    // 变成在根下建 README.md 的兄弟，用户在契约里得到一条他从没打算过的声明——
+    // 而契约的消费者是真会照着去 mkdir 的 Agent。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+
+    fireEvent.click(rowByName(container, 'README.md'))
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('README.md'))
+
+    fireEvent.keyDown(nameInput(), { key: 'Enter' })
+    await waitFor(() => expect(bridge.lastCall('spec/createNode'))
+      .toEqual({ parentPath: 'src', name: 'cases', isDir: true }))
+  })
+
+  it('创建在途时用户点了别的节点：落地后不把选中集拨到新节点上', async () => {
+    // 拨过去的代价不是"选错行"，是 AnnotationPanel 会因为 node.path 变了而重置本地
+    // 编辑态——用户此刻正在另一个节点上写、还没失焦的那段注释会被清掉。那正是本项目
+    // 唯一那条红线（唯一能造成的伤害是弄丢人写的注释）。
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/createNode', ((p: { parentPath: string; name: string; isDir: boolean }) =>
+      delayed({
+        tree: tree(withCreated(p.parentPath, p.name, p.isDir)),
+        dirty: true, groups: [G1], canUndo: true, canRedo: false,
+        path: createdPath(p.parentPath, p.name),
+      })) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    // 建在根下（而不是 src 下）：新节点因此是顶层的一行，落地后能直接在树上看见。
+    // 建在 src 下的话它藏在未展开的目录里，"树真的换了一棵"这条前提就只能靠别的间接
+    // 信号去推——而展开 src 又要点一下，那一点自己就会改选中集，把要测的东西冲掉。
+    const pane = container.querySelector('.fs-pane-tree') as HTMLElement
+    fireEvent.contextMenu(pane, { clientX: 30, clientY: 400 })
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.click(createBtn())
+
+    // 请求还在途，用户已经点走了
+    fireEvent.click(rowByName(container, 'README.md'))
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('README.md'))
+    // 在 README.md 的面板里写了半句还没失焦的注释
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: '入口说明' } })
+
+    // 等在途那笔真的落地（对话框关掉、树上真的多出了那一行）
+    await waitFor(() => expect(screen.queryByLabelText('名称')).toBeNull())
+    await waitFor(() => expect(rowByName(container, 'cases/')).toBeTruthy())
+
+    // 右栏还停在 README.md 上，那半句注释还在
+    expect(container.querySelector('.fs-panel-path')?.textContent).toBe('README.md')
+    expect((screen.getByLabelText('注释') as HTMLTextAreaElement).value).toBe('入口说明')
+  })
+
+  it('按撤销不会把开着的新建输入框弄丢，冻结的目标也不变', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    // 先制造一次可撤销的编辑，让撤销按钮真的能点（否则点了什么都不会发生，测了个空）
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: 'x' } })
+    fireEvent.blur(screen.getByLabelText('注释'))
+    await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+
+    fireEvent.click(screen.getByText('撤销'))
+    await waitFor(() => expect(bridge.lastCall('spec/undo')).toEqual({}))
+
+    // 撤销退的是已经提交的编辑，与这份还没提交的草稿无关：框还在，名字还在
+    expect(nameInput().value).toBe('cases')
+    fireEvent.keyDown(nameInput(), { key: 'Enter' })
+    await waitFor(() => expect(bridge.lastCall('spec/createNode'))
+      .toEqual({ parentPath: 'src', name: 'cases', isDir: true }))
+  })
+
+  it('右键菜单的遮罩层：点一下只关菜单，不留半个浮层', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    expect(screen.getByRole('menu')).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('fs-menu-backdrop'))
+    expect(screen.queryByRole('menu')).toBeNull()
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/createNode')).toBe(false)
+  })
+
+  it('Esc 也能关掉右键菜单', async () => {
+    // 监听器必须挂在 window 上：右键刻意不改选中集，也就没去抢焦点，键盘事件根本
+    // 不会经过菜单自己的 DOM 子树。所以这里从 body 起冒泡，而不是从菜单元素上打。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    expect(screen.getByRole('menu')).toBeTruthy()
+
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+})
+
+describe('语言开关接上 core', () => {
+  it('载入的契约写着 lang: en 时，界面初态就是英文', async () => {
+    // 没有这根线，载入一份 en 契约后开关会停在与文件内容不符的一侧，
+    // 用户第一次点它其实是在"切回"（api.ts 的 OpenResult.lang 有完整推导）
+    const bridge = bridgeWith({ lang: 'en' })
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+
+    await waitFor(() => expect(screen.getByText('Load')).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'English' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: '中文' }).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('点击开关调用 spec/setLang，并照常回填脏标记与撤销栈', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+
+    await waitFor(() => expect(bridge.lastCall('spec/setLang')).toEqual({ lang: 'en' }))
+    // 它是一笔真编辑：要落盘、要进撤销栈（api.ts 把它归在 spec/ 而不是 view/ 的理由）
+    await waitFor(() => expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(false))
+    expect((screen.getByText('Undo') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('只读态下界面语言照样切，但不去调 spec/setLang', async () => {
+    // 两个断言各钉一半，缺一条就漏掉一个方向的缺陷：
+    // - 把界面语言也塞进 readOnly 闸门 → 第一条红（用户读不懂界面时永远出不去）
+    // - 只读态照样发 spec/setLang → 第二条红（core 的 assertWritable 会抛错，
+    //   而那个错跟"换界面语言"毫无关系，弹到横幅上纯属误导）
+    const bridge = bridgeWith({ parseErrors: [{ line: 3, message: '缩进跳级' }] })
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+
+    expect(screen.getByText('Load')).toBeTruthy()
+    expect(screen.getByText('read-only mode')).toBeTruthy()
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/setLang')).toBe(false)
+  })
+
+  it('英文界面下，右键菜单与新建对话框也跟着走字典', async () => {
+    const bridge = bridgeWith({ lang: 'en' })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText('Load')).toBeTruthy())
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New directory (contract only)' }))
+    expect(screen.getByText('New directory under "src" (contract only)')).toBeTruthy()
+    expect(screen.getByLabelText('Name')).toBeTruthy()
   })
 })

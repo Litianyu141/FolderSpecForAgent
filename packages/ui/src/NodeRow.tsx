@@ -14,10 +14,14 @@ export interface NodeRowExtraProps {
    */
   selectedPaths?: string[]
   onRowClick?: (path: string, mods: ClickMods) => void
+  /** 右键：上层据此弹出节点操作菜单。坐标是视口坐标（clientX/clientY），菜单用 fixed 定位 */
+  onRowContextMenu?: (path: string, x: number, y: number) => void
 }
 
 export function NodeRow(
-  { node, style, dragHandle, onGroupClick, selectedPaths, onRowClick }: NodeRendererProps<ViewNode> & NodeRowExtraProps,
+  {
+    node, style, dragHandle, onGroupClick, selectedPaths, onRowClick, onRowContextMenu,
+  }: NodeRendererProps<ViewNode> & NodeRowExtraProps,
 ) {
   const d = node.data
   const color = nodeColorVar(d)
@@ -44,6 +48,17 @@ export function NodeRow(
         // 消失的子项一并选进去——而选中集会被写进用户的契约文件（spec §5.3）。
         if (d.isDir && !mods.shift && !mods.ctrl) node.toggle()
         onRowClick?.(d.path, mods)
+      }}
+      onContextMenu={e => {
+        e.preventDefault() // 换掉浏览器自带的菜单，那一份对这棵树毫无意义
+        // 必须拦住冒泡：树栏那一层挂着"空白处右键 = 在根下新建"。让它冒过去的话，
+        // 点在节点上会先设一次目标、再被空白那条覆盖成根，右键点谁都等于点了空白。
+        e.stopPropagation()
+        // 刻意**不**顺手把这一行选中。右键选中是文件管理器的习惯，但这里的选中集
+        // 同时是分组的写入源（spec/setGroup 会把它写进契约，见 §5.3），一次右键把
+        // 三项的多选收成一项、或者撞上分组草稿未提交时的成员锁，都是用户没要过的
+        // 副作用。菜单顶部直接写出目标路径，不需要靠高亮来指认。
+        onRowContextMenu?.(d.path, e.clientX, e.clientY)
       }}
     >
       {Array.from({ length: node.level }, (_, i) => (

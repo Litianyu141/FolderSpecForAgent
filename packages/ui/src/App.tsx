@@ -14,6 +14,10 @@ import type { TreeApi } from 'react-arborist'
 import { useSplitter } from './splitter.js'
 import { useElementSize } from './useElementSize.js'
 import { Toolbar } from './Toolbar.js'
+import { ContextMenu } from './ContextMenu.js'
+import type { ContextMenuTarget } from './ContextMenu.js'
+import { NewNodeDialog } from './NewNodeDialog.js'
+import type { NewNodeDraft } from './NewNodeDialog.js'
 import { I18nContext, translate } from './i18n.js'
 import type { I18n, Lang } from './i18n.js'
 
@@ -23,6 +27,15 @@ export interface AppProps {
 }
 
 const EMPTY_SELECTION: SelectionState = { selected: [], anchor: null }
+
+/**
+ * 一条路径的父目录，根下的节点给出 ''（core 对"根"的表示，见 CreateNodeParams.parentPath）。
+ * 只在右键点在**文件**节点上时用到：文件不能有子节点，新建落到它的父目录。
+ */
+function parentOf(path: string): string {
+  const i = path.lastIndexOf('/')
+  return i === -1 ? '' : path.slice(0, i)
+}
 
 /**
  * 正在雕琢的这一组：成员集、锚点，以及它绑定到哪个既有分组（null = 还没落地成分组）。
@@ -93,18 +106,37 @@ export function App({ bridge, initialRoot }: AppProps) {
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
   /**
-   * 界面语言，默认中文，纯前端状态——不落盘、不经过 bridge。本轮（UI 双语）只做
-   * "操作界面"这一半，两根线留给下一轮接：
-   * 1. 开关不调用 `spec/setLang`——那会把语言写进 front-matter（"导出的 folderspec
-   *    里的结构化内容"用哪种语言），是 core 侧另一份状态，本轮不碰。
-   * 2. 初始值不取自 `OpenResult.lang`——这个字段现在已经存在（core 侧另一轮加的，
-   *    写这行时以为它还没落地，核对后发现已经在了），但按 brief 的既定范围本轮仍不
-   *    接这根线：openRoot() 里没有读它、也没有据此 setLang，留给下一轮把"载入工作区
-   *    后开关自动对齐契约里写的语言"一起接上。
-   * 所以每次刷新页面/重新打开工作区，界面语言都会回到默认的中文，这是有意的、暂时的
-   * 行为，不是漏做了持久化，见 i18n-brief.md。
+   * 界面语言。初始值是中文，但 openRoot() 一落地就会被 `OpenResult.lang` 覆盖成
+   * 契约里真实写着的那个（api.ts 的 OpenResult.lang 有完整推导：三种载入结局各自
+   * 从哪儿取值，以及为什么解析失败时不去嗅探）。没有这一步，载入一份 `lang: en`
+   * 的契约后开关会停在与文件内容不符的一侧，用户第一次点它其实是在"切回"。
+   *
+   * 它同时也是**界面**语言，与契约里的 lang 只在"载入那一刻"和"用户点开关那一刻"
+   * 对齐，中间不做任何同步——两者分叉的唯一情形是只读态下切了界面语言，
+   * 见 handleSetLang 里那段关于只读分叉的注释。
    */
   const [lang, setLang] = useState<Lang>('zh')
+  /**
+   * 正开着的右键菜单（null = 没开）。目标在右键按下那一刻定死，见 ContextMenuTarget。
+   */
+  const [menu, setMenu] = useState<ContextMenuTarget | null>(null)
+  /** 正开着的「新建声明」输入框（null = 没开）。父目录/类型同样在打开那一刻定死。 */
+  const [newNode, setNewNode] = useState<NewNodeDraft | null>(null)
+  /** spec/createNode 在途：按钮禁用。同步的那道闸在 creatingRef 上，见 submitNewNode。 */
+  const [creating, setCreating] = useState(false)
+  const creatingRef = useRef(false)
+  const newNodeIdRef = useRef(0)
+  /**
+   * 用户"重新决定选中谁"的次数。
+   *
+   * spec/createNode 横跨一个宿主往返（20–60ms，实测），落地后要把选中集拨到新节点上
+   * （用 result.path，见 api.ts）。但这期间用户完全可能已经点了别的节点——此时再拨
+   * 一次，右栏会跳走，AnnotationPanel 里那半句还没失焦的注释会随 `node?.path` 变化
+   * 被 useEffect 重置掉。那正是本项目唯一那条红线（"唯一能造成的伤害是弄丢人写的
+   * 注释"），也是前四轮反复栽的同一个形状：在途落地无声盖掉用户在途做出的改选。
+   * 提交前捕获一次，落地时相等才拨。
+   */
+  const selectionEpochRef = useRef(0)
   const t = useCallback<I18n['t']>((key, params) => translate(lang, key, params), [lang])
   // I18nContext 的 value：见 i18n.ts 里那段解释"为什么用 Context 而不是一路传 props"
   // 的注释。这里用 useMemo 是因为 Provider 的 value 一变，整棵消费了 useContext 的
@@ -207,6 +239,15 @@ export function App({ bridge, initialRoot }: AppProps) {
       setParseErrors(r.parseErrors)
       setSelection(EMPTY_SELECTION)
       setPending(null)
+      // 换/重载工作区也是一次"重新决定选中谁"：在途的 spec/createNode 若在这之后落地，
+      // 不能再把选中集拨到它那个属于上一份树的路径上去。
+      selectionEpochRef.current += 1
+      // 菜单与新建输入框里冻结的那个 parentPath 属于上一次载入的那棵树，新工作区里
+      // 完全可能根本没有这条路径。整个收掉，不留半成品。
+      setMenu(null)
+      setNewNode(null)
+      // 开关对齐契约里写的语言。这是 OpenResult.lang 存在的全部理由（api.ts 有推导）。
+      setLang(r.lang)
       // 与切到目录时同理：在途的 file/read 必须作废，否则它晚到时会往一个已经不存在的
       // 上下文里写——成功路径看不出来，失败路径会在新工作区里弹出旧工作区的错误横幅
       contentReqRef.current += 1
@@ -238,6 +279,53 @@ export function App({ bridge, initialRoot }: AppProps) {
    * 分组面板、保存/撤销/重做按钮共用同一条判据，不在多处各自重复一遍。
    */
   const readOnly = parseErrors !== null || viewMode === 'disk'
+
+  /**
+   * 语言开关。**一次点击分成两条互不相干的线**，这个分叉是本轮最容易接错的地方：
+   *
+   * 1. **界面文案的语言：无条件切。** 它是纯前端状态，不落盘、不经过 core。
+   *    "用户看不懂界面"跟"契约此刻能不能写"是两回事——把它也塞进 readOnly 闸门，
+   *    等于让一个只读英文的人在契约解析失败时永远卡在中文界面里出不去，而那正是
+   *    他最需要读懂报错的时候。
+   * 2. **契约 front-matter 里的 lang 字段：只在可写时写。** `spec/setLang` 走
+   *    core 的 assertWritable()（session.ts），只读态下调用必然抛错。那个错跟用户
+   *    刚做的事（换界面语言）毫无关系，弹到横幅上只会让人以为切语言失败了。
+   *
+   * 不在这里判断"是不是已经是这个语言了"：core 对传入相同语言是真正的空操作，
+   * 不置脏、不进撤销栈（api.ts 的 spec/setLang 注释写明了这一条正是为双态控件留的），
+   * UI 再判一遍就是把同一条规则实现两遍。
+   */
+  const handleSetLang = useCallback((next: Lang) => {
+    setLang(next)
+    if (readOnly) return
+    void (async () => {
+      try {
+        const r = await bridge.request('spec/setLang', { lang: next })
+        setTree(r.tree)
+        setGroups(r.groups)
+        setDirty(r.dirty)
+        setCanUndo(r.canUndo)
+        setCanRedo(r.canRedo)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    })()
+  }, [bridge, readOnly])
+
+  /**
+   * 切进只读态（切到「原始结构」视图、或重载后契约解析失败）时，把菜单与新建输入框
+   * 一起收掉。它们是写入口：留在屏幕上而所有按钮都灰着，用户只会以为界面卡了；
+   * 更要紧的是新建输入框里那个冻结的 parentPath 此刻已经无处可去。
+   *
+   * 这也是「输入框提交」这个写入口真正的闸门——它一关，那条路径就不可达了；
+   * submitNewNode 里那句 `if (readOnly) return` 是同一条规则的第二道，见那里的注释。
+   */
+  useEffect(() => {
+    if (readOnly) {
+      setMenu(null)
+      setNewNode(null)
+    }
+  }, [readOnly])
 
   const switchViewMode = useCallback(async (mode: ViewMode) => {
     if (mode === viewMode) return // 已经在这个视图：空操作，别把它也发出去
@@ -325,6 +413,10 @@ export function App({ bridge, initialRoot }: AppProps) {
 
   const handleSelect = useCallback((path: string, mods: ClickMods) => {
     if (tree === null) return
+    // 用户亲手决定了"现在看的是谁"。在途的 spec/createNode 落地时据此放弃自动选中新
+    // 节点——见 selectionEpochRef 的注释。放在最前面、连 lockedOut 那条分支也算：
+    // 锁住成员集的那一下照样换了中间栏的预览，用户的注意力确实已经挪走了。
+    selectionEpochRef.current += 1
     const p = pendingRef.current
     /**
      * 草稿未提交时，带修饰键的改选**不动本轮成员集**（见 PendingGroup.draft）。
@@ -552,6 +644,8 @@ export function App({ bridge, initialRoot }: AppProps) {
     if (p !== null && p.draft !== null) return
     const g = groupsRef.current.find(x => x.id === id)
     if (!g) return
+    // 与 handleSelect 同理：这一下同样是用户亲手决定"现在编辑的是谁"
+    selectionEpochRef.current += 1
     setPending(null)
     setSelection({ selected: [...g.members], anchor: g.members[g.members.length - 1] ?? null })
   }, [setPending])
@@ -608,6 +702,131 @@ export function App({ bridge, initialRoot }: AppProps) {
     )
   }, [takePending, runGroupWrite, setPending])
 
+  /** 树上某一行按了右键。目标（含新建的父目录、能不能取消声明）在这一刻算定并冻结。 */
+  const handleNodeContextMenu = useCallback((path: string, x: number, y: number) => {
+    if (tree === null) return
+    const node = flatten(tree.children ?? []).get(path)
+    if (!node) return
+    // 右键是一次"重新开始一个动作"的手势：把上一个还开着的新建输入框收掉，
+    // 屏幕上只留一个草稿。不这样的话两个浮层会叠在一起，而且用户很难看出
+    // 待会儿按回车提交的到底是哪一个目标。
+    setNewNode(null)
+    setMenu({
+      path,
+      // 文件不能有子节点 → 落到它的父目录。完整理由见 ContextMenuTarget.parentPath。
+      parentPath: node.isDir ? path : parentOf(path),
+      // origin 是唯一能区分"契约里有没有它"的字段，见 ContextMenuTarget.declared。
+      declared: node.origin !== 'actual-only',
+      x,
+      y,
+    })
+  }, [tree])
+
+  /** 树的空白区域按了右键：目标是工作区根（用户拍板的语义）。 */
+  const handlePaneContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setNewNode(null)
+    // path: null —— 没有节点被点中，所以菜单不渲染「取消声明」（根节点本来也移不掉，
+    // core 的 removeNode 对空路径直接抛"不能移除根节点"）。
+    setMenu({ path: null, parentPath: '', declared: false, x: e.clientX, y: e.clientY })
+  }, [])
+
+  /** 顶栏「新建」按钮：与空白区域右键完全同一条路径，只是位置换到按钮下方。 */
+  const handleToolbarNewNode = useCallback((x: number, y: number) => {
+    setNewNode(null)
+    setMenu({ path: null, parentPath: '', declared: false, x, y })
+  }, [])
+
+  /** 菜单里点了「新建目录/新建文件」：换成输入框，位置沿用菜单原来的位置。 */
+  const openNewNodeDraft = useCallback((isDir: boolean) => {
+    if (menu === null) return
+    // parentPath 从菜单那一份**原样搬过来**，不重新按当前选中集算——冻结这一步是
+    // 本轮时序安全的地基，见 ContextMenuTarget 顶部的注释。
+    setNewNode({ id: ++newNodeIdRef.current, parentPath: menu.parentPath, isDir, x: menu.x, y: menu.y })
+    setCreating(false)
+    creatingRef.current = false
+    setMenu(null)
+  }, [menu])
+
+  /**
+   * 提交一条新声明。
+   *
+   * 失败时**输入框留着、名字留着**：三条会失败的路里有两条是用户能就地补救的
+   * （名字非法 → 改一个字；同层已有同名 → 换个名字），关掉等于让他重打一遍。
+   * 第三条（parentPath 落在懒加载边界之下）的报错原文写着"请先展开该节点再重试"，
+   * 是可执行的，也该让他看着这句话再决定 Esc 还是换个地方建。
+   */
+  const submitNewNode = useCallback(async (rawName: string) => {
+    const draft = newNode
+    if (draft === null) return
+    const name = rawName.trim()
+    if (name === '') return
+    // 只读闸门。今天这一句其实够不着——readOnly 一为真，上面那个 useEffect 就把
+    // newNode 收掉了，输入框根本不在屏幕上。留着是因为它和「菜单项/顶栏按钮」那三处
+    // 是同一条规则的四个入口，日后谁把关闭那条去掉（比如改成"只读时不关、只置灰"），
+    // 这一句就是最后一道。别按"没测到就删"处理。
+    if (readOnly) return
+    // 同步的那道防重闸必须是 ref 不是 state：连按两次回车时，第二次调用闭包里的
+    // `creating` 完全可能还是上一帧的 false。重复提交本身不会写坏契约（core 会以
+    // "同层同名兄弟是重复声明"拒绝第二次），但那条报错对用户纯属噪声。
+    if (creatingRef.current) return
+    creatingRef.current = true
+    setCreating(true)
+    const epoch = selectionEpochRef.current
+    try {
+      const r = await bridge.request('spec/createNode', {
+        parentPath: draft.parentPath, name, isDir: draft.isDir,
+      })
+      setTree(r.tree)
+      setGroups(r.groups)
+      setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
+      setNewNode(null)
+      // 选中新节点，让用户能紧接着写注释。**用 r.path，不自己拼 parentPath + name**：
+      // 根路径是 '' 的拼接规则两边一旦不一致就会选中错的节点，这个字段正是 core 为此
+      // 加的（api.ts 的 spec/createNode 注释）。
+      // epoch 相等才拨：期间用户若已经点了别的节点，这一拨会把右栏拽走、连带清掉他
+      // 正在写的注释，见 selectionEpochRef。
+      if (epoch === selectionEpochRef.current) {
+        setPending(null)
+        setSelection({ selected: [r.path], anchor: r.path })
+      }
+    } catch (e) {
+      // core 在输入边界拦下的那几条（反引号、"/"、"." / ".."）与 assertCreatableParent
+      // 的三条，报错原文都写明了原因和出路，**原样显示**。吞掉它，用户只会看到点了
+      // 没反应，然后转去手改 .folderspec.md——那才是真正会弄丢注释的路径。
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      creatingRef.current = false
+      setCreating(false)
+    }
+  }, [bridge, newNode, readOnly, setPending])
+
+  /**
+   * 取消一个节点的声明。**不删磁盘上的任何东西**——对磁盘上真实存在的节点，
+   * 这一行取消之后依旧在树上，只是不再带任何标注（api.ts 的 spec/removeNode）。
+   */
+  const handleRemoveNode = useCallback(async (path: string) => {
+    setMenu(null)
+    if (readOnly) return
+    try {
+      const r = await bridge.request('spec/removeNode', { path })
+      setTree(r.tree)
+      setGroups(r.groups)
+      setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
+    } catch (e) {
+      // **这一条是本轮最要紧的错误显示。** 子树里有带注释/角色/模板/严重级别的后代时，
+      // core 会拒绝（移除一个目录必然连带移除它嵌套的全部子节点，无条件级联等于一次
+      // 点击丢掉多条已经写下的声明）。报错原文自带出路——"请先分别移除这些子节点自己
+      // 的声明"——原样显示，别吞、别改写：吞掉它，用户会以为「取消声明」坏了，转而去
+      // 用别的方式达到目的（手改文件），那才是真正丢东西的路径。
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [bridge, readOnly])
+
   const handleSave = useCallback(async () => {
     try {
       // 两个宿主的消息回调都不排队：这个 await 横跨落盘期间完全可能又落地一笔
@@ -648,7 +867,8 @@ export function App({ bridge, initialRoot }: AppProps) {
             onSetViewMode={m => void switchViewMode(m)}
             onUndo={() => void handleUndo()}
             onRedo={() => void handleRedo()}
-            onSetLang={setLang}
+            onSetLang={handleSetLang}
+            onNewNode={handleToolbarNewNode}
           />
 
           {parseErrors && (
@@ -679,7 +899,13 @@ export function App({ bridge, initialRoot }: AppProps) {
         </div>
 
         <div className="fs-body">
-          <div className="fs-pane-tree" ref={treePaneRef} style={{ flexBasis: `${left.width}px` }}>
+          {/* 空白区域右键 = 在根下新建。挂在这一层而不是树本身：react-arborist 的
+              虚拟化容器高度就是可视区高度，行不满时下方那片空白也在它里面，挂在外层
+              才能连"最后一行以下"那片区域一起覆盖。行上的右键由 NodeRow 拦住冒泡。 */}
+          <div
+            className="fs-pane-tree" ref={treePaneRef} style={{ flexBasis: `${left.width}px` }}
+            onContextMenu={handlePaneContextMenu}
+          >
             {tree && (
               <SpecTree
                 data={tree.children ?? []}
@@ -692,6 +918,7 @@ export function App({ bridge, initialRoot }: AppProps) {
                 onExpand={path => void handleExpand(path)}
                 onMove={(from, toParent, isDir) => void handleMove(from, toParent, isDir)}
                 onGroupClick={handlePickGroup}
+                onContextMenuNode={handleNodeContextMenu}
                 apiRef={treeApiRef}
               />
             )}
@@ -736,6 +963,31 @@ export function App({ bridge, initialRoot }: AppProps) {
             )}
           </div>
         </div>
+
+        {/* 两个浮层放在 fs-shell 末尾、fs-body 之外：它们用 position: fixed 按视口坐标
+            定位，谁做它们的父节点都不影响位置，但放在 body 里会被三栏的 overflow 裁掉。 */}
+        {menu && (
+          <ContextMenu
+            target={menu}
+            disabled={readOnly}
+            onNew={openNewNodeDraft}
+            onRemove={path => void handleRemoveNode(path)}
+            onClose={() => setMenu(null)}
+          />
+        )}
+
+        {newNode && (
+          // key 必须是 draft.id：名字是 NewNodeDialog 自己的本地 state，换目标就得换
+          // 组件实例，否则上一次没提交完的半个名字会留在框里跟着新目标写出去。
+          <NewNodeDialog
+            key={newNode.id}
+            draft={newNode}
+            disabled={readOnly}
+            submitting={creating}
+            onSubmit={name => void submitNewNode(name)}
+            onCancel={() => setNewNode(null)}
+          />
+        )}
       </div>
     </I18nContext.Provider>
   )

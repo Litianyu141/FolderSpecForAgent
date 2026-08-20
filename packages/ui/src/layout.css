@@ -149,3 +149,42 @@
 .token.boolean { color: var(--fs-token-boolean); }
 .token.comment, .token.shebang { color: var(--fs-token-comment); }
 .token.punctuation { color: var(--fs-token-punctuation); }
+
+/* 右键菜单与新建输入框：两者都用 position: fixed，坐标直接取自鼠标事件的
+   clientX/clientY（视口坐标系）。不用 absolute——那要跟着某个 positioned 祖先算，
+   而树栏本身可滚动、三栏宽度还会被分隔条改，算错一次浮层就飞到屏幕外了。 */
+.fs-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.fs-context-menu {
+  position: fixed; z-index: 41; min-width: 200px; padding: 4px 0;
+  background: var(--fs-bg); border: 1px solid var(--fs-border); border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+}
+/* 目标路径写在菜单顶部——右键刻意不改选中集，没有"哪一行高亮"这条线索可用，
+   菜单必须自己说清楚作用在谁身上（见 ContextMenu.tsx 里那段注释）。 */
+.fs-context-menu-header {
+  padding: 4px 12px 6px; font-size: 12px; opacity: .6; word-break: break-all;
+  border-bottom: 1px solid var(--fs-panel-border); margin-bottom: 4px;
+}
+.fs-context-menu button {
+  display: block; width: 100%; text-align: left; border: none; background: transparent;
+  font: inherit; color: var(--fs-fg); padding: 5px 12px; cursor: pointer;
+}
+.fs-context-menu button:hover:not(:disabled) { background: var(--fs-row-hover-bg); }
+/* 禁用态连 hover 反馈一起收掉，否则鼠标划过去还像能点（与 .fs-member-list 同一条判据） */
+.fs-context-menu button:disabled { opacity: .4; cursor: default; }
+.fs-context-menu-sep { height: 1px; margin: 4px 0; background: var(--fs-panel-border); }
+
+/* 新建声明（仅契约）的输入框。刻意不铺遮罩层：它不是模态框，树照常能点——
+   目标在打开那一刻就冻结了（NewNodeDraft），选中集怎么变都不会改写它。 */
+.fs-new-node {
+  position: fixed; z-index: 41; width: 280px; padding: 10px 12px;
+  background: var(--fs-bg); border: 1px solid var(--fs-border); border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+}
+.fs-new-node-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+.fs-new-node-hint { font-size: 12px; line-height: 1.5; opacity: .7; margin-bottom: 8px; }
+.fs-new-node input {
+  width: 100%; font: inherit; padding: 4px 6px;
+  border: 1px solid var(--fs-border); border-radius: 3px;
+}
+.fs-new-node-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }

@@ -33,6 +33,8 @@ export const zh = {
   'toolbar.undo': '撤销',
   'toolbar.redo': '重做',
   'toolbar.save': '保存',
+  /** 顶栏的「新建」按钮：等价于在树的空白区域右键，目标是工作区根 */
+  'toolbar.newNode': '新建',
   /** 语言开关分段控件外层 role="group" 的 aria-label。两个按钮自己的文案
    *  （"中文" / "English"）刻意不经过字典，见 Toolbar.tsx 里那段注释。 */
   'toolbar.language': '界面语言',
@@ -54,6 +56,13 @@ export const zh = {
   // ---- AnnotationPanel 与 GroupPanel 共用（两处文案原本就逐字节相同） ----
   'common.severity': '约束强度',
   'common.severityNone': '（仅注释，不强制）',
+  /**
+   * 右键菜单与新建对话框里"父目录是工作区根"的说法。
+   * 刻意**不**复用 annotationPanel.workspaceRoot：那一条是面板顶部单独占一行的标题
+   * （'（工作区根）'，自带括号），这一条要嵌进「在「{parent}」下新建…」这种句子里，
+   * 带括号会变成「在「（工作区根）」下」。两处取值本来就不同，不是重复。
+   */
+  'common.workspaceRoot': '工作区根',
 
   // ---- AnnotationPanel：单节点注释面板 ----
   'annotationPanel.empty': '在左侧选中一个文件或目录',
@@ -102,6 +111,32 @@ export const zh = {
   /** {group} 是分组 id，用户取的标识符，不翻译 */
   'nodeRow.groupDotTitle': '属于分组 {group}',
   'nodeRow.groupDotAriaLabel': '选中分组 {group} 的全部成员',
+
+  // ---- ContextMenu：树上的右键菜单 ----
+  'contextMenu.ariaLabel': '节点操作菜单',
+  /**
+   * 「仅契约」这三个字是用户点名要的，不是可有可无的润色：它就是在防止用户以为点完
+   * 磁盘上会冒出一个目录。改这两条文案前先读 ui-final-brief.md 甲节。
+   */
+  'contextMenu.newDir': '新建目录（仅契约）',
+  'contextMenu.newFile': '新建文件（仅契约）',
+  /** {parent} 是路径或"工作区根"，数据/另一条字典项，不再翻译 */
+  'contextMenu.newTarget': '将建在「{parent}」下',
+  'contextMenu.removeNode': '取消声明',
+  /** 不叫「删除」：它不删磁盘上任何东西，对磁盘上真实存在的节点，取消声明之后那一行
+   *  依旧在树上，只是不再带任何标注 */
+  'contextMenu.removeDisabledNotDeclared': '这个节点在契约里还没有任何声明，没有可取消的东西',
+  'contextMenu.disabledReadOnly': '当前不可编辑：契约解析失败，或正处在「原始结构」视图',
+
+  // ---- NewNodeDialog：新建节点（仅契约） ----
+  /** {parent} 是父目录路径，或 common.workspaceRoot */
+  'newNode.titleDir': '在「{parent}」下新建目录（仅契约）',
+  'newNode.titleFile': '在「{parent}」下新建文件（仅契约）',
+  'newNode.hint': '只在契约里声明「这里应该有它」，不会在磁盘上创建任何东西——真正去建它的是随后读契约的 Agent。',
+  'newNode.nameLabel': '名称',
+  'newNode.namePlaceholder': '例如 cases',
+  'newNode.create': '创建',
+  'newNode.cancel': '取消',
 } as const
 
 export type TranslationKey = keyof typeof zh
@@ -130,6 +165,7 @@ export const en: Record<TranslationKey, string> = {
   'toolbar.undo': 'Undo',
   'toolbar.redo': 'Redo',
   'toolbar.save': 'Save',
+  'toolbar.newNode': 'New',
   'toolbar.language': 'Interface language',
 
   'banner.parseErrorPrefix': 'Failed to parse the contract file — currently in ',
@@ -146,6 +182,7 @@ export const en: Record<TranslationKey, string> = {
 
   'common.severity': 'Constraint level',
   'common.severityNone': '(annotation only, not enforced)',
+  'common.workspaceRoot': 'the workspace root',
 
   'annotationPanel.empty': 'Select a file or directory on the left',
   'annotationPanel.workspaceRoot': '(workspace root)',
@@ -188,6 +225,25 @@ export const en: Record<TranslationKey, string> = {
   'nodeRow.unreadableDir': 'Unable to read this directory (usually a permissions issue)',
   'nodeRow.groupDotTitle': 'Belongs to group {group}',
   'nodeRow.groupDotAriaLabel': 'Select all members of group {group}',
+
+  'contextMenu.ariaLabel': 'Node actions',
+  'contextMenu.newDir': 'New directory (contract only)',
+  'contextMenu.newFile': 'New file (contract only)',
+  'contextMenu.newTarget': 'Will be declared under "{parent}"',
+  'contextMenu.removeNode': 'Remove declaration',
+  'contextMenu.removeDisabledNotDeclared':
+    'This node has no declaration in the contract yet — there is nothing to remove',
+  'contextMenu.disabledReadOnly':
+    'Editing is disabled right now: the contract failed to parse, or you are in the "Disk Structure" view',
+
+  'newNode.titleDir': 'New directory under "{parent}" (contract only)',
+  'newNode.titleFile': 'New file under "{parent}" (contract only)',
+  'newNode.hint':
+    'This only declares "there should be one here" in the contract — nothing is created on disk. The agent that reads the contract is what actually creates it.',
+  'newNode.nameLabel': 'Name',
+  'newNode.namePlaceholder': 'e.g. cases',
+  'newNode.create': 'Create',
+  'newNode.cancel': 'Cancel',
 }
 
 const dictionaries: Record<Lang, Record<TranslationKey, string>> = { zh, en }
