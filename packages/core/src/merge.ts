@@ -105,6 +105,10 @@ function fromActual(
     isDir: a.kind === 'dir',
     origin: s ? 'both' : 'actual-only',
   }
+  // 目录也查同一张表，且查得到——gitStatus() 已经把文件状态滚到祖先目录上了
+  // （见 git.ts 的 rollupDirStates）。这里刻意仍然是**一次精确查表**：聚合绝不能在
+  // merge 里算，一来 merge 每次 tree() 都重跑，二来首屏只扫两层，深处的文件根本不在
+  // 这棵树上，遍历子树永远聚合不到它们。
   const g = git.get(a.path)
   if (g) v.gitState = g
   if (a.truncated) v.truncated = true

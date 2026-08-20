@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { merge } from './merge.js'
-import type { ActualNode, GitStates, Spec, SpecNode, ViewNode } from './types.js'
+import { rollupDirStates } from './git.js'
+import type { ActualNode, GitState, GitStates, Spec, SpecNode, ViewNode } from './types.js'
 
 const dir = (name: string, path: string, children?: ActualNode[]): ActualNode =>
   children === undefined ? { name, path, kind: 'dir' } : { name, path, kind: 'dir', children }
@@ -277,5 +278,41 @@ describe('merge 的 disk 视图模式（原始结构，忽略契约里的结构�
     const s = spec([sdir('docs', [], { annotation: '文档' })])
     const v = merge(actual, NO_GIT, s) // 只传 3 个参数
     expect(find(v, 'docs').origin).toBe('spec-only')
+  })
+})
+
+describe('merge —— 目录跟着子树的 git 状态着色', () => {
+  const rolled = (entries: [string, GitState][]): GitStates => rollupDirStates(new Map(entries))
+
+  it('git 状态落在尚未扫描到的深层文件上时，浅层祖先目录仍然着色', () => {
+    // 首屏只扫 DEFAULT_DEPTH=2 层：src/deep 已经在树上，但它的 children 是 undefined，
+    // src/deep/very/nested/file.ts 根本不存在于这棵树里。所以聚合绝不能靠遍历已扫描的
+    // 子树来算——只能从 gitStatus() 那张覆盖整个仓库的 Map 上滚祖先链。
+    const actual = dir('r', '', [dir('src', 'src', [dir('deep', 'src/deep')])])
+    const git = rolled([['src/deep/very/nested/file.ts', 'modified']])
+    const v = merge(actual, git, spec([]))
+
+    // 夹具自检：确认扫描边界确实在 src/deep，深层文件确实不在树上
+    expect(find(v, 'src/deep').children).toBeUndefined()
+    expect(() => find(v, 'src/deep/very')).toThrow()
+
+    expect(find(v, 'src').gitState).toBe('modified')
+    expect(find(v, 'src/deep').gitState).toBe('modified')
+  })
+
+  it('对未扫描分支仍然幂等：展开一层后重新合成，已着色的祖先不变、新露出的层级跟着着色', () => {
+    const git = rolled([['src/deep/very/nested/file.ts', 'modified']])
+
+    const before = merge(dir('r', '', [dir('src', 'src', [dir('deep', 'src/deep')])]), git, spec([]))
+    expect(find(before, 'src').gitState).toBe('modified')
+    expect(find(before, 'src/deep').gitState).toBe('modified')
+
+    const after = merge(
+      dir('r', '', [dir('src', 'src', [dir('deep', 'src/deep', [dir('very', 'src/deep/very')])])]),
+      git, spec([]),
+    )
+    expect(find(after, 'src').gitState).toBe('modified')
+    expect(find(after, 'src/deep').gitState).toBe('modified')
+    expect(find(after, 'src/deep/very').gitState).toBe('modified')
   })
 })

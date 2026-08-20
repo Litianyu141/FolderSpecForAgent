@@ -4,10 +4,11 @@ import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
-import { gitStatus } from './git.js'
+import { gitStatus, rollupDirStates } from './git.js'
 import { scan, DEFAULT_DEPTH } from './scan.js'
 import { merge } from './merge.js'
 import { emptySpec } from './spec-edit.js'
+import type { GitState, GitStates, ViewNode } from './types.js'
 
 const run = promisify(execFile)
 let repo: string
@@ -202,5 +203,219 @@ describe('gitStatus —— 被忽略的目录（porcelain v2 会给它加尾斜�
     // 夹具自检：scan 读不到 .git/info/exclude，所以这个目录必须真的在树上
     expect(node).toBeDefined()
     expect(node?.gitState).toBe('ignored')
+  })
+})
+
+describe('rollupDirStates —— 目录聚合（纯函数）', () => {
+  const raw = (entries: [string, GitState][]): GitStates => new Map(entries)
+
+  it('文件状态滚到它的每一层祖先目录上', () => {
+    const out = rollupDirStates(raw([['src/deep/very/nested/file.ts', 'modified']]))
+    expect(out.get('src')).toBe('modified')
+    expect(out.get('src/deep')).toBe('modified')
+    expect(out.get('src/deep/very')).toBe('modified')
+    expect(out.get('src/deep/very/nested')).toBe('modified')
+    // 文件自己那条原样保留，没有被聚合覆盖掉
+    expect(out.get('src/deep/very/nested/file.ts')).toBe('modified')
+    // 工作区根（空路径）不该被造出条目——merge 的根节点根本不查表，造了也只是垃圾
+    expect(out.has('')).toBe(false)
+  })
+
+  it('同一目录里多种状态时取优先级最高的：conflicted > deleted > modified > added > untracked', () => {
+    const pairs: [GitState, GitState][] = [
+      ['conflicted', 'deleted'],
+      ['deleted', 'modified'],
+      ['modified', 'added'],
+      ['added', 'untracked'],
+    ]
+    for (const [hi, lo] of pairs) {
+      // 两种出现顺序都试：聚合结果不能依赖 git 输出的先后
+      expect(rollupDirStates(raw([['d/a.ts', hi], ['d/b.ts', lo]])).get('d')).toBe(hi)
+      expect(rollupDirStates(raw([['d/a.ts', lo], ['d/b.ts', hi]])).get('d')).toBe(hi)
+    }
+  })
+
+  it('低优先级的条目先滚上去，也挡不住后面更高优先级的条目继续升级更上层的祖先', () => {
+    // 这条专门盯住"祖先已经有值就提前收工"的剪枝：剪枝的判据必须是
+    // "已有值的优先级 >= 当前值"，写成"已有值不为空"就会把 src 永久钉死在 untracked。
+    const out = rollupDirStates(raw([
+      ['src/a/x.ts', 'untracked'],
+      ['src/b/y.ts', 'modified'],
+    ]))
+    expect(out.get('src')).toBe('modified')
+    expect(out.get('src/a')).toBe('untracked')
+    expect(out.get('src/b')).toBe('modified')
+  })
+
+  it('ignored 不参与聚合：目录里有被忽略的文件，目录本身不变灰', () => {
+    const out = rollupDirStates(raw([['mixed/debug.log', 'ignored']]))
+    expect(out.has('mixed')).toBe(false)
+    expect(out.get('mixed/debug.log')).toBe('ignored')
+  })
+
+  it('被忽略的兄弟不影响真实改动往上滚', () => {
+    const out = rollupDirStates(raw([
+      ['pkg/dist/bundle.js', 'ignored'],
+      ['pkg/src/index.ts', 'modified'],
+    ]))
+    expect(out.get('pkg')).toBe('modified')
+    expect(out.has('pkg/dist')).toBe(false)
+    expect(out.get('pkg/src')).toBe('modified')
+  })
+
+  it('目录自己被 git 报成 ignored 时原样保留', () => {
+    const out = rollupDirStates(raw([['node_modules', 'ignored']]))
+    expect(out.get('node_modules')).toBe('ignored')
+  })
+
+  it('目录自己是 ignored、底下又有真实改动时，聚合值盖过 ignored', () => {
+    // 真实 git 今天造不出这对输入（实测：目录里一有被跟踪的文件，git 就改报逐个文件、
+    // 不再报这个目录）。这条测的是纯函数自身的契约——聚合 = 自身与后代里优先级最高的
+    // 那个，与输入顺序无关——保证它被单独调用时也讲得通。
+    expect(rollupDirStates(raw([['build', 'ignored'], ['build/keep.ts', 'modified']])).get('build')).toBe('modified')
+    expect(rollupDirStates(raw([['build/keep.ts', 'modified'], ['build', 'ignored']])).get('build')).toBe('modified')
+  })
+
+  it('空输入返回空 Map（非 git 仓库走的就是这条）', () => {
+    expect(rollupDirStates(new Map()).size).toBe(0)
+  })
+})
+
+describe('gitStatus —— 目录跟着内部文件着色', () => {
+  let dirRepo: string
+
+  beforeAll(async () => {
+    dirRepo = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'folderspec-git-dir-'))
+    const git = (...args: string[]) => run('git', args, { cwd: dirRepo })
+    await git('init', '-q', '-b', 'main')
+    await git('config', 'user.email', 'test@example.com')
+    await git('config', 'user.name', 'Test')
+
+    await fs.writeFile(nodePath.join(dirRepo, '.gitignore'), '*.log\n')
+    await fs.writeFile(nodePath.join(dirRepo, 'README.md'), 'v1\n')
+    await fs.mkdir(nodePath.join(dirRepo, 'src/deep/very/nested'), { recursive: true })
+    await fs.writeFile(nodePath.join(dirRepo, 'src/deep/very/nested/file.ts'), 'v1\n')
+    await fs.mkdir(nodePath.join(dirRepo, 'mixed'), { recursive: true })
+    await fs.writeFile(nodePath.join(dirRepo, 'mixed/keep.ts'), 'v1\n')
+    await git('add', '.')
+    await git('commit', '-q', '-m', 'init')
+
+    // 深度 4 的文件被改动——首屏 scan(depth=2) 根本扫不到它
+    await fs.writeFile(nodePath.join(dirRepo, 'src/deep/very/nested/file.ts'), 'v2\n')
+    // 未跟踪文件，同样藏在扫描边界之下
+    await fs.mkdir(nodePath.join(dirRepo, 'fresh/sub'), { recursive: true })
+    await fs.writeFile(nodePath.join(dirRepo, 'fresh/sub/new.ts'), 'x\n')
+    // 一个有被跟踪文件的目录里放一个被忽略的文件：git 会逐个文件地报它（已实测）
+    await fs.writeFile(nodePath.join(dirRepo, 'mixed/debug.log'), 'noise\n')
+  })
+
+  afterAll(async () => {
+    await fs.rm(dirRepo, { recursive: true, force: true })
+  })
+
+  it('深层文件的改动染到它的每一层祖先目录上', async () => {
+    const states = await gitStatus(dirRepo)
+    expect(states.get('src/deep/very/nested/file.ts')).toBe('modified')
+    expect(states.get('src')).toBe('modified')
+    expect(states.get('src/deep')).toBe('modified')
+    expect(states.get('src/deep/very')).toBe('modified')
+    expect(states.get('src/deep/very/nested')).toBe('modified')
+  })
+
+  it('未跟踪文件所在的每一层目录跟着变未跟踪', async () => {
+    const states = await gitStatus(dirRepo)
+    expect(states.get('fresh')).toBe('untracked')
+    expect(states.get('fresh/sub')).toBe('untracked')
+  })
+
+  it('只含被忽略文件的改动不会把所在目录染灰', async () => {
+    const states = await gitStatus(dirRepo)
+    // 夹具自检：确认 git 真的把它报成了一个被忽略的**文件**，这条用例才谈得上有效
+    expect(states.get('mixed/debug.log')).toBe('ignored')
+    expect(states.has('mixed')).toBe(false)
+  })
+})
+
+describe('目录着色 —— 端到端：真实仓库 → scan(depth=2) → merge', () => {
+  let e2eRepo: string
+  let view: ViewNode
+
+  beforeAll(async () => {
+    e2eRepo = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'folderspec-git-e2e-'))
+    const git = (...args: string[]) => run('git', args, { cwd: e2eRepo })
+    await git('init', '-q', '-b', 'main')
+    await git('config', 'user.email', 'test@example.com')
+    await git('config', 'user.name', 'Test')
+
+    await fs.writeFile(nodePath.join(e2eRepo, '.gitignore'), '*.log\n')
+    await fs.writeFile(nodePath.join(e2eRepo, 'README.md'), 'v1\n')
+    await fs.mkdir(nodePath.join(e2eRepo, 'src/deep/very/nested'), { recursive: true })
+    await fs.writeFile(nodePath.join(e2eRepo, 'src/deep/very/nested/file.ts'), 'v1\n')
+    await fs.mkdir(nodePath.join(e2eRepo, 'mixed'), { recursive: true })
+    await fs.writeFile(nodePath.join(e2eRepo, 'mixed/keep.ts'), 'v1\n')
+    await git('add', '.')
+    await git('commit', '-q', '-m', 'init')
+
+    await fs.writeFile(nodePath.join(e2eRepo, 'src/deep/very/nested/file.ts'), 'v2\n')
+    await fs.mkdir(nodePath.join(e2eRepo, 'fresh/sub'), { recursive: true })
+    await fs.writeFile(nodePath.join(e2eRepo, 'fresh/sub/new.ts'), 'x\n')
+    await fs.writeFile(nodePath.join(e2eRepo, 'mixed/debug.log'), 'noise\n')
+
+    const [actual, states] = await Promise.all([
+      scan(e2eRepo, { depth: DEFAULT_DEPTH }),
+      gitStatus(e2eRepo),
+    ])
+    view = merge(actual, states, emptySpec())
+  })
+
+  afterAll(async () => {
+    await fs.rm(e2eRepo, { recursive: true, force: true })
+  })
+
+  const at = (path: string): ViewNode => {
+    const walk = (n: ViewNode): ViewNode | null => {
+      if (n.path === path) return n
+      for (const c of n.children ?? []) {
+        const hit = walk(c)
+        if (hit) return hit
+      }
+      return null
+    }
+    const hit = walk(view)
+    if (!hit) throw new Error(`树上没有 ${path}`)
+    return hit
+  }
+  const has = (path: string): boolean => {
+    try { at(path); return true } catch { return false }
+  }
+
+  it('夹具自检：首屏确实只扫到两层，深层文件根本不在树上', () => {
+    expect(has('src')).toBe(true)
+    expect(has('src/deep')).toBe(true)
+    // 扫描边界就在这里：src/deep 尚未展开，children 是 undefined
+    expect(at('src/deep').children).toBeUndefined()
+    expect(has('src/deep/very')).toBe(false)
+    expect(has('src/deep/very/nested/file.ts')).toBe(false)
+    expect(has('fresh/sub')).toBe(true)
+    expect(has('fresh/sub/new.ts')).toBe(false)
+  })
+
+  it('浅层祖先目录跟着扫不到的深层文件着色', () => {
+    expect(at('src').gitState).toBe('modified')
+    expect(at('src/deep').gitState).toBe('modified')
+  })
+
+  it('未跟踪文件所在的目录链跟着变未跟踪', () => {
+    expect(at('fresh').gitState).toBe('untracked')
+    expect(at('fresh/sub').gitState).toBe('untracked')
+  })
+
+  it('只含被忽略文件的目录不变灰', () => {
+    expect(at('mixed').gitState).toBeUndefined()
+  })
+
+  it('无改动的已跟踪文件与工作区根不带 git 状态', () => {
+    expect(at('README.md').gitState).toBeUndefined()
+    expect(at('').gitState).toBeUndefined()
   })
 })

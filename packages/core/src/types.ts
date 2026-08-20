@@ -125,7 +125,15 @@ export interface ScanOpts {
 
 export type GitState = 'ignored' | 'untracked' | 'modified' | 'added' | 'deleted' | 'conflicted'
 
-/** 键是相对工作区根的 posix 路径 */
+/**
+ * 键是相对工作区根的 posix 路径（不含尾斜杠），值是**这个路径该显示成什么 git 状态**。
+ *
+ * 注意它不是 `git status` 输出的逐行镜像：git 只报文件（外加被整体忽略的目录、以及
+ * 子模块），而这张表里还有由 gitStatus() 一次性滚上去的祖先目录条目。对**目录**而言
+ * 值的含义是「它自己或它任意一个后代的状态里，优先级最高的那个」，**不是**「这个目录
+ * 自己被改了」——目录本身没有内容可改。优先级顺序与"ignored 不参与聚合"的理由见
+ * git.ts 的 rollupDirStates()。
+ */
 export type GitStates = Map<string, GitState>
 
 export type NodeOrigin = 'both' | 'spec-only' | 'actual-only' | 'unscanned'
@@ -144,6 +152,17 @@ export interface ViewNode {
   path: string
   isDir: boolean
   origin: NodeOrigin
+  /**
+   * 对文件：这个文件自己的 git 状态。
+   * 对目录：**它自己或它整棵子树的聚合状态**（见 GitStates 的注释），与 VSCode 资源
+   * 管理器一致——目录里有改动，目录名就变色。别把目录上的这个值读成"这个目录自己被
+   * 修改了"。
+   *
+   * 刻意复用同一个字段而不是另开一个 childGitState：它只喂给取色
+   * （ui/src/colors.ts 的 nodeColorVar），从不作为文字显示，所以填聚合值不会让界面
+   * 说假话；而多一个字段就多一处两边可能分叉的地方，UI 还得自己再实现一遍"两个字段
+   * 谁优先"的规则——那正是 rollupDirStates 已经算过的东西，重算一遍只会有第二套排序。
+   */
   gitState?: GitState
   annotation?: string
   role?: string
