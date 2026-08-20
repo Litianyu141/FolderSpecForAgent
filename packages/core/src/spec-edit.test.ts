@@ -48,33 +48,62 @@ describe('setAnnotation', () => {
     expect(find(s.nodes, 'src')?.annotation).toBe('a')
   })
 
-  it('传空字符串等同清除', () => {
+  it('传空字符串等同清除注释字段——但节点本身若是这次调用之前就有的，不会被连带删掉', () => {
+    // 新语义（见 pruneAlong 的说明）：'src' 在这次调用开始前就已经存在（上一次
+    // 调用创建的），不会被这次清空连带吃掉；annotation 字段确实被清空，删不删
+    // 整个节点是另一回事。
     let s = setAnnotation(emptySpec(), 'src', true, { annotation: 'a' })
     s = setAnnotation(s, 'src', true, { annotation: '   ' })
-    expect(find(s.nodes, 'src')).toBeNull()
+    expect(find(s.nodes, 'src')).not.toBeNull()
+    expect(find(s.nodes, 'src')?.annotation).toBeUndefined()
   })
 
-  it('清空后沿路径回收变空的祖先', () => {
-    let s = setAnnotation(emptySpec(), 'src/core/walk.ts', false, { annotation: 'x' })
-    s = setAnnotation(s, 'src/core/walk.ts', false, { annotation: null })
+  it('首次声明就传空白注释：同一次调用里由 ensure() 现造出来的整条链会被完整收回', () => {
+    // annotation 全是空白，applyText 会当成"清除"；ensure() 为了够到这个全新路径
+    // 顺手新建的 src/core/walk.ts 三层，全部是这次调用自己造出来的半成品——理应
+    // 连本带利收回，不留下一截从未被赋予过任何意义、纯属误触的空节点。这是
+    // pruneAlong 收紧之后仍然保留的那部分能力：只回收"这次编辑自己新建的"。
+    const s = setAnnotation(emptySpec(), 'src/core/walk.ts', false, { annotation: '   ' })
     expect(s.nodes).toEqual([])
   })
 
-  it('清空时不回收仍有内容的祖先', () => {
+  it('清空后不再回收祖先——它们在这次编辑之前就已经存在（新语义：跨调用不做脚手架自动回收）', () => {
+    // 旧版本这里期望 s.nodes 变成 []：给 src/core/walk.ts 写注释顺带建出 src、core
+    // 两级祖先，再用一次独立调用清空注释，会把整条链回收掉。这个"跨调用回收"
+    // 正是 add-node-core-report.md 里 Critical 修复要关掉的那个机制的另一副面孔——
+    // 工具分不清"这段是脚手架"还是"这是别的地方明确声明过的节点"，两者在 Spec
+    // 里字节相同，只能一律不动"编辑前已存在"的部分。多留一截空目录，远比误删
+    // 一条声明安全。
+    let s = setAnnotation(emptySpec(), 'src/core/walk.ts', false, { annotation: 'x' })
+    s = setAnnotation(s, 'src/core/walk.ts', false, { annotation: null })
+    expect(find(s.nodes, 'src')?.isDir).toBe(true)
+    expect(find(s.nodes, 'src/core')?.isDir).toBe(true)
+    const leaf = find(s.nodes, 'src/core/walk.ts')
+    expect(leaf).not.toBeNull()
+    expect(leaf?.annotation).toBeUndefined()
+  })
+
+  it('清空时不回收仍有内容的祖先；本身空的那段（跨调用）现在也不再被自动回收', () => {
     let s = setAnnotation(emptySpec(), 'src', true, { annotation: '源码' })
     s = setAnnotation(s, 'src/core/walk.ts', false, { annotation: 'x' })
     s = setAnnotation(s, 'src/core/walk.ts', false, { annotation: null })
     expect(find(s.nodes, 'src')?.annotation).toBe('源码')
-    expect(find(s.nodes, 'src/core')).toBeNull()
+    // 'core' 是上一次调用（写 walk.ts 注释）创建的，对本次清空调用来说是
+    // "编辑前已经存在"，因此不会被本次调用回收，即便它现在同样没有任何自己的内容。
+    expect(find(s.nodes, 'src/core')).not.toBeNull()
+    expect(find(s.nodes, 'src/core/walk.ts')).not.toBeNull()
   })
 })
 
 describe('moveNode', () => {
-  it('把 spec 中已有的节点连同子树移到新父级下', () => {
+  it('把 spec 中已有的节点连同子树移到新父级下；被搬空的原父级不再被连带删除', () => {
     let s = setAnnotation(emptySpec(), 'examples/foo', true, { annotation: '一个案例' })
     s = setAnnotation(s, 'examples/foo/input.json', false, { annotation: '输入' })
     s = moveNode(s, 'examples/foo', 'src/cases', true)
-    expect(find(s.nodes, 'examples')).toBeNull()
+    // 'examples' 在这次 move 之前就已经存在（上一次 setAnnotation 创建的），搬走
+    // 唯一的子项 foo 之后它变空，但不再被这次移动连带吃掉——moveNode 不再对源
+    // 路径做任何祖先回收，见 moveNode 内部注释。
+    expect(find(s.nodes, 'examples')).not.toBeNull()
     expect(find(s.nodes, 'src/cases/foo')?.annotation).toBe('一个案例')
     expect(find(s.nodes, 'src/cases/foo/input.json')?.annotation).toBe('输入')
   })
@@ -93,11 +122,11 @@ describe('moveNode', () => {
     expect(find(s.nodes, 'src/cases/foo')).not.toBeNull()
   })
 
-  it('移到根下（toParent 为空字符串）', () => {
+  it('移到根下（toParent 为空字符串）；源路径上变空的祖先不再被连带删除', () => {
     let s = setAnnotation(emptySpec(), 'src/cases/foo', true, { annotation: 'x' })
     s = moveNode(s, 'src/cases/foo', '', true)
     expect(find(s.nodes, 'foo')?.annotation).toBe('x')
-    expect(find(s.nodes, 'src')).toBeNull()
+    expect(find(s.nodes, 'src')).not.toBeNull()
   })
 
   it('目标下已有同名节点时合并，被移动方的字段优先', () => {
@@ -108,10 +137,15 @@ describe('moveNode', () => {
     expect(find(s.nodes, 'src/cases/foo')?.role).toBe('keep-me')
   })
 
-  it('移动后回收源路径上变空的祖先', () => {
+  it('移动后不再回收源路径上的祖先——它们在这次移动之前就已经存在', () => {
+    // 'a'/'b' 是上一次 setAnnotation 调用为了够到 c 顺手建的祖先，对这次 move 调用
+    // 来说是"编辑前已经存在"；c 被移走后 a/b 变空，但不再被这次 move 连带吃掉——
+    // 理由与 setAnnotation 那几条"新语义"用例一致：工具分不清"脚手架"和"别处
+    // 明确声明"，只能一律不动编辑前已有的内容。
     let s = setAnnotation(emptySpec(), 'a/b/c', true, { annotation: 'x' })
     s = moveNode(s, 'a/b/c', 'z', true)
-    expect(find(s.nodes, 'a')).toBeNull()
+    expect(find(s.nodes, 'a')).not.toBeNull()
+    expect(find(s.nodes, 'a/b')).not.toBeNull()
     expect(find(s.nodes, 'z/c')?.annotation).toBe('x')
   })
 
@@ -216,20 +250,27 @@ describe('isDir 一致性（Finding 1：isDir 与 children 同步）', () => {
   })
 })
 
-describe('拖拽声明的空节点行为（Finding 2：边界情况）', () => {
-  it('拖拽声明的空节点在其自身子树被清空时也会被回收（已知边界）', () => {
+describe('拖拽声明的空节点行为（Finding 2：曾经的已知边界，已被 Critical 修复关闭）', () => {
+  it('拖拽声明的空节点，即便后来给它加了子项又清空，也不会被连带回收（曾经的已知边界，现已修复）', () => {
     let s = moveNode(emptySpec(), 'examples/foo', 'src/cases', true)
-    // 现在 src/cases/foo 是空的拖拽声明
+    // 此刻 src/cases/foo 是一个拖拽声明出来的空节点——它没有 annotation，只有
+    // "这里应该有"这句声明本身；这与 createNode() 造出来的节点在 Spec 里字节相同。
 
-    // 为它添加子项
+    // 为它添加子项（另一次独立的调用）
     s = setAnnotation(s, 'src/cases/foo/readme.md', false, { annotation: 'hi' })
     expect(find(s.nodes, 'src/cases/foo')).not.toBeNull()
 
-    // 清空该子项
+    // 清空该子项（又一次独立的调用）
     s = setAnnotation(s, 'src/cases/foo/readme.md', false, { annotation: null })
 
-    // 结果：整条链都被清掉，因为没有任何实质内容
-    expect(s.nodes).toEqual([])
+    // 旧版本这里整条链会被清空——这曾经被本文件当作"已知边界"接受下来，实际
+    // 就是 createNode 版 Critical bug 的 moveNode 版最小复现：拖拽声明出来的空
+    // 节点被后续一次无关的清空连带删除。现在 'readme.md' 也在这次清空调用开始
+    // 之前就已经存在（上一次"写注释"调用创建的），同样不回收——它没有变成 null，
+    // 而是留下一条没有 annotation 的裸声明，一路到 'src' 都还在。
+    expect(find(s.nodes, 'src/cases/foo')).not.toBeNull()
+    expect(find(s.nodes, 'src/cases/foo/readme.md')).not.toBeNull()
+    expect(find(s.nodes, 'src/cases/foo/readme.md')?.annotation).toBeUndefined()
   })
 })
 
@@ -408,6 +449,42 @@ describe('createNode', () => {
     const { spec: after } = createNode(s, 'src', 'utils', true)
     expect(find(after.nodes, 'src/core')?.annotation).toBe('核心')
     expect(find(after.nodes, 'src/utils')?.isDir).toBe(true)
+  })
+})
+
+/**
+ * Critical 修复回归：createNode 声明出来的节点，不能因为后续一次独立的编辑把
+ * 别处内容清空／搬走而被连带回收。三条序列对应评审报告 add-node-core-report.md
+ * 里真实复现过的 A/B/C（D 需要真实文件系统 + 跨 Session，见 session.test.ts）。
+ * 这条红线出在 pruneAlong：它曾经沿路径无条件回收"当前为空"的节点，而
+ * createNode 声明出来的节点天生没有 annotation，与 setAnnotation 顺手搭的脚手架
+ * 在 Spec 里字节相同——工具分不清"这是声明"还是"这是脚手架"，只能收紧到只回收
+ * "这一次调用自己新建的部分"（见 pruneAlong 的说明）。
+ */
+describe('Critical 修复：createNode 声明的节点不会被后续独立的编辑连带回收', () => {
+  it('序列 A：声明 src/cases → 写注释 → 清空注释，声明本身与补出来的父级都必须还在', () => {
+    const created = createNode(emptySpec(), 'src', 'cases', true)
+    let s = setAnnotation(created.spec, created.path, true, { annotation: '存放测试用例' })
+    s = setAnnotation(s, created.path, true, { annotation: null })
+    expect(find(s.nodes, 'src')).not.toBeNull()
+    expect(find(s.nodes, 'src/cases')).not.toBeNull()
+  })
+
+  it('序列 B：声明 docs → 声明 docs/readme.md → 写注释 → 清空，两条声明都必须还在', () => {
+    const c1 = createNode(emptySpec(), '', 'docs', true)
+    const c2 = createNode(c1.spec, 'docs', 'readme.md', false)
+    let s = setAnnotation(c2.spec, c2.path, false, { annotation: '说明文档' })
+    s = setAnnotation(s, c2.path, false, { annotation: null })
+    expect(find(s.nodes, 'docs')).not.toBeNull()
+    expect(find(s.nodes, 'docs/readme.md')).not.toBeNull()
+  })
+
+  it('序列 C：声明 docs → 声明 docs/api → 把 api 拖到别处，父级声明 docs 不会被连带删除', () => {
+    const c1 = createNode(emptySpec(), '', 'docs', true)
+    const c2 = createNode(c1.spec, 'docs', 'api', true)
+    const s = moveNode(c2.spec, c2.path, 'elsewhere', true)
+    expect(find(s.nodes, 'docs')).not.toBeNull()
+    expect(find(s.nodes, 'elsewhere/api')).not.toBeNull()
   })
 })
 

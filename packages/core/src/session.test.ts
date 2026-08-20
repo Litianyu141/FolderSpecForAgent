@@ -548,8 +548,8 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
 
   it('拒绝 "." 与 ".."：在文件系统里有特殊含义', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: '', name: '.', isDir: true })).toThrow()
-    expect(() => s.createNode({ parentPath: '', name: '..', isDir: true })).toThrow()
+    expect(() => s.createNode({ parentPath: '', name: '.', isDir: true })).toThrow('名字不能是')
+    expect(() => s.createNode({ parentPath: '', name: '..', isDir: true })).toThrow('名字不能是')
   })
 
   it('parentPath 含反引号时同样被拒绝', async () => {
@@ -557,11 +557,48 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
     expect(() => s.createNode({ parentPath: 'we`ird', name: 'x', isDir: true })).toThrow('反引号')
   })
 
-  it('校验失败不产生副作用：不置脏、不进撤销栈', async () => {
+  // Important #2 回归：parentPath 是多段路径，assertRepresentablePath 只挡反引号/
+  // 换行，挡不住 ".." 这种能把声明写出仓库之外的段。契约的消费者是真的会 mkdir
+  // 的 Agent——写进一行 `- \`../\`\n  - \`etc/\`` 就是亲手给它下了一条越界指令，
+  // 即便本工具自己从不写盘。逐段跑 assertValidNodeName，与 name 参数共用同一套
+  // 校验规则（含 "." / ".." 的检查）。
+  it('parentPath 中间任意一段是 ".." 时被拒绝——不能借这个参数位把声明写到仓库之外', async () => {
     const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '../etc', name: 'passwd', isDir: false })).toThrow('..')
+    expect(() => s.createNode({ parentPath: 'a/../b', name: 'x', isDir: true })).toThrow('..')
+  })
+
+  // Important #3 回归：ensure() 会在 spec 侧把路径中间的文件节点强行升级成目录
+  // （setAnnotation 那条"穿过文件叶子会被升级成目录"用例展示的正是这个能力），
+  // 但 merge() 对"磁盘和契约都有"的节点只信磁盘（fromActual 用 a.kind==='dir'，
+  // 不看 spec 那份 isDir）——parentPath 一旦是磁盘上真实存在的文件，createNode
+  // 能成功、raw() 自校验也能通过，写进契约的却是一行 UI 永远选不中、用户永远
+  // 看不见也删不掉的声明。必须在这里就直接拒绝，不能指望 UI 不给这个入口。
+  it('parentPath 在磁盘上是真实文件时被拒绝——ensure() 会把它悄悄升级成目录，但 merge 只信磁盘，新节点将永远不可见', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: 'README.md', name: 'child.md', isDir: false }))
+      .toThrow('文件')
+  })
+
+  // parentPath 是 spec 里已经声明为文件的叶子（不是磁盘上的文件）时同样拒绝：
+  // 不能因为一次"新建子项"的副作用，就悄悄把用户之前"这是个文件"的声明改写成目录。
+  it('parentPath 在契约里被声明为文件叶子时同样被拒绝', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: '', name: 'notes.txt', isDir: false })
+    expect(() => s.createNode({ parentPath: 'notes.txt', name: 'child.md', isDir: false }))
+      .toThrow('文件')
+  })
+
+  it('校验失败不产生副作用：不置脏、不写进树里、不进撤销栈', async () => {
+    const s = new Session(root); await s.open()
+    const before = s.tree()
     expect(() => s.createNode({ parentPath: '', name: '', isDir: true })).toThrow()
     expect(s.isDirty()).toBe(false)
-    expect(s.undo().canUndo).toBe(false)
+    // 直接比对失败前后的整棵树，而不是通过 s.undo() 的返回值判断：undo() 是
+    // "先 pop 再返回"，哪怕栈里恰好有一条被误提交的记录，pop 完之后 canUndo
+    // 依然会是 false，看不出区别（这正是这条用例原来那个断言不承重的原因，
+    // 已在 add-node-core-report.md 里记录并做过变异实证）。
+    expect(s.tree()).toEqual(before)
   })
 
   it('拒绝同层重名', async () => {
@@ -627,6 +664,29 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
     const s2 = new Session(root)
     const r = await s2.open()
     expect(find(r.tree, 'templates')?.origin).toBe('spec-only')
+  })
+
+  // 序列 D（Critical 修复的核心场景，比 A/B/C 更重）：声明 → save 落盘 → 全新
+  // Session 重开（不再是同一份内存里的 Spec，是重新 parseSpec() 出来的一份）→
+  // 写注释 → 清空 → save。旧版本这里会把已经写进用户 .folderspec.md 文件的那
+  // 一行删掉、再回写覆盖磁盘——不再是"内存里的临时状态没保住"，而是工具主动
+  // 弄丢用户已经保存过的内容，直接违反"spec-only 节点永远保留、永不自动删除"。
+  // 必须用真实文件系统 + 两个独立 Session 才能证明这条修复真的挡住了它。
+  it('序列 D：声明 → save → 新 Session 重开 → 写注释 → 清空 → save，磁盘上的声明必须还在', async () => {
+    const specPath = nodePath.join(root, SPEC_FILENAME)
+
+    const s1 = new Session(root); await s1.open()
+    s1.createNode({ parentPath: 'src', name: 'cases', isDir: true })
+    await s1.save()
+    expect(await fs.readFile(specPath, 'utf8')).toContain('`cases/`')
+
+    const s2 = new Session(root); await s2.open()
+    s2.annotate({ path: 'src/cases', isDir: true, annotation: '测试用例目录' })
+    s2.annotate({ path: 'src/cases', isDir: true, annotation: null })
+    await s2.save()
+
+    const onDisk = await fs.readFile(specPath, 'utf8')
+    expect(onDisk).toContain('`cases/`')
   })
 })
 

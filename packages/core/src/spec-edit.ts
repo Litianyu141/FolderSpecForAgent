@@ -86,6 +86,9 @@ export function setAnnotation(spec: Spec, path: string, isDir: boolean, patch: A
   if (segs.length === 0) throw new Error('路径不能为空')
 
   const next = structuredClone(spec)
+  // 必须在 ensure() 改动 next.nodes 之前算：这次调用自己会新建哪些节点，只有在
+  // ensure() 动手之前才分得清——见 pruneAlong 的说明。
+  const keepDepth = preExistingDepth(next.nodes, segs)
   const node = ensure(next.nodes, segs, isDir)
 
   applyText(node, 'annotation', patch.annotation)
@@ -96,7 +99,7 @@ export function setAnnotation(spec: Spec, path: string, isDir: boolean, patch: A
     else node.severity = patch.severity
   }
 
-  pruneAlong(next.nodes, segs)
+  pruneAlong(next.nodes, segs, keepDepth)
   return next
 }
 
@@ -144,8 +147,12 @@ export function moveNode(spec: Spec, from: string, toParent: string, isDir: bool
   // spec 里没有该节点时，新建一个空节点——它表达"我声明它应该在这里"，本身就是有效数据
   // isDir 参数只在源节点不存在时生效；现有数据优先级高于调用者的声明
   const detached = detach(next.nodes, fromSegs) ?? { name, isDir, children: [] }
-  pruneAlong(next.nodes, fromSegs.slice(0, -1))
-
+  // 不回收源路径上因此变空的祖先：detach() 只查找、从不创建，它能找到的每一级祖先
+  // 都必然是"这次移动之前就已经存在的节点"（否则 detach 早就在那一级返回 null 了）。
+  // 按 pruneAlong 现在的规则——只回收本次编辑自己新建的部分——这里永远是空操作，
+  // 索性不调用：源路径上因为搬空而变空的目录留在原地，交给用户自己决定要不要清，
+  // 而不是被这次移动顺手吃掉（它完全可能是 createNode 或更早一次编辑明确声明
+  // 出来的节点，工具没有办法分辨）。
   const list = toSegs.length === 0 ? next.nodes : ensure(next.nodes, toSegs, true).children
   const existing = list.find(n => n.name === detached.name)
   if (existing) mergeInto(existing, detached)
@@ -235,16 +242,42 @@ function isEmptyNode(n: SpecNode): boolean {
   return n.children.length === 0 && !n.annotation && !n.role && !n.template && !n.severity
 }
 
+/** 沿 segs 静态走一遍、不做任何修改，返回从根开始已经存在的层数——ensure() 会在
+ *  它之后把缺的层补出来，补之前先测一次，才分得清"这条链上哪些是编辑前就有的，
+ *  哪些是这次编辑才新补出来的"。给 pruneAlong 当 minKeepDepth 用。 */
+function preExistingDepth(nodes: SpecNode[], segs: string[]): number {
+  let list = nodes
+  let depth = 0
+  for (const seg of segs) {
+    const node = list.find(n => n.name === seg)
+    if (!node) break
+    depth++
+    list = node.children
+  }
+  return depth
+}
+
 /**
- * 只沿本次编辑触碰的那条路径自底向上回收空叶子，绝不做全树回收。
+ * 只沿本次编辑触碰的那条路径自底向上回收空叶子，且只回收**这次编辑自己新补出来**
+ * 的那一段——minKeepDepth 之前（含）的节点，哪怕清空后同样满足 isEmptyNode，也
+ * 一律不动。
  *
- * 作用：给 src/core/ 写注释会顺带创建祖先 src，清空后应当把 src/core 一并收回。
- * 边界：这只保证**本次编辑之外的路径**不受影响——拖拽声明出来的空节点不会被一次
- * 无关路径的编辑清掉。但如果编辑的正是该空节点自己的子树，且清空后整条链都不再
- * 携带任何字段，那么它同样会被回收。这两种节点在文件里字节相同，工具无法区分，
- * 因此不做（也无法做）无条件保护。
+ * 这条规则是从"沿路径无条件回收"收紧过来的，起因是一个真实会删用户内容的 bug：
+ * `createNode()` 声明出来的节点天生没有注释、没有子项，与 setAnnotation 为了够到
+ * 更深处顺手搭的脚手架在 Spec 里字节相同——如果谁后来（哪怕隔了好几次独立的编辑）
+ * 给它写了句注释又反悔清空，旧版本的无条件回收会把这条**明确声明**当成脚手架吃掉，
+ * 直接违反"spec-only 节点永远保留、永不自动删除"。工具没有办法从数据本身分辨
+ * "这一段是谁、为什么创建的"，唯一能安全依赖的信息只有：它是不是**这一次调用**
+ * 自己刚创建的——如果是，回收它只是撤销这次编辑自己造成的半成品；如果不是（哪怕
+ * 只早一次调用），它就可能承载着调用方看不见的历史意图，宁可留着，不能吃掉。
+ *
+ * 代价：跨调用清理空脚手架这个便利特性不再存在了（原来演示"写注释会顺带创建祖先，
+ * 清空后一并收回"的几条用例，其实展示的正是这个不安全的机制，已经按新语义改写，
+ * 见那几条用例上方的说明）。多留一截没人管的空目录，远比错删一条用户或 Agent
+ * 明确声明过的内容安全——这是本工具"唯一能造成的伤害是弄丢人写的注释"这条红线
+ * 下必须接受的取舍。
  */
-function pruneAlong(rootList: SpecNode[], segs: string[]): void {
+function pruneAlong(rootList: SpecNode[], segs: string[], minKeepDepth: number): void {
   const chain: Array<{ parent: SpecNode[]; node: SpecNode }> = []
   let list = rootList
   for (const seg of segs) {
@@ -253,7 +286,7 @@ function pruneAlong(rootList: SpecNode[], segs: string[]): void {
     chain.push({ parent: list, node })
     list = node.children
   }
-  for (let i = chain.length - 1; i >= 0; i--) {
+  for (let i = chain.length - 1; i >= minKeepDepth; i--) {
     const { parent, node } = chain[i]
     if (isEmptyNode(node)) {
       const idx = parent.indexOf(node)

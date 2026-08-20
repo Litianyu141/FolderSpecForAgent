@@ -5,7 +5,7 @@ import { serializeSpec } from './serialize.js'
 import { scan, DEFAULT_DEPTH } from './scan.js'
 import { gitStatus } from './git.js'
 import { merge } from './merge.js'
-import { createNode, emptySpec, moveNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
+import { createNode, emptySpec, findSpecNode, moveNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
@@ -77,6 +77,22 @@ function assertValidNodeName(name: string): void {
   }
   if (name === '.' || name === '..') {
     throw new Error(`名字不能是 "${name}"：在文件系统里有特殊含义`)
+  }
+}
+
+/**
+ * parentPath（createNode）/ toParent（move）是多段路径，此前只过了
+ * assertRepresentablePath（只挡反引号/换行）。这道关卡挡不住 ".." 这种能把声明
+ * 写到仓库之外的段：`createNode({ parentPath: '../etc', name: 'passwd', ... })`
+ * 能一路通过 raw() 的 serialize→parse 自校验、成功 save()，磁盘上得到
+ * `- \`../\`\n  - \`etc/\`\n    - \`passwd\``——本工具自己不 mkdir，只读铁律没破，
+ * 但契约的消费者是真的会 mkdir 的 Agent，这等于亲手写了一条越出仓库的指令。
+ * 逐段跑 assertValidNodeName，与 name 参数共用同一条规则（含 "." / ".." 的检查），
+ * 不必另起一套；createNode 与 move() 的 toParent 共用这个函数。
+ */
+function assertValidParentPath(path: string): void {
+  for (const seg of path.split('/')) {
+    if (seg !== '') assertValidNodeName(seg)
   }
 }
 
@@ -289,7 +305,7 @@ export class Session {
   move(params: MoveParams): EditResult {
     this.assertWritable()
     assertRepresentablePath(params.from)
-    assertRepresentablePath(params.toParent)
+    assertValidParentPath(params.toParent)
     // 快照必须盖住下面对 hidden 的两处改动，不能只盖 spec——见 Snapshot 的注释
     const before = this.captureState()
     this.spec = moveNode(this.spec, params.from, params.toParent, params.isDir)
@@ -322,13 +338,35 @@ export class Session {
   createNode(params: CreateNodeParams): EditResult & { path: string } {
     this.assertWritable()
     const { parentPath, name, isDir } = params
-    assertRepresentablePath(parentPath)
+    assertValidParentPath(parentPath)
     assertValidNodeName(name)
+    this.assertCreatableParent(parentPath)
     const before = this.captureState()
     const created = createNode(this.spec, parentPath, name, isDir)
     this.spec = created.spec
     this.commitEdit(before)
     return { ...this.editResult(), path: created.path }
+  }
+
+  /**
+   * "目录判断只信一个真相源"这条隐含假设在这里会出错：ensure()（setAnnotation 也在
+   * 用）为了让路径能穿过去，会把 spec 侧的中间节点强行升级成目录；但 merge() 对
+   * "磁盘和契约都有"的节点只信磁盘（merge.ts 的 fromActual 用 a.kind==='dir'，
+   * 完全不看 spec 那份 isDir）。于是 parentPath 一旦是磁盘上真实存在的文件，
+   * createNode 能成功返回、raw() 的自校验也能通过——写进契约的却是一行 UI 永远
+   * 选不中、用户永远看不见也删不掉的声明，因为合成出来的树坚持认为那里是文件。
+   * spec 里已经声明为文件的叶子也一并拒绝：不能因为一次"新建子项"的副作用，就
+   * 悄悄把用户之前"这是个文件"的声明改写成目录。
+   */
+  private assertCreatableParent(parentPath: string): void {
+    const onDisk = findActual(this.actual, parentPath)
+    if (onDisk && onDisk.kind !== 'dir') {
+      throw new Error(`\`${parentPath}\` 在磁盘上是一个文件，不能在它下面新建节点`)
+    }
+    const inSpec = findSpecNode(this.spec.nodes, parentPath)
+    if (inSpec && !inSpec.isDir) {
+      throw new Error(`\`${parentPath}\` 在契约里被声明为文件，不能在它下面新建节点`)
+    }
   }
 
   setGroup(params: SetGroupParams): EditResult & { id: string } {
