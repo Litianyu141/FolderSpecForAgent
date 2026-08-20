@@ -113,6 +113,16 @@ export function buildWebviewHtml(opts: WebviewHtmlOpts): string {
   // Playwright 渲染 + getComputedStyle 核实才发现（见 theme-report.md）。
   const themeStyle = `<style>${THEME_BRIDGE}</style>`
 
+  // String.replace 找不到匹配时是无操作——若 indexHtml（vite 产物）缺 <head> 或
+  // </head> 中的任意一个，对应那次 replace 会静默失败，CSP/root 注入脚本或
+  // THEME_BRIDGE 会被整段丢掉且没有任何告警，症状是"VSCode 里颜色/root 全不对"
+  // 却毫无线索。两个标签都先显式校验存在，任一缺失就直接抛错，而不是生成一份
+  // 残缺的页面——比事后检查替换结果是否命中更可靠：分别检查能同时防住"只丢了
+  // CSP/root 脚本、主题桥接却意外注入成功"这类只有一半失败的情形。
+  if (!html.includes('<head>') || !html.includes('</head>')) {
+    throw new Error('buildWebviewHtml: indexHtml 里找不到 <head>/</head>，无法注入 CSP/root/THEME_BRIDGE')
+  }
+
   // 用函数替换而非字符串替换：字符串替换会展开 $&、$`、$'、$$，
   // 把 jsonForScript 刚转义掉的 '<' 又放回去，重新打开 </script> 突破口。
   return html

@@ -266,3 +266,49 @@ describe('token 颜色变量的 VSCode 默认值必须真的和正文色不同',
     }
   })
 })
+
+describe('buildWebviewHtml 对畸形 indexHtml 的防御', () => {
+  it('indexHtml 缺 </head> 时必须抛错，不能静默丢弃整个主题桥接', () => {
+    // String.replace('</head>', ...) 找不到匹配时是无操作——如果 indexHtml（vite
+    // 产物）某次构建变化导致没有闭合 </head>，THEME_BRIDGE 会被无声无息地整段丢掉，
+    // 生产环境没有任何告警，症状是"VSCode 里全部颜色都不对"，且很难联想到根因是
+    // HTML 结构缺失。宁可在这里明确炸掉，也不要生成一份主题桥接残缺的页面。
+    const brokenIndex = '<!doctype html><html><head><link rel="stylesheet" href="./assets/index-abc.css">' +
+      '<body><div id="root"></div><script type="module" src="./assets/index-abc.js"></script></body></html>'
+    expect(() => buildWebviewHtml({
+      indexHtml: brokenIndex,
+      assetBase: 'https://vscode-webview.example/media/ui',
+      cspSource: 'https://vscode-webview.example',
+      nonce: 'NONCE123',
+      root: '/workspace/demo',
+    })).toThrow()
+  })
+
+  it('indexHtml 缺 <head> 时也必须抛错（root 注入脚本同理会被静默丢弃）', () => {
+    const brokenIndex = '<!doctype html><html>' +
+      '<body><div id="root"></div><script type="module" src="./assets/index-abc.js"></script></body></html>'
+    expect(() => buildWebviewHtml({
+      indexHtml: brokenIndex,
+      assetBase: 'https://vscode-webview.example/media/ui',
+      cspSource: 'https://vscode-webview.example',
+      nonce: 'NONCE123',
+      root: '/workspace/demo',
+    })).toThrow()
+  })
+
+  it('只有 </head> 没有 <head> 时也必须抛错——不能因为 THEME_BRIDGE 那次替换意外命中了就放过', () => {
+    // 单纯"事后检查 THEME_BRIDGE 有没有被注入"的写法会漏掉这种情形：</head> 存在，
+    // 所以那次 replace 会成功、检查会误判"整体注入成功"，实际上 CSP 与 root 注入
+    // 脚本因为没有 <head> 早就丢了。必须两个标签分别校验存在，而不是只看结果。
+    const brokenIndex = '<!doctype html><html>' +
+      '<link rel="stylesheet" href="./assets/index-abc.css"></head>' +
+      '<body><div id="root"></div><script type="module" src="./assets/index-abc.js"></script></body></html>'
+    expect(() => buildWebviewHtml({
+      indexHtml: brokenIndex,
+      assetBase: 'https://vscode-webview.example/media/ui',
+      cspSource: 'https://vscode-webview.example',
+      nonce: 'NONCE123',
+      root: '/workspace/demo',
+    })).toThrow()
+  })
+})
