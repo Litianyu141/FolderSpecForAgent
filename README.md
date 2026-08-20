@@ -7,10 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![VS Code](https://img.shields.io/badge/VS%20Code-extension-007ACC?logo=visualstudiocode&logoColor=white)](https://github.com/Litianyu141/FolderSpecForAgent/releases/latest)
 
-A repository's structural intent — which directory is responsible for what, where new
-things belong — usually lives nowhere but in the maintainer's head. Someone new to the
-codebase has to click through directories one at a time to reconstruct it; an AI agent
-creating files has no structural constraint at all, and the repository drifts.
+Have you ever been in a situation that agent create their own files and folders in your repository without your control? FolderSpec is a tool that let you intuitively drag and annotate to declare the intended structure of your repository in a human-readable and agent-followable way. It allows you to annotate directories, rearrange the structure virtually, and produce a contract that agents can read and follow.
 
 FolderSpec lets you declare that intent visually and emit a `.folderspec.md` file that
 humans can read and agents can follow. **The tool is read-only**: apart from that one
@@ -18,11 +15,13 @@ file it writes nothing to disk, and it never runs `mv` / `mkdir` / `rm`. Changin
 repository is the agent's job. FolderSpec's job is to say clearly what the repository
 should look like.
 
+![How FolderSpec works: an agent scatters files, you declare the intended structure, the agent rearranges the repo](docs/media/hero.png)
+
 ---
 
-## See it in action
+## Three Steps to Make a Folder Contract for Agent
 
-### Annotate a directory
+### 1. Annotate a directory
 
 Click any file or directory and use the right-hand pane to write an annotation, a
 semantic role, and a constraint severity. Annotated nodes carry their text inline in
@@ -30,7 +29,7 @@ the tree.
 
 ![Annotating a directory](docs/media/demo-annotate.gif)
 
-### Rearrange the structure, virtually
+### 2. Rearrange the structure, virtually
 
 Right-click to declare a directory that does not exist yet, then drag things into it —
 **nothing moves on disk**. Switch to the "Actual structure" view to compare the two:
@@ -38,7 +37,7 @@ that view is the disk as it really is, and what you just edited is the contract.
 
 ![Rearranging the structure](docs/media/demo-restructure.gif)
 
-### Produce the contract
+### 3. Produce the contract
 
 Select a batch of nodes with `Shift` / `Ctrl` and give them one shared annotation.
 Saving drops `.folderspec.md` at the repository root — **there is no separate "export"

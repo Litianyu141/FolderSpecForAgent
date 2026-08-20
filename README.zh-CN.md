@@ -15,6 +15,8 @@ FolderSpec 让你用可视化的方式把这份意图声明出来，产出一个
 也能被 Agent 遵守。**它是只读工具**——除了这一个文件，它不写磁盘上的任何东西，不执行
 `mv` / `mkdir` / `rm`。真正改动仓库的是 Agent，FolderSpec 只负责把"应该长成什么样"说清楚。
 
+![FolderSpec 的工作方式：Agent 把文件散得到处都是 → 你声明应有的结构 → Agent 照着契约去搬](docs/media/hero.png)
+
 ---
 
 ## 看它怎么用
