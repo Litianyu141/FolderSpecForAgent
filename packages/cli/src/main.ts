@@ -7,13 +7,13 @@ import { startServer } from './server.js'
 import { launch, pickBrowser } from './open-window.js'
 import type { BrowserCandidate } from './open-window.js'
 
-const HELP = `folderspec — 可视化声明仓库结构意图
+const HELP = `folderspec — declare your repository's intended structure, visually
 
-用法：
-  folderspec [目录]          在指定目录（默认为当前目录）打开
-  folderspec --port <n>      指定端口（默认随机可用端口）
-  folderspec --no-open       只起服务，不自动开窗口
-  folderspec --help          显示本帮助
+Usage:
+  folderspec [dir]           open the given directory (defaults to the current one)
+  folderspec --port <n>      listen on this port (default: a random free one)
+  folderspec --no-open       start the server only, do not open a window
+  folderspec --help          show this help
 `
 
 export interface CliArgs {
@@ -42,7 +42,7 @@ export function parseArgs(argv: readonly string[], cwd: string): CliArgs {
     const raw = argv[portIdx + 1] as string | undefined
     const parsed = raw !== undefined ? Number(raw) : NaN
     if (!Number.isInteger(parsed) || parsed <= 0) {
-      throw new Error(`--port 需要一个正整数端口号，收到：${raw ?? '(缺失)'}`)
+      throw new Error(`--port needs a positive integer port number, got: ${raw ?? '(missing)'}`)
     }
     port = parsed
   }
@@ -65,17 +65,17 @@ async function main(): Promise<void> {
   const uiDir = nodePath.join(here, 'ui')
 
   const server = await startServer({ root: args.root, uiDir, ...(args.port ? { port: args.port } : {}) })
-  process.stdout.write(`FolderSpec 已启动\n  工作区：${args.root}\n  地址：  ${server.url}\n`)
+  process.stdout.write(`FolderSpec is running\n  workspace: ${args.root}\n  url:       ${server.url}\n`)
 
   if (!args.noOpen) {
     const candidate = await detectBrowser()
     if (candidate) {
       launch(candidate, server.url, process.platform)
       if (!candidate.appMode) {
-        process.stdout.write('未找到支持无边框窗口的浏览器，已在普通标签页中打开。\n')
+        process.stdout.write('No browser supporting app-mode windows was found; opened a normal tab instead.\n')
       }
     } else {
-      process.stdout.write('未检测到可用浏览器，请手动打开上面的地址。\n')
+      process.stdout.write('No usable browser detected — please open the URL above manually.\n')
     }
   }
 

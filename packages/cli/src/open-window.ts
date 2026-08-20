@@ -34,7 +34,7 @@ export function pickBrowser(platform: NodeJS.Platform, available: readonly strin
 function spawnDetached(command: string, args: readonly string[]): void {
   const child = spawn(command, args, { detached: true, stdio: 'ignore' })
   child.on('error', () => {
-    process.stderr.write(`无法启动浏览器：${command}\n`)
+    process.stderr.write(`Could not launch the browser: ${command}\n`)
   })
   child.unref()
 }

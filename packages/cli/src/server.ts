@@ -112,7 +112,7 @@ export async function startServer(opts: ServerOpts): Promise<ServerHandle> {
     server.listen(opts.port ?? 0, '127.0.0.1', () => {
       const addr = server.address()
       if (addr && typeof addr === 'object') resolve(addr.port)
-      else reject(new Error('无法确定监听端口'))
+      else reject(new Error('Could not determine the listening port'))
     })
   })
   boundPort = port
