@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { Session, SPEC_FILENAME } from './session.js'
+import { specError } from './errors.test-support.js'
 import { parseSpec } from './parse/index.js'
 import type { Spec, ViewNode } from './types.js'
 
@@ -59,15 +60,15 @@ describe('Session.open', () => {
     // 只是不会带上（读不出来的）契约注释。
     expect(find(r.tree, 'src')).not.toBeNull()
     expect(find(r.tree, 'src')?.origin).toBe('actual-only')
-    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow('只读模式')
-    await expect(s.save()).rejects.toThrow('只读模式')
+    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow(specError('readonly.parseFailed'))
+    await expect(s.save()).rejects.toThrow(specError('readonly.parseFailed'))
   })
 
   it('契约文件解析失败时 raw() 也抛错，绝不能返回空契约掩盖用户原文件', async () => {
     await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
     const s = new Session(root)
     await s.open()
-    expect(() => s.raw()).toThrow('只读模式')
+    expect(() => s.raw()).toThrow(specError('readonly.parseFailed'))
   })
 
   it('契约文件存在但读不出来（EACCES）时进入只读模式，绝不当成"没有文件"覆盖掉', async () => {
@@ -97,8 +98,8 @@ describe('Session.open', () => {
       // 文件确实在那儿，只是读不出来——不能报告成"没有契约文件"
       expect(r.hasSpec).toBe(true)
 
-      await expect(s.save()).rejects.toThrow('只读模式')
-      expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow('只读模式')
+      await expect(s.save()).rejects.toThrow(specError('readonly.parseFailed'))
+      expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow(specError('readonly.parseFailed'))
     } finally {
       await fs.chmod(specPath, 0o600)
     }
@@ -300,19 +301,22 @@ describe('Session 输入校验', () => {
   it('role 中含 "]" 时被拒绝，报错信息点名字段', async () => {
     const s = new Session(root)
     await s.open()
-    expect(() => s.annotate({ path: 'src', isDir: true, role: 'a]b' })).toThrow('role')
+    expect(() => s.annotate({ path: 'src', isDir: true, role: 'a]b' }))
+      .toThrow(specError('identifier.forbiddenChar', { field: 'role' }))
   })
 
   it('role 中含反引号时也被拒绝', async () => {
     const s = new Session(root)
     await s.open()
-    expect(() => s.annotate({ path: 'src', isDir: true, role: 'a`b' })).toThrow('role')
+    expect(() => s.annotate({ path: 'src', isDir: true, role: 'a`b' }))
+      .toThrow(specError('identifier.forbiddenChar', { field: 'role' }))
   })
 
   it('template 中含空白字符时被拒绝，报错信息点名字段', async () => {
     const s = new Session(root)
     await s.open()
-    expect(() => s.annotate({ path: 'src', isDir: true, template: 'a b' })).toThrow('template')
+    expect(() => s.annotate({ path: 'src', isDir: true, template: 'a b' }))
+      .toThrow(specError('identifier.forbiddenChar', { field: 'template' }))
   })
 })
 
@@ -398,7 +402,7 @@ describe('序列化自校验（两个宿主共用的写入闸门）', () => {
     const s = new Session(root)
     await s.open()
     injectBadNode(s)
-    expect(() => s.raw()).toThrow('自校验失败')
+    expect(() => s.raw()).toThrow(specError('serialize.selfCheckFailed'))
   })
 
   it('同样的情况下 save() 一个字节都不写', async () => {
@@ -413,7 +417,7 @@ describe('序列化自校验（两个宿主共用的写入闸门）', () => {
     await s.open()
     injectBadNode(s)
 
-    await expect(s.save()).rejects.toThrow('自校验失败')
+    await expect(s.save()).rejects.toThrow(specError('serialize.selfCheckFailed'))
     expect(await fs.readFile(specPath, 'utf8')).toBe(original)
   })
 
@@ -421,7 +425,7 @@ describe('序列化自校验（两个宿主共用的写入闸门）', () => {
     const s = new Session(root)
     await s.open()
     injectBadNode(s)
-    await expect(s.handle('spec/raw', {})).rejects.toThrow('自校验失败')
+    await expect(s.handle('spec/raw', {})).rejects.toThrow(specError('serialize.selfCheckFailed'))
   })
 })
 
@@ -430,27 +434,31 @@ describe('节点名可表示性（当前格式无法转义反引号与换行）'
     const s = new Session(root)
     await s.open()
     expect(() => s.annotate({ path: 'src/we`ird', isDir: true, annotation: 'x' }))
-      .toThrow('src/we`ird')
+      .toThrow(specError('path.unrepresentable', { path: '"src/we`ird"' }))
   })
 
   it('annotate 的路径含换行时同样被拒绝', async () => {
     const s = new Session(root)
     await s.open()
     expect(() => s.annotate({ path: 'src/a\nb', isDir: true, annotation: 'x' }))
-      .toThrow('反引号或换行')
+      .toThrow(specError('path.unrepresentable', { path: JSON.stringify('src/a\nb') }))
   })
 
   it('move 的源路径与目标父路径都要过这道校验', async () => {
     const s = new Session(root)
     await s.open()
-    expect(() => s.move({ from: 'we`ird', toParent: 'src', isDir: true })).toThrow('we`ird')
-    expect(() => s.move({ from: 'README.md', toParent: 'ba`d', isDir: false })).toThrow('ba`d')
+    expect(() => s.move({ from: 'we`ird', toParent: 'src', isDir: true }))
+      .toThrow(specError('path.unrepresentable', { path: '"we`ird"' }))
+    // toParent 逐段过 assertValidNodeName，所以这半边报的是 name.* 而不是 path.*
+    expect(() => s.move({ from: 'README.md', toParent: 'ba`d', isDir: false }))
+      .toThrow(specError('name.unrepresentable', { name: '"ba`d"' }))
   })
 
   it('拒绝之后 spec 保持干净：save() 仍然正常写盘', async () => {
     const s = new Session(root)
     await s.open()
-    expect(() => s.annotate({ path: 'we`ird', isDir: true, annotation: 'x' })).toThrow()
+    expect(() => s.annotate({ path: 'we`ird', isDir: true, annotation: 'x' }))
+      .toThrow(specError('path.unrepresentable', { path: '"we`ird"' }))
     s.annotate({ path: 'src', isDir: true, annotation: '正常注释' })
     await s.save()
     const text = await fs.readFile(nodePath.join(root, SPEC_FILENAME), 'utf8')
@@ -502,7 +510,7 @@ describe('Session 的分组与文件读取', () => {
   it('只读模式下 setGroup 抛错', async () => {
     await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
     const s = new Session(root); await s.open()
-    expect(() => s.setGroup({ id: null, members: ['src'], text: 't' })).toThrow('只读模式')
+    expect(() => s.setGroup({ id: null, members: ['src'], text: 't' })).toThrow(specError('readonly.parseFailed'))
   })
 
   it('只读模式下仍可读取文件内容', async () => {
@@ -518,7 +526,8 @@ describe('Session 的分组与文件读取', () => {
 
   it('readFile 拒绝越界路径', async () => {
     const s = new Session(root); await s.open()
-    await expect(s.readFile('../../../etc/passwd')).rejects.toThrow(/不得包含 "\.\." 段/)
+    await expect(s.readFile('../../../etc/passwd'))
+      .rejects.toThrow(specError('path.parentSegment', { path: '"../../../etc/passwd"' }))
   })
 
   it('open 返回当前契约的全部分组', async () => {
@@ -589,33 +598,37 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
 
   it('拒绝空名', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: '', name: '', isDir: true })).toThrow('名字不能为空')
+    expect(() => s.createNode({ parentPath: '', name: '', isDir: true })).toThrow(specError('name.empty'))
   })
 
   it('拒绝含 "/" 的名字——这个参数位是单个路径段，不是路径', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: '', name: 'a/b', isDir: true })).toThrow('"/"')
+    expect(() => s.createNode({ parentPath: '', name: 'a/b', isDir: true }))
+      .toThrow(specError('name.hasSlash', { name: '"a/b"' }))
   })
 
   it('拒绝含反引号的名字', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: '', name: 'we`ird', isDir: true })).toThrow('反引号')
+    expect(() => s.createNode({ parentPath: '', name: 'we`ird', isDir: true }))
+      .toThrow(specError('name.unrepresentable', { name: '"we`ird"' }))
   })
 
   it('拒绝含换行的名字', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: '', name: 'a\nb', isDir: true })).toThrow('反引号或换行')
+    expect(() => s.createNode({ parentPath: '', name: 'a\nb', isDir: true }))
+      .toThrow(specError('name.unrepresentable', { name: JSON.stringify('a\nb') }))
   })
 
   it('拒绝 "." 与 ".."：在文件系统里有特殊含义', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: '', name: '.', isDir: true })).toThrow('名字不能是')
-    expect(() => s.createNode({ parentPath: '', name: '..', isDir: true })).toThrow('名字不能是')
+    expect(() => s.createNode({ parentPath: '', name: '.', isDir: true })).toThrow(specError('name.reserved', { name: '.' }))
+    expect(() => s.createNode({ parentPath: '', name: '..', isDir: true })).toThrow(specError('name.reserved', { name: '..' }))
   })
 
   it('parentPath 含反引号时同样被拒绝', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: 'we`ird', name: 'x', isDir: true })).toThrow('反引号')
+    expect(() => s.createNode({ parentPath: 'we`ird', name: 'x', isDir: true }))
+      .toThrow(specError('name.unrepresentable', { name: '"we`ird"' }))
   })
 
   // Important #2 回归：parentPath 是多段路径，assertRepresentablePath 只挡反引号/
@@ -625,8 +638,8 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
   // 校验规则（含 "." / ".." 的检查）。
   it('parentPath 中间任意一段是 ".." 时被拒绝——不能借这个参数位把声明写到仓库之外', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: '../etc', name: 'passwd', isDir: false })).toThrow('..')
-    expect(() => s.createNode({ parentPath: 'a/../b', name: 'x', isDir: true })).toThrow('..')
+    expect(() => s.createNode({ parentPath: '../etc', name: 'passwd', isDir: false })).toThrow(specError('name.reserved', { name: '..' }))
+    expect(() => s.createNode({ parentPath: 'a/../b', name: 'x', isDir: true })).toThrow(specError('name.reserved', { name: '..' }))
   })
 
   // Important #3 回归：ensure() 会在 spec 侧把路径中间的文件节点强行升级成目录
@@ -638,7 +651,7 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
   it('parentPath 在磁盘上是真实文件时被拒绝——ensure() 会把它悄悄升级成目录，但 merge 只信磁盘，新节点将永远不可见', async () => {
     const s = new Session(root); await s.open()
     expect(() => s.createNode({ parentPath: 'README.md', name: 'child.md', isDir: false }))
-      .toThrow('文件')
+      .toThrow(specError('parent.fileOnDisk', { path: 'README.md' }))
   })
 
   // parentPath 是 spec 里已经声明为文件的叶子（不是磁盘上的文件）时同样拒绝：
@@ -647,13 +660,13 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
     const s = new Session(root); await s.open()
     s.createNode({ parentPath: '', name: 'notes.txt', isDir: false })
     expect(() => s.createNode({ parentPath: 'notes.txt', name: 'child.md', isDir: false }))
-      .toThrow('文件')
+      .toThrow(specError('parent.fileInSpec', { path: 'notes.txt' }))
   })
 
   it('校验失败不产生副作用：不置脏、不写进树里、不进撤销栈', async () => {
     const s = new Session(root); await s.open()
     const before = s.tree()
-    expect(() => s.createNode({ parentPath: '', name: '', isDir: true })).toThrow()
+    expect(() => s.createNode({ parentPath: '', name: '', isDir: true })).toThrow(specError('name.empty'))
     expect(s.isDirty()).toBe(false)
     // 直接比对失败前后的整棵树，而不是通过 s.undo() 的返回值判断：undo() 是
     // "先 pop 再返回"，哪怕栈里恰好有一条被误提交的记录，pop 完之后 canUndo
@@ -665,13 +678,15 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
   it('拒绝同层重名', async () => {
     const s = new Session(root); await s.open()
     s.createNode({ parentPath: '', name: 'docs', isDir: true })
-    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow('docs')
+    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true }))
+      .toThrow(specError('name.duplicateSiblingAtRoot', { name: 'docs' }))
   })
 
   it('重名被拒绝后不产生副作用：只需一次撤销就能回到创建前的状态', async () => {
     const s = new Session(root); await s.open()
     s.createNode({ parentPath: '', name: 'docs', isDir: true })
-    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow()
+    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true }))
+      .toThrow(specError('name.duplicateSiblingAtRoot', { name: 'docs' }))
     const r = s.undo()
     expect(find(r.tree, 'docs')).toBeNull()
     // 只有一次真正的编辑进了栈；如果被拒绝的那次也 commit 了，这里撤销一次之后
@@ -682,7 +697,7 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
   it('只读模式（disk 视图）下 createNode 抛错', async () => {
     const s = new Session(root); await s.open()
     s.setViewMode('disk')
-    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow('原始结构')
+    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow(specError('readonly.diskView'))
   })
 
   it('handle("spec/createNode") 分发正确', async () => {
@@ -767,7 +782,7 @@ describe('Session.createNode 懒加载边界（旁路 2）', () => {
     expect(find(s.tree(), 'src/deep')).not.toBeNull()
     expect(find(s.tree(), 'src/deep/leaf.txt')).toBeNull()
     expect(() => s.createNode({ parentPath: 'src/deep/leaf.txt', name: 'child.md', isDir: false }))
-      .toThrow('尚未扫描')
+      .toThrow(specError('parent.unscanned', { path: 'src/deep/leaf.txt' }))
   })
 
   // 对照组，防止过度拦截：'brand/new' 落在已扫描范围内（root.children 已知，
@@ -785,7 +800,8 @@ describe('Session.createNode 懒加载边界（旁路 2）', () => {
   it('回归：即便先侥幸放行，expand 之后也不该让新声明从树上消失——这里改成在源头直接拒绝', async () => {
     await fs.writeFile(nodePath.join(root, 'src/deep/leaf.txt'), '')
     const s = new Session(root); await s.open()
-    expect(() => s.createNode({ parentPath: 'src/deep/leaf.txt', name: 'child.md', isDir: false })).toThrow()
+    expect(() => s.createNode({ parentPath: 'src/deep/leaf.txt', name: 'child.md', isDir: false }))
+      .toThrow(specError('parent.unscanned', { path: 'src/deep/leaf.txt' }))
     // 被拒绝的调用不该产生任何副作用
     expect(s.isDirty()).toBe(false)
     expect(s.raw()).not.toContain('child.md')
@@ -803,7 +819,7 @@ describe('Session.createNode 与 hidden（旁路 3）', () => {
     s.move({ from: 'src/core', toParent: '', isDir: true })
     expect(find(s.tree(), 'src/core')).toBeNull() // 确认 hidden 真的生效了
     expect(() => s.createNode({ parentPath: 'src/core', name: 'x.ts', isDir: false }))
-      .toThrow('拖走')
+      .toThrow(specError('hidden.oldLocation', { path: 'src/core' }))
   })
 
   it('对照：拖走之前，同一路径下 createNode 不受影响', async () => {
@@ -824,7 +840,8 @@ describe('Session.move 的 toParent 磁盘冲突检查（旁路 4）', () => {
     const s = new Session(root); await s.open()
     s.annotate({ path: 'src', isDir: true, annotation: '入口，别丢' })
     const beforeRaw = s.raw()
-    expect(() => s.move({ from: 'src', toParent: 'README.md', isDir: true })).toThrow('README.md')
+    expect(() => s.move({ from: 'src', toParent: 'README.md', isDir: true }))
+      .toThrow(specError('parent.fileOnDisk', { path: 'README.md' }))
     // 被拒绝的调用不该产生任何副作用：原节点的注释仍在原地，raw() 一个字节都没变
     expect(find(s.tree(), 'src')?.annotation).toBe('入口，别丢')
     expect(s.raw()).toBe(beforeRaw)
@@ -897,7 +914,7 @@ describe('Session.removeNode（撤销节点声明——只影响契约，不碰�
     s.annotate({ path: 'src/core', isDir: true, annotation: '重要的核心模块说明' })
     const beforeRaw = s.raw()
 
-    expect(() => s.removeNode('src')).toThrow()
+    expect(() => s.removeNode('src')).toThrow(specError('remove.subtreeHasContent', { path: 'src' }))
 
     expect(s.raw()).toBe(beforeRaw)
     expect(find(s.tree(), 'src/core')?.annotation).toBe('重要的核心模块说明')
@@ -909,7 +926,7 @@ describe('Session.removeNode（撤销节点声明——只影响契约，不碰�
     const s = new Session(root); await s.open()
     s.annotate({ path: 'src', isDir: true, annotation: 'x' })
     s.setViewMode('disk')
-    expect(() => s.removeNode('src')).toThrow('原始结构')
+    expect(() => s.removeNode('src')).toThrow(specError('readonly.diskView'))
   })
 
   it('可撤销：删错的节点连注释一起回来', async () => {
@@ -1010,13 +1027,13 @@ describe('Session.setLang（切换展示语言：样板文字未改过才跟着�
   it('只读模式（契约解析失败）下 setLang 抛错', async () => {
     await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
     const s = new Session(root); await s.open()
-    expect(() => s.setLang('en')).toThrow('只读模式')
+    expect(() => s.setLang('en')).toThrow(specError('readonly.parseFailed'))
   })
 
   it('disk 视图下 setLang 抛错', async () => {
     const s = new Session(root); await s.open()
     s.setViewMode('disk')
-    expect(() => s.setLang('en')).toThrow('原始结构')
+    expect(() => s.setLang('en')).toThrow(specError('readonly.diskView'))
   })
 
   it('未 open 时 setLang 抛错', () => {
@@ -1182,21 +1199,24 @@ describe('Session 的视图模式（原始结构 / 我的结构）', () => {
     await s.open()
     s.setViewMode('disk')
 
-    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow('原始结构')
-    expect(() => s.move({ from: 'README.md', toParent: 'src', isDir: false })).toThrow('原始结构')
-    expect(() => s.setGroup({ id: null, members: ['src'], text: 't' })).toThrow('原始结构')
-    expect(() => s.deleteGroup('whatever')).toThrow('原始结构')
-    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow('原始结构')
-    expect(() => s.removeNode('src')).toThrow('原始结构')
-    expect(() => s.raw()).toThrow('原始结构')
-    await expect(s.save()).rejects.toThrow('原始结构')
+    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow(specError('readonly.diskView'))
+    expect(() => s.move({ from: 'README.md', toParent: 'src', isDir: false })).toThrow(specError('readonly.diskView'))
+    expect(() => s.setGroup({ id: null, members: ['src'], text: 't' })).toThrow(specError('readonly.diskView'))
+    expect(() => s.deleteGroup('whatever')).toThrow(specError('readonly.diskView'))
+    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow(specError('readonly.diskView'))
+    expect(() => s.removeNode('src')).toThrow(specError('readonly.diskView'))
+    expect(() => s.raw()).toThrow(specError('readonly.diskView'))
+    await expect(s.save()).rejects.toThrow(specError('readonly.diskView'))
   })
 
   it('规则4：错误信息里带上如何退出只读状态的提示', async () => {
     const s = new Session(root)
     await s.open()
     s.setViewMode('disk')
-    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow(/切回|退出/)
+    // 这一条断的**就是文案本身**——"报错必须告诉用户怎么退出只读态"是它要钉的
+    // 全部内容，换成断 code 等于把这条用例删掉。所以它继续断文案，只是跟着改成英文。
+    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' }))
+      .toThrow(/Switch back to the "My Structure" view/)
   })
 
   it('切回 spec 视图后写入恢复正常', async () => {
@@ -1219,7 +1239,7 @@ describe('Session 的视图模式（原始结构 / 我的结构）', () => {
     const r = await s.handle('view/setMode', { mode: 'disk' })
     expect((r as { mode: string }).mode).toBe('disk')
     await expect(s.handle('spec/annotate', { path: 'src', isDir: true, annotation: 'x' }))
-      .rejects.toThrow('原始结构')
+      .rejects.toThrow(specError('readonly.diskView'))
   })
 
   // viewMode 是用户的显示偏好，不是某次编辑的残留状态（与 hidden 不同类：hidden 在
@@ -1251,7 +1271,7 @@ describe('Session 的视图模式（原始结构 / 我的结构）', () => {
     expect(find(r.tree, 'src/cases/foo')).toBeNull()
     expect(find(r.tree, 'examples/foo')?.origin).toBe('actual-only')
     // 信号 2：写入仍被拦下
-    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow('原始结构')
+    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow(specError('readonly.diskView'))
   })
 })
 
@@ -1494,8 +1514,8 @@ describe('Session 的撤销/重做', () => {
   it('只读模式（契约解析失败）下 undo / redo 被拒绝', async () => {
     await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
     const s = new Session(root); await s.open()
-    expect(() => s.undo()).toThrow('只读模式')
-    expect(() => s.redo()).toThrow('只读模式')
+    expect(() => s.undo()).toThrow(specError('readonly.parseFailed'))
+    expect(() => s.redo()).toThrow(specError('readonly.parseFailed'))
   })
 
   // 撤销/重做改的就是 this.spec，它就是写操作。disk 视图里的树本来就不按契约合成，
@@ -1508,8 +1528,8 @@ describe('Session 的撤销/重做', () => {
     s.undo()   // 两个栈都非空，闸门一旦缺失这两次调用就真的会生效
     s.setViewMode('disk')
 
-    expect(() => s.undo()).toThrow('原始结构')
-    expect(() => s.redo()).toThrow('原始结构')
+    expect(() => s.undo()).toThrow(specError('readonly.diskView'))
+    expect(() => s.redo()).toThrow(specError('readonly.diskView'))
   })
 
   it('handle 能分发 spec/undo 与 spec/redo', async () => {
@@ -1624,7 +1644,7 @@ describe('Session.move 红线：合并到同名节点时不覆盖目标已有的
     const beforeRaw = s.raw()
 
     expect(() => s.move({ from: 'old/utils.ts', toParent: 'src', isDir: false }))
-      .toThrow('共享工具函数，勿删')
+      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('共享工具函数，勿删') as unknown as string }))
 
     // 只看"抛没抛错"不够：抛错之后契约、树、hidden 都必须原封不动。
     expect(s.raw()).toBe(beforeRaw)
@@ -1726,7 +1746,8 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     expect(find(s.tree(), 'src/core')).toBeNull() // 确认 hidden 真的生效了
     const beforeRaw = s.raw()
 
-    expect(() => s.createNode({ parentPath: 'src', name: 'core', isDir: true })).toThrow('拖走')
+    expect(() => s.createNode({ parentPath: 'src', name: 'core', isDir: true }))
+      .toThrow(specError('hidden.resultPath', { path: 'src/core' }))
     expect(s.raw()).toBe(beforeRaw)
     expect(s.isDirty()).toBe(true) // 上面那次 move 造成的，不是这次被拒的调用
   })
@@ -1735,7 +1756,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     const s = new Session(root); await s.open()
     s.move({ from: 'src/core', toParent: '', isDir: true })
     expect(() => s.createNode({ parentPath: 'src/core/sub', name: 'x.md', isDir: false }))
-      .toThrow('拖走')
+      .toThrow(specError('hidden.oldLocation', { path: 'src/core' }))
   })
 
   it('move 的 toParent 落在被拖走节点的子树里时同样拒绝——两条写路径同一套判据', async () => {
@@ -1744,7 +1765,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     s.move({ from: 'src/core', toParent: '', isDir: true })
 
     expect(() => s.move({ from: 'README.md', toParent: 'src/core/sub', isDir: false }))
-      .toThrow('拖走')
+      .toThrow(specError('hidden.oldLocation', { path: 'src/core' }))
     // 被拒绝之后注释仍在原地、树上仍看得见——这条失效的形状正是"内容还在文件里，
     // 界面上再也找不回来"，只断言抛错是不够的。
     expect(find(s.tree(), 'README.md')?.annotation).toBe('别把我搬到看不见的地方')
@@ -1760,7 +1781,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
   it('「新建目录」用磁盘上真实文件的名字时拒绝——契约不能写下一条 Agent 会照做的谎话', async () => {
     const s = new Session(root); await s.open()
     expect(() => s.createNode({ parentPath: '', name: 'README.md', isDir: true }))
-      .toThrow('在磁盘上是一个文件')
+      .toThrow(specError('declare.typeConflictDiskFile', { path: 'README.md' }))
     // 树上零异常（merge 对 origin=both 只信磁盘），所以必须断言契约本身没被写脏
     expect(s.raw()).not.toContain('`README.md/`')
     expect(s.isDirty()).toBe(false)
@@ -1769,7 +1790,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
   it('「新建文件」用磁盘上真实目录的名字时同样拒绝（反方向）', async () => {
     const s = new Session(root); await s.open()
     expect(() => s.createNode({ parentPath: '', name: 'src', isDir: false }))
-      .toThrow('在磁盘上是一个目录')
+      .toThrow(specError('declare.typeConflictDiskDir', { path: 'src' }))
   })
 
   it('对照：类型一致时照常放行——把磁盘上已有的目录声明进契约是正常用法', async () => {
@@ -1786,7 +1807,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     const beforeRaw = s.raw()
 
     expect(() => s.move({ from: 'src/core', toParent: '', isDir: true }))
-      .toThrow('在磁盘上是一个文件')
+      .toThrow(specError('declare.typeConflictDiskFile', { path: 'core' }))
     expect(s.raw()).toBe(beforeRaw)
     // 被拒绝的 move 绝不能顺手把旧位置记进 hidden
     expect(find(s.tree(), 'src/core')?.annotation).toBe('核心模块')
@@ -1801,7 +1822,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     s.createNode({ parentPath: 'old', name: 'thing', isDir: true }) // 契约里声明成**目录**
 
     expect(() => s.move({ from: 'old/thing', toParent: '', isDir: false }))
-      .toThrow('在磁盘上是一个文件')
+      .toThrow(specError('declare.typeConflictDiskFile', { path: 'thing' }))
   })
 
   it('parentPath 的中间祖先在契约里被声明为文件时拒绝——ensure() 会把它悄悄改写成目录', async () => {
@@ -1810,7 +1831,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     s.annotate({ path: 'notes.txt', isDir: false, annotation: '这是一个文件，我明确这么声明的' })
 
     expect(() => s.createNode({ parentPath: 'notes.txt/inner', name: 'x.ts', isDir: false }))
-      .toThrow('在契约里被声明为文件')
+      .toThrow(specError('parent.fileInSpec', { path: 'notes.txt' }))
     // 用户写下的 isDir=false 必须原样活着：结构区里 notes.txt 不带尾斜杠
     expect(s.raw()).toContain('`notes.txt`')
     expect(s.raw()).not.toContain('`notes.txt/`')
@@ -1820,7 +1841,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     const s = new Session(root); await s.open()
     s.createNode({ parentPath: '', name: 'notes.txt', isDir: false })
     expect(() => s.move({ from: 'README.md', toParent: 'notes.txt/inner', isDir: false }))
-      .toThrow('在契约里被声明为文件')
+      .toThrow(specError('parent.fileInSpec', { path: 'notes.txt' }))
   })
 
   it('parentPath 的中间祖先在磁盘上是文件时，报的是「是一个文件」而不是「尚未扫描」', async () => {
@@ -1828,9 +1849,9 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     // 旧实现走到 'README.md/inner' 时只发现"README.md 的 children 是 undefined"，
     // 于是报"尚未扫描"——一条让用户去展开一个文件的、无从执行的提示。
     expect(() => s.createNode({ parentPath: 'README.md/inner', name: 'x.ts', isDir: false }))
-      .toThrow('在磁盘上是一个文件')
+      .toThrow(specError('parent.fileOnDisk', { path: 'README.md' }))
     expect(() => s.createNode({ parentPath: 'README.md/inner', name: 'x.ts', isDir: false }))
-      .not.toThrow('尚未扫描')
+      .not.toThrow(specError('parent.unscanned'))
   })
 
   // annotate 是第三条会往契约里写路径的写路径，此前完全没接这道闸门：终审实测
@@ -1840,7 +1861,7 @@ describe('Session 新增声明的闸门：结果路径与祖先链（丙）', ()
     const s = new Session(root); await s.open()
     s.move({ from: 'src/core', toParent: '', isDir: true })
     expect(() => s.annotate({ path: 'src/core', isDir: true, annotation: '够不着的注释' }))
-      .toThrow('拖走')
+      .toThrow(specError('hidden.oldLocation', { path: 'src/core' }))
     expect(s.raw()).not.toContain('够不着的注释')
   })
 
@@ -1995,13 +2016,13 @@ describe('Session.rename（在契约里给节点改名——不碰磁盘上的�
   it('只读模式（disk 视图）下 rename 抛错', async () => {
     const s = new Session(root); await s.open()
     s.setViewMode('disk')
-    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('原始结构')
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow(specError('readonly.diskView'))
   })
 
   it('只读模式（契约解析失败）下 rename 抛错', async () => {
     await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '# x\n\n## 结构\n\n   - `a/`\n')
     const s = new Session(root); await s.open()
-    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('只读模式')
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow(specError('readonly.parseFailed'))
   })
 
   it('handle("spec/rename") 分发正确', async () => {
@@ -2036,36 +2057,39 @@ describe('Session.rename（在契约里给节点改名——不碰磁盘上的�
 describe('Session.rename 的名字校验与撞名（悄悄合并两个不同的东西 = 不可逆的丢失）', () => {
   it('名字校验与 createNode 完全一致：空名 / "/" / 反引号 / 换行 / "." / ".." 全部拒绝', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.rename({ path: 'src/core', newName: '' })).toThrow('名字不能为空')
-    expect(() => s.rename({ path: 'src/core', newName: 'a/b' })).toThrow('不能包含 "/"')
-    expect(() => s.rename({ path: 'src/core', newName: 'we`ird' })).toThrow('反引号或换行')
-    expect(() => s.rename({ path: 'src/core', newName: 'a\nb' })).toThrow('反引号或换行')
-    expect(() => s.rename({ path: 'src/core', newName: '.' })).toThrow('特殊含义')
-    expect(() => s.rename({ path: 'src/core', newName: '..' })).toThrow('特殊含义')
+    expect(() => s.rename({ path: 'src/core', newName: '' })).toThrow(specError('name.empty'))
+    expect(() => s.rename({ path: 'src/core', newName: 'a/b' })).toThrow(specError('name.hasSlash', { name: '"a/b"' }))
+    expect(() => s.rename({ path: 'src/core', newName: 'we`ird' })).toThrow(specError('name.unrepresentable', { name: '"we`ird"' }))
+    expect(() => s.rename({ path: 'src/core', newName: 'a\nb' })).toThrow(specError('name.unrepresentable', { name: JSON.stringify('a\nb') }))
+    expect(() => s.rename({ path: 'src/core', newName: '.' })).toThrow(specError('name.reserved', { name: '.' }))
+    expect(() => s.rename({ path: 'src/core', newName: '..' })).toThrow(specError('name.reserved', { name: '..' }))
   })
 
   it('不能重命名根节点', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.rename({ path: '', newName: 'x' })).toThrow('不能重命名根节点')
+    expect(() => s.rename({ path: '', newName: 'x' })).toThrow(specError('rename.rootNode'))
   })
 
   it('契约里同层已经有同名声明时拒绝（磁盘上并没有这个名字）', async () => {
     const s = new Session(root); await s.open()
     s.createNode({ parentPath: 'src', name: 'kernel', isDir: true })
-    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('已经有同名节点')
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' }))
+      .toThrow(specError('name.duplicateSibling', { parent: 'src', name: 'kernel' }))
   })
 
   it('磁盘上同层已经有同名条目时拒绝——契约不能把两个不同的东西说成同一个', async () => {
     await fs.mkdir(nodePath.join(root, 'src/kernel'))
     const s = new Session(root); await s.open()
-    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('磁盘上已经存在')
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' }))
+      .toThrow(specError('rename.targetOccupiedOnDisk', { path: 'src/kernel' }))
   })
 
   it('新名字所在那一层尚未扫描时拒绝——分不清磁盘上有没有同名的东西，宁可让用户先展开', async () => {
     const s = new Session(root); await s.open()
     s.annotate({ path: 'src/deep/x', isDir: true, annotation: '声明' })
     expect(find(s.tree(), 'src/deep/x')?.origin).toBe('unscanned') // 夹具确认落在懒加载边界之下
-    expect(() => s.rename({ path: 'src/deep/x', newName: 'y' })).toThrow('尚未扫描')
+    expect(() => s.rename({ path: 'src/deep/x', newName: 'y' }))
+      .toThrow(specError('rename.targetUnscanned', { path: 'src/deep/y' }))
   })
 
   it('对照：展开那一层之后，同一次改名照常放行', async () => {
@@ -2078,19 +2102,21 @@ describe('Session.rename 的名字校验与撞名（悄悄合并两个不同的�
 
   it('契约里和磁盘上都没有这条路径时拒绝——没有可以重命名的节点', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.rename({ path: 'src/ghost', newName: 'x' })).toThrow('没有可以重命名的节点')
+    expect(() => s.rename({ path: 'src/ghost', newName: 'x' }))
+      .toThrow(specError('rename.sourceMissing', { path: 'src/ghost' }))
   })
 
   it('源节点落在懒加载边界之下、契约里也没有它时拒绝，而不是猜它是文件还是目录', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.rename({ path: 'src/deep/deeper', newName: 'x' })).toThrow('尚未扫描')
+    expect(() => s.rename({ path: 'src/deep/deeper', newName: 'x' }))
+      .toThrow(specError('node.unscannedKind', { path: 'src/deep/deeper' }))
   })
 
   it('拒绝之后不产生任何副作用：不置脏、不进撤销栈、契约一个字节都不变', async () => {
     const s = new Session(root); await s.open()
     s.annotate({ path: 'README.md', isDir: false, annotation: '说明' })
     const before = s.raw()
-    expect(() => s.rename({ path: 'src/core', newName: 'a/b' })).toThrow()
+    expect(() => s.rename({ path: 'src/core', newName: 'a/b' })).toThrow(specError('name.hasSlash', { name: '"a/b"' }))
     expect(s.raw()).toBe(before)
     // 那一次失败若偷偷吃了一格撤销栈，这次 undo 退回的就是"改名前"而不是"写注释前"
     const u = s.undo()
@@ -2108,14 +2134,16 @@ describe('Session.rename 接进既有的三道闸门', () => {
   it('源节点自己就是本次会话刚被拖走的旧位置时拒绝——那一行在树上根本不存在', async () => {
     const s = new Session(root); await s.open()
     s.move({ from: 'src/core', toParent: '', isDir: true })
-    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('刚被拖走的旧位置')
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' }))
+      .toThrow(specError('hidden.oldLocation', { path: 'src/core' }))
   })
 
   it('祖先链上有被拖走的旧位置时同样拒绝——判据不是精确匹配', async () => {
     await fs.mkdir(nodePath.join(root, 'src/core/sub'), { recursive: true })
     const s = new Session(root); await s.open()
     s.move({ from: 'src/core', toParent: '', isDir: true })
-    expect(() => s.rename({ path: 'src/core/sub', newName: 'x' })).toThrow('刚被拖走的旧位置')
+    expect(() => s.rename({ path: 'src/core/sub', newName: 'x' }))
+      .toThrow(specError('hidden.oldLocation', { path: 'src/core' }))
   })
 
   it('父级在磁盘上是文件时拒绝——与 createNode / move 共用 assertCreatableParent', async () => {
@@ -2123,7 +2151,8 @@ describe('Session.rename 接进既有的三道闸门', () => {
     // annotate 不过 assertCreatableParent（它只查 hidden），所以这条声明写得进去；
     // 正因为写得进去，才有机会在这里被 rename 的闸门挡下。
     s.annotate({ path: 'README.md/child', isDir: false, annotation: 'x' })
-    expect(() => s.rename({ path: 'README.md/child', newName: 'y' })).toThrow('在磁盘上是一个文件')
+    expect(() => s.rename({ path: 'README.md/child', newName: 'y' }))
+      .toThrow(specError('parent.fileOnDisk', { path: 'README.md' }))
   })
 
   it('结果路径与磁盘上的类型冲突时拒绝——与 createNode / move 共用 assertDeclarableResult', async () => {
@@ -2132,7 +2161,8 @@ describe('Session.rename 接进既有的三道闸门', () => {
     // 先把 src/core 改走，src/core 落进 hidden：撞名检查因此放行（改回一个被藏起来的
     // 位置是合法动作），闸门这一格才轮得到 assertDeclarableResult 去审类型。
     s.rename({ path: 'src/core', newName: 'core-old' })
-    expect(() => s.rename({ path: 'src/note.md', newName: 'core' })).toThrow('在磁盘上是一个目录')
+    expect(() => s.rename({ path: 'src/note.md', newName: 'core' }))
+      .toThrow(specError('declare.typeConflictDiskDir', { path: 'src/core' }))
   })
 })
 
@@ -2310,7 +2340,7 @@ describe('Session.copyNode（把一个契约子树在别处再声明一份——
     const s = new Session(root); await s.open()
     // annotate 不做逐段名字校验（那是它自己的既有口径），因此契约里能长出一个叫 ".." 的节点
     s.annotate({ path: '..', isDir: true, annotation: 'x' })
-    expect(() => s.copyNode({ from: '..', toParent: 'src' })).toThrow('名字不能是 ".."')
+    expect(() => s.copyNode({ from: '..', toParent: 'src' })).toThrow(specError('name.reserved', { name: '..' }))
   })
 
   it('副本不继承分组归属——分组是"这几条具体路径共享一条约束"，复制不该悄悄把范围扩一圈', async () => {
@@ -2332,12 +2362,12 @@ describe('Session.copyNode（把一个契约子树在别处再声明一份——
 
   it('拒绝粘进它自己的子树下——与 moveNode 同一条判据', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.copyNode({ from: 'src', toParent: 'src/core' })).toThrow('子树')
+    expect(() => s.copyNode({ from: 'src', toParent: 'src/core' })).toThrow(specError('copy.intoOwnSubtree'))
   })
 
   it('拒绝粘进它自己下面', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.copyNode({ from: 'src', toParent: 'src' })).toThrow('子树')
+    expect(() => s.copyNode({ from: 'src', toParent: 'src' })).toThrow(specError('copy.intoOwnSubtree'))
   })
 
   it('不碰 hidden：复制不移走源节点，旧位置没有需要隐藏的东西', async () => {
@@ -2370,13 +2400,13 @@ describe('Session.copyNode（把一个契约子树在别处再声明一份——
   it('只读模式（disk 视图）下 copyNode 抛错', async () => {
     const s = new Session(root); await s.open()
     s.setViewMode('disk')
-    expect(() => s.copyNode({ from: 'src/core', toParent: '' })).toThrow('原始结构')
+    expect(() => s.copyNode({ from: 'src/core', toParent: '' })).toThrow(specError('readonly.diskView'))
   })
 
   it('只读模式（契约解析失败）下 copyNode 抛错', async () => {
     await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
     const s = new Session(root); await s.open()
-    expect(() => s.copyNode({ from: 'src/core', toParent: '' })).toThrow('只读模式')
+    expect(() => s.copyNode({ from: 'src/core', toParent: '' })).toThrow(specError('readonly.parseFailed'))
   })
 
   it('handle("spec/copyNode") 分发正确', async () => {
@@ -2414,44 +2444,49 @@ describe('Session.copyNode 接进既有的三道闸门（不新写一份判据�
   it('toParent 在磁盘上是文件时拒绝——与 createNode / move / rename 共用 assertCreatableParent', async () => {
     const s = new Session(root); await s.open()
     expect(() => s.copyNode({ from: 'src/core', toParent: 'README.md' }))
-      .toThrow('在磁盘上是一个文件')
+      .toThrow(specError('parent.fileOnDisk', { path: 'README.md' }))
   })
 
   it('toParent 落在本次会话刚被拖走的旧位置里时拒绝', async () => {
     const s = new Session(root); await s.open()
     s.move({ from: 'src/deep', toParent: '', isDir: true })
-    expect(() => s.copyNode({ from: 'src/core', toParent: 'src/deep' })).toThrow('刚被拖走的旧位置')
+    expect(() => s.copyNode({ from: 'src/core', toParent: 'src/deep' }))
+      .toThrow(specError('hidden.oldLocation', { path: 'src/deep' }))
   })
 
   it('源节点自己就是刚被拖走的旧位置时拒绝——那一行在树上根本不存在', async () => {
     const s = new Session(root); await s.open()
     s.move({ from: 'src/core', toParent: '', isDir: true })
-    expect(() => s.copyNode({ from: 'src/core', toParent: 'src' })).toThrow('刚被拖走的旧位置')
+    expect(() => s.copyNode({ from: 'src/core', toParent: 'src' }))
+      .toThrow(specError('hidden.oldLocation', { path: 'src/core' }))
   })
 
   it('toParent 含 ".." 段时拒绝——不能借这个参数位把声明写到仓库之外', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.copyNode({ from: 'src/core', toParent: '../etc' })).toThrow('".."')
+    expect(() => s.copyNode({ from: 'src/core', toParent: '../etc' })).toThrow(specError('name.reserved', { name: '..' }))
   })
 
   it('源路径含反引号时拒绝（当前契约格式无法表示）', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.copyNode({ from: 'src/a`b', toParent: '' })).toThrow('反引号')
+    expect(() => s.copyNode({ from: 'src/a`b', toParent: '' }))
+      .toThrow(specError('path.unrepresentable', { path: '"src/a`b"' }))
   })
 
   it('不能复制根节点', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.copyNode({ from: '', toParent: 'src' })).toThrow('根节点')
+    expect(() => s.copyNode({ from: '', toParent: 'src' })).toThrow(specError('copy.rootNode'))
   })
 
   it('契约里和磁盘上都没有这条路径时拒绝——没有可以复制的节点', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.copyNode({ from: 'src/nope', toParent: '' })).toThrow('没有可以复制的节点')
+    expect(() => s.copyNode({ from: 'src/nope', toParent: '' }))
+      .toThrow(specError('copy.sourceMissing', { path: 'src/nope' }))
   })
 
   it('源节点落在懒加载边界之下、契约里也没有它时拒绝，而不是猜它是文件还是目录', async () => {
     const s = new Session(root); await s.open()
-    expect(() => s.copyNode({ from: 'src/deep/deeper', toParent: '' })).toThrow('尚未扫描')
+    expect(() => s.copyNode({ from: 'src/deep/deeper', toParent: '' }))
+      .toThrow(specError('node.unscannedKind', { path: 'src/deep/deeper' }))
   })
 
   it('目标父级的子项尚未扫描时拒绝——磁盘侧撞名与否无从判断，绝不只查一半', async () => {
@@ -2459,7 +2494,7 @@ describe('Session.copyNode 接进既有的三道闸门（不新写一份判据�
     // 前置：src/deep 确实处在懒加载边界上（children 尚未扫描）
     expect(find(s.tree(), 'src/deep')?.children).toBeUndefined()
     expect(() => s.copyNode({ from: 'src/core', toParent: 'src/deep' }))
-      .toThrow('尚未扫描')
+      .toThrow(specError('copy.targetChildrenUnscanned', { path: 'src/deep' }))
   })
 
   it('对照：展开那一层之后，同一次粘贴照常放行', async () => {
@@ -2476,9 +2511,9 @@ describe('Session.copyNode 接进既有的三道闸门（不新写一份判据�
     await s.save()
     const before = s.raw()
 
-    expect(() => s.copyNode({ from: 'src', toParent: 'src/core' })).toThrow()
-    expect(() => s.copyNode({ from: 'src/core', toParent: 'README.md' })).toThrow()
-    expect(() => s.copyNode({ from: 'src/nope', toParent: '' })).toThrow()
+    expect(() => s.copyNode({ from: 'src', toParent: 'src/core' })).toThrow(specError('copy.intoOwnSubtree'))
+    expect(() => s.copyNode({ from: 'src/core', toParent: 'README.md' })).toThrow(specError('parent.fileOnDisk', { path: 'README.md' }))
+    expect(() => s.copyNode({ from: 'src/nope', toParent: '' })).toThrow(specError('copy.sourceMissing', { path: 'src/nope' }))
 
     expect(s.raw()).toBe(before)
     expect(s.isDirty()).toBe(false)

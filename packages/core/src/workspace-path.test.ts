@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { normalizeWorkspacePath, resolveWithinWorkspace } from './workspace-path.js'
+import { specError } from './errors.test-support.js'
 
 describe('normalizeWorkspacePath', () => {
   it('空串归一化为空串（工作区根）', () => {
@@ -15,9 +16,10 @@ describe('normalizeWorkspacePath', () => {
   })
 
   it('拒绝 .. 段', () => {
-    expect(() => normalizeWorkspacePath('../etc')).toThrow(/不得包含 "\.\." 段/)
-    expect(() => normalizeWorkspacePath('src/../../etc')).toThrow(/不得包含 "\.\." 段/)
-    expect(() => normalizeWorkspacePath('src/..')).toThrow(/不得包含 "\.\." 段/)
+    // 连 params.path 一起断：只对 code，报错指着另一条路径也照样绿
+    expect(() => normalizeWorkspacePath('../etc')).toThrow(specError('path.parentSegment', { path: '"../etc"' }))
+    expect(() => normalizeWorkspacePath('src/../../etc')).toThrow(specError('path.parentSegment', { path: '"src/../../etc"' }))
+    expect(() => normalizeWorkspacePath('src/..')).toThrow(specError('path.parentSegment', { path: '"src/.."' }))
   })
 
   it('不把 ..foo 当成越界', () => {
@@ -25,8 +27,8 @@ describe('normalizeWorkspacePath', () => {
   })
 
   it('拒绝绝对路径', () => {
-    expect(() => normalizeWorkspacePath('/etc/passwd')).toThrow(/必须是工作区相对路径/)
-    expect(() => normalizeWorkspacePath('C:\\Windows')).toThrow(/必须是工作区相对路径/)
+    expect(() => normalizeWorkspacePath('/etc/passwd')).toThrow(specError('path.notRelative', { path: '"/etc/passwd"' }))
+    expect(() => normalizeWorkspacePath('C:\\Windows')).toThrow(specError('path.notRelative', { path: '"C:\\\\Windows"' }))
   })
 })
 

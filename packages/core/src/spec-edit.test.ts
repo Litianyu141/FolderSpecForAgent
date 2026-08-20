@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { copyNode, createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, isSelfOrDescendant, moveNode, removeNode, renameNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
+import { specError } from './errors.test-support.js'
 import type { Spec, SpecNode } from './types.js'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
@@ -156,7 +157,7 @@ describe('moveNode', () => {
 
   it('拒绝把节点移进它自己的子树', () => {
     const s = setAnnotation(emptySpec(), 'a/b', true, { annotation: 'x' })
-    expect(() => moveNode(s, 'a', 'a/b', true)).toThrow('不能把节点移动到它自己的子树下')
+    expect(() => moveNode(s, 'a', 'a/b', true)).toThrow(specError('move.intoOwnSubtree'))
   })
 })
 
@@ -177,7 +178,10 @@ describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的�
     let s = setAnnotation(emptySpec(), 'src/utils.ts', false, { annotation: '共享工具函数，勿删' })
     s = setAnnotation(s, 'old/utils.ts', false, { annotation: '旧的' })
 
-    expect(() => moveNode(s, 'old/utils.ts', 'src', false)).toThrow('共享工具函数，勿删')
+    // 连 params.conflicts 一起断：只对 code，报错里少列一条冲突（等于把一条会被
+    // 覆盖的注释藏起来）照样绿——原用例断的正是"报错点名了目标那条注释"。
+    expect(() => moveNode(s, 'old/utils.ts', 'src', false))
+      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('共享工具函数，勿删') as unknown as string }))
 
     // 只看"抛没抛错"不够：抛错之后调用方手里的那份 spec 必须原封不动——
     // 目标的注释还在，源节点也没有被 detach 走。
@@ -188,21 +192,24 @@ describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的�
   it('role 冲突同样拦下', () => {
     let s = setAnnotation(emptySpec(), 'src/utils.ts', false, { role: 'shared' })
     s = setAnnotation(s, 'old/utils.ts', false, { role: 'legacy' })
-    expect(() => moveNode(s, 'old/utils.ts', 'src', false)).toThrow('语义角色')
+    expect(() => moveNode(s, 'old/utils.ts', 'src', false))
+      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('semantic role') as unknown as string }))
     expect(find(s.nodes, 'src/utils.ts')?.role).toBe('shared')
   })
 
   it('template 冲突同样拦下', () => {
     let s = setAnnotation(emptySpec(), 'src/cases', true, { template: 'case-dir' })
     s = setAnnotation(s, 'old/cases', true, { template: 'legacy-dir' })
-    expect(() => moveNode(s, 'old/cases', 'src', true)).toThrow('模板')
+    expect(() => moveNode(s, 'old/cases', 'src', true))
+      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('template') as unknown as string }))
     expect(find(s.nodes, 'src/cases')?.template).toBe('case-dir')
   })
 
   it('severity 冲突同样拦下', () => {
     let s = setAnnotation(emptySpec(), 'src/cases', true, { severity: 'error' })
     s = setAnnotation(s, 'old/cases', true, { severity: 'warning' })
-    expect(() => moveNode(s, 'old/cases', 'src', true)).toThrow('严重级别')
+    expect(() => moveNode(s, 'old/cases', 'src', true))
+      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('severity') as unknown as string }))
     expect(find(s.nodes, 'src/cases')?.severity).toBe('error')
   })
 
@@ -212,7 +219,8 @@ describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的�
     let s = setAnnotation(emptySpec(), 'src/cases/input.json', false, { annotation: '目标侧的关键说明' })
     s = setAnnotation(s, 'old/cases/input.json', false, { annotation: '源侧的说明' })
 
-    expect(() => moveNode(s, 'old/cases', 'src', true)).toThrow('目标侧的关键说明')
+    expect(() => moveNode(s, 'old/cases', 'src', true))
+      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('目标侧的关键说明') as unknown as string }))
     expect(find(s.nodes, 'src/cases/input.json')?.annotation).toBe('目标侧的关键说明')
   })
 
@@ -329,7 +337,7 @@ describe('isDir 一致性（Finding 1：isDir 与 children 同步）', () => {
 
     // a 在 a/b 的子树下——应当抛出
     const s2 = setAnnotation(emptySpec(), 'a/b', true, { annotation: 'x' })
-    expect(() => moveNode(s2, 'a', 'a/b', true)).toThrow('不能把节点移动到它自己的子树下')
+    expect(() => moveNode(s2, 'a', 'a/b', true)).toThrow(specError('move.intoOwnSubtree'))
   })
 })
 
@@ -505,7 +513,7 @@ describe('removeNode（撤销节点声明，不碰磁盘）', () => {
   })
 
   it('不能移除根节点', () => {
-    expect(() => removeNode(emptySpec(), '')).toThrow('根节点')
+    expect(() => removeNode(emptySpec(), '')).toThrow(specError('remove.rootNode'))
   })
 
   it('路径不存在时是空操作，不报错——与 deleteGroup 对不存在 id 的既有行为一致', () => {
@@ -553,7 +561,7 @@ describe('removeNode 红线：子树里有用户内容时拒绝级联删除', ()
     ;({ spec: s } = createNode(s, '', 'src', true))
     s = setAnnotation(s, 'src/cases', true, { annotation: '用户手写的关键说明' })
 
-    expect(() => removeNode(s, 'src')).toThrow()
+    expect(() => removeNode(s, 'src')).toThrow(specError('remove.subtreeHasContent', { path: 'src' }))
     // 抛错意味着调用方拿到的还是原来那个 s——重新断言它没被动过，
     // 而不是只看"抛没抛错"这一件事本身。
     expect(find(s.nodes, 'src/cases')?.annotation).toBe('用户手写的关键说明')
@@ -565,7 +573,7 @@ describe('removeNode 红线：子树里有用户内容时拒绝级联删除', ()
     ;({ spec: s } = createNode(s, 'src', 'cases', true))
     s = setAnnotation(s, 'src/cases/foo', true, { role: 'fixture' })
 
-    expect(() => removeNode(s, 'src')).toThrow()
+    expect(() => removeNode(s, 'src')).toThrow(specError('remove.subtreeHasContent', { path: 'src' }))
     expect(find(s.nodes, 'src/cases/foo')?.role).toBe('fixture')
   })
 
@@ -585,7 +593,7 @@ describe('removeNode 红线：子树里有用户内容时拒绝级联删除', ()
     expect(child?.role).toBeUndefined()
     expect(child?.severity).toBeUndefined()
 
-    expect(() => removeNode(s, 'src')).toThrow()
+    expect(() => removeNode(s, 'src')).toThrow(specError('remove.subtreeHasContent', { path: 'src' }))
   })
 
   it('只有 severity（没有 annotation/role/template）的子孙同样能拦下', () => {
@@ -596,7 +604,7 @@ describe('removeNode 红线：子树里有用户内容时拒绝级联删除', ()
     expect(child?.severity).toBe('warning')
     expect(child?.template).toBeUndefined()
 
-    expect(() => removeNode(s, 'src')).toThrow()
+    expect(() => removeNode(s, 'src')).toThrow(specError('remove.subtreeHasContent', { path: 'src' }))
   })
 
   it('自底向上先移除带内容的子节点，父节点才能被移除——显式级联，不是隐式的', () => {
@@ -604,7 +612,7 @@ describe('removeNode 红线：子树里有用户内容时拒绝级联删除', ()
     ;({ spec: s } = createNode(s, '', 'src', true))
     s = setAnnotation(s, 'src/cases', true, { annotation: '说明' })
 
-    expect(() => removeNode(s, 'src')).toThrow()
+    expect(() => removeNode(s, 'src')).toThrow(specError('remove.subtreeHasContent', { path: 'src' }))
     s = removeNode(s, 'src/cases')
     const after = removeNode(s, 'src')
     expect(after.nodes).toEqual([])
@@ -639,7 +647,7 @@ describe('createNode', () => {
 
   it('拒绝同层重名：先声明的节点已占用这个名字', () => {
     const { spec: s } = createNode(emptySpec(), '', 'src', true)
-    expect(() => createNode(s, '', 'src', true)).toThrow('src')
+    expect(() => createNode(s, '', 'src', true)).toThrow(specError('name.duplicateSiblingAtRoot', { name: 'src' }))
   })
 
   it('判重只看 name、不看 isDir——与解析器的判重键保持一致', () => {
@@ -648,7 +656,7 @@ describe('createNode', () => {
     // 相同时才报错，会放行一个 `foo` 文件与 `foo/` 目录做兄弟，round-trip 时被解析器拒绝，
     // 用户此后再也存不了盘。
     const { spec: s } = createNode(emptySpec(), '', 'foo', true)
-    expect(() => createNode(s, '', 'foo', false)).toThrow()
+    expect(() => createNode(s, '', 'foo', false)).toThrow(specError('name.duplicateSiblingAtRoot', { name: 'foo' }))
   })
 
   it('父级路径穿过已有的文件叶子节点时，把它升级成目录', () => {
@@ -857,21 +865,23 @@ describe('renameNode（在契约里改一个节点的名字，不碰磁盘）', 
   })
 
   it('不能重命名根节点', () => {
-    expect(() => renameNode(emptySpec(), '', 'x', true)).toThrow('不能重命名根节点')
+    expect(() => renameNode(emptySpec(), '', 'x', true)).toThrow(specError('rename.rootNode'))
   })
 
   it('同层已经有同名声明时拒绝，且原 spec 一个字节都不变', () => {
     let s = setAnnotation(emptySpec(), 'src/core', true, { annotation: '核心' })
     s = setAnnotation(s, 'src/kernel', true, { annotation: '另一个东西' })
     const snapshot = JSON.stringify(s)
-    expect(() => renameNode(s, 'src/core', 'kernel', true)).toThrow('已经有同名节点')
+    expect(() => renameNode(s, 'src/core', 'kernel', true))
+      .toThrow(specError('name.duplicateSibling', { parent: 'src', name: 'kernel' }))
     expect(JSON.stringify(s)).toBe(snapshot)
   })
 
   it('判重只看 name、不看 isDir——与解析器的判重键保持一致', () => {
     let s = setAnnotation(emptySpec(), 'src/core', true, { annotation: '核心' })
     s = setAnnotation(s, 'src/kernel', false, { annotation: '是个文件' })
-    expect(() => renameNode(s, 'src/core', 'kernel', true)).toThrow('已经有同名节点')
+    expect(() => renameNode(s, 'src/core', 'kernel', true))
+      .toThrow(specError('name.duplicateSibling', { parent: 'src', name: 'kernel' }))
   })
 
   it('改成它自己现在的名字不算撞名（判据是"另一个兄弟"，不是"有同名的"）', () => {
@@ -1013,12 +1023,12 @@ describe('copyNode（把一个契约子树在别处再声明一份）', () => {
   })
 
   it('不能复制根节点', () => {
-    expect(() => copyNode(emptySpec(), '', 'src', 'x', true)).toThrow('根节点')
+    expect(() => copyNode(emptySpec(), '', 'src', 'x', true)).toThrow(specError('copy.rootNode'))
   })
 
   it('拒绝粘进它自己或它的子树下', () => {
-    expect(() => copyNode(withDemo(), 'templates', 'templates/demo', 'templates', true)).toThrow('子树')
-    expect(() => copyNode(withDemo(), 'templates', 'templates', 'templates', true)).toThrow('子树')
+    expect(() => copyNode(withDemo(), 'templates', 'templates/demo', 'templates', true)).toThrow(specError('copy.intoOwnSubtree'))
+    expect(() => copyNode(withDemo(), 'templates', 'templates', 'templates', true)).toThrow(specError('copy.intoOwnSubtree'))
   })
 
   it('同层重名一律拒绝——判重不该依赖"调用方会先让开"', () => {
@@ -1026,7 +1036,7 @@ describe('copyNode（把一个契约子树在别处再声明一份）', () => {
     // 但同层同名兄弟是重复声明、解析器会拒绝，放行的后果要到 save() 的自校验才炸，
     // 那时用户已经交互过一整轮、此后再也存不了盘（与 createNode 同一条判据）。
     expect(() => copyNode(withDemo(), 'templates/demo', 'templates', 'demo', true))
-      .toThrow('同层同名兄弟是重复声明')
+      .toThrow(specError('name.duplicateSibling', { parent: 'templates', name: 'demo' }))
   })
 
   it('复制出来的东西 round-trip 得回来：serialize → parse 逐字还原', () => {

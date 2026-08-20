@@ -293,6 +293,38 @@ export interface Api {
 
 export type ApiMethod = keyof Api
 
+/**
+ * 错误在**线上**的形状。
+ *
+ * 今天错误跨 bridge 只是一个裸字符串（`msg.error`，UI 侧 `new Error(msg.error)` 还原，
+ * 见 ui/src/ws-bridge.ts 与 vscode/src/editor.ts），于是界面横幅上永远只能显示 core
+ * 当初写死的那句话——语言开关管不到它。这个类型是那条线的**目标形状**：core 抛出的
+ * SpecError（见 core/src/errors.ts）带着 code 与 params 过桥，UI 按 code 查中文字典，
+ * 查不到就退回 `message`。
+ *
+ * 字段取向：
+ *
+ * - **`message` 必填，`code` / `params` 可选。** 不是所有错误都是 SpecError——宿主
+ *   自己的失败（端口占用、WorkspaceEdit 被拒）、以及 core 里那些"只有调用方违约才
+ *   触达"的普通 Error，都只有一句 message。收端因此**永远**先有一句能显示的话，
+ *   带不带码只影响它能不能被翻译，不影响它能不能被显示。
+ * - **`code` 是 `string`，不是 `SpecErrorCode`。** 这是从进程外收来的数据，不可信；
+ *   收端要做的是"字典里查得到就用中文，查不到就用 message"，那本来就是一次运行期
+ *   查表，不需要（也不该假装）编译期的枚举保证。
+ *
+ * 本轮**只定义形状，不改宿主与 UI 的实现**——接线是第二轮的事。放在 api.ts 是因为
+ * 这里是唯一一处 core 与 ui 共同认识的类型契约，且本文件零 node 依赖，UI 直接 import
+ * 得到（`@folderspec/core/api`）。
+ */
+export interface WireError {
+  /** 人能读的一句话。core 的 SpecError 给的是英文渲染结果，宿主自己的错就是它自己的文案 */
+  message: string
+  /** 点分命名空间的错误码，存在即表示这是一条 core 定义过的、可翻译的错误 */
+  code?: string
+  /** 渲染 message 用过的那组值（路径、名字……）。翻译时按同名占位符 `{xxx}` 代回去 */
+  params?: Record<string, string | number>
+}
+
 export type BridgeEvent = 'spec-changed' | 'scan-progress' | 'external-change'
 
 export interface Bridge {

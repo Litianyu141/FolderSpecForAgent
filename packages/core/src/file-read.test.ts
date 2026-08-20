@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { readWorkspaceFile, MAX_READ_BYTES } from './file-read.js'
+import { specError } from './errors.test-support.js'
 import type { FileReadResult } from './file-read.js'
 
 let root: string
@@ -60,7 +61,8 @@ describe('readWorkspaceFile', () => {
   })
 
   it('拒绝越界路径且不读到工作区外的内容', async () => {
-    await expect(readWorkspaceFile(root, '../../../etc/passwd')).rejects.toThrow(/不得包含 "\.\." 段/)
+    await expect(readWorkspaceFile(root, '../../../etc/passwd'))
+      .rejects.toThrow(specError('path.parentSegment', { path: '"../../../etc/passwd"' }))
   })
 
   it('符号链接是路径最后一段、指向工作区外文件时，读不到该文件内容', async () => {
@@ -68,11 +70,11 @@ describe('readWorkspaceFile', () => {
     await fs.symlink(nodePath.join(outsideRoot, 'secret.txt'), linkPath)
 
     let result: FileReadResult | undefined
-    let threw = false
+    let caught: unknown
     try {
       result = await readWorkspaceFile(root, 'link-to-secret.txt')
-    } catch {
-      threw = true
+    } catch (e) {
+      caught = e
     }
 
     // 核心断言落在内容上：不管实现选择抛错还是返回某种"不可读"结果，唯一不可接受的
@@ -80,7 +82,9 @@ describe('readWorkspaceFile', () => {
     // 一个"忘了处理某个分支但恰好也抛了别的错"的实现同样能让 rejects.toThrow() 变绿。
     expect(leakedText(result)).not.toContain(SECRET)
     // 当前实现的实际契约：越界（含经符号链接）统一抛错，不会静默退化成 unreadable。
-    expect(threw).toBe(true)
+    // 断到 code 而不是只断"抛了"：上面那段注释记的正是"恰好也抛了别的错"能骗过
+    // 一条只看抛没抛的用例——现在它骗不过了。
+    expect(caught).toEqual(specError('path.escapesWorkspace', { path: '"link-to-secret.txt"' }))
   })
 
   it('符号链接是路径中间一段、整条路径本身不含 ".." 时，读不到该文件内容', async () => {
@@ -91,15 +95,15 @@ describe('readWorkspaceFile', () => {
     await fs.symlink(outsideRoot, linkDir, 'dir')
 
     let result: FileReadResult | undefined
-    let threw = false
+    let caught: unknown
     try {
       result = await readWorkspaceFile(root, 'escape-dir/secret.txt')
-    } catch {
-      threw = true
+    } catch (e) {
+      caught = e
     }
 
     expect(leakedText(result)).not.toContain(SECRET)
-    expect(threw).toBe(true)
+    expect(caught).toEqual(specError('path.escapesWorkspace', { path: '"escape-dir/secret.txt"' }))
   })
 
   it('符号链接环（自引用/相互引用）返回 unreadable 而非抛错', async () => {

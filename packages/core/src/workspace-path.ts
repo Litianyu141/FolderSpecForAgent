@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises'
 import * as nodePath from 'node:path'
+import { SpecError } from './errors.js'
 
 /**
  * 把跨边界传入的相对路径归一化为工作区相对的 posix 路径，并拒绝任何逃出工作区的写法。
@@ -14,11 +15,11 @@ import * as nodePath from 'node:path'
 export function normalizeWorkspacePath(input: string): string {
   const posix = input.split('\\').join('/')
   if (posix.startsWith('/') || /^[A-Za-z]:/.test(posix)) {
-    throw new Error(`路径必须是工作区相对路径，实际是 ${JSON.stringify(input)}`)
+    throw new SpecError('path.notRelative', { path: JSON.stringify(input) })
   }
   const segs = posix.split('/').filter(s => s !== '' && s !== '.')
   if (segs.includes('..')) {
-    throw new Error(`路径不得包含 ".." 段，实际是 ${JSON.stringify(input)}`)
+    throw new SpecError('path.parentSegment', { path: JSON.stringify(input) })
   }
   return segs.join('/')
 }
@@ -73,7 +74,7 @@ export async function resolveWithinWorkspace(root: string, subPath: string): Pro
     const rel2 = nodePath.relative(realRoot, real)
     const escapes = rel2 === '..' || rel2.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(rel2)
     if (escapes) {
-      throw new Error(`路径 ${JSON.stringify(subPath)} 解析后逃出工作区，可能经过符号链接`)
+      throw new SpecError('path.escapesWorkspace', { path: JSON.stringify(subPath) })
     }
   }
   return real

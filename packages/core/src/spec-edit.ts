@@ -1,4 +1,5 @@
 import type { Group, Lang, Severity, Spec, SpecNode } from './types.js'
+import { SpecError } from './errors.js'
 
 export interface AnnotationPatch {
   annotation?: string | null
@@ -83,7 +84,7 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
 
 export function setAnnotation(spec: Spec, path: string, isDir: boolean, patch: AnnotationPatch): Spec {
   const segs = toSegments(path)
-  if (segs.length === 0) throw new Error('路径不能为空')
+  if (segs.length === 0) throw new SpecError('path.empty')
 
   const next = structuredClone(spec)
   // 必须在 ensure() 改动 next.nodes 之前算：这次调用自己会新建哪些节点，只有在
@@ -119,12 +120,7 @@ export function createNode(spec: Spec, parentPath: string, name: string, isDir: 
   const next = structuredClone(spec)
   const siblings = parentSegs.length === 0 ? next.nodes : ensure(next.nodes, parentSegs, true).children
 
-  if (siblings.some(n => n.name === name)) {
-    throw new Error(
-      `${parentSegs.length === 0 ? '根' : `\`${parentSegs.join('/')}\``} 下已经有同名节点 \`${name}\`：` +
-      '同层同名兄弟是重复声明，解析器会拒绝，请换个名字',
-    )
-  }
+  if (siblings.some(n => n.name === name)) throw duplicateSibling(parentSegs, name)
 
   siblings.push({ name, isDir, children: [] })
   const path = parentSegs.length === 0 ? name : `${parentSegs.join('/')}/${name}`
@@ -142,11 +138,11 @@ export function createNode(spec: Spec, parentPath: string, name: string, isDir: 
  */
 export function moveNode(spec: Spec, from: string, toParent: string, isDir: boolean): Spec {
   const fromSegs = toSegments(from)
-  if (fromSegs.length === 0) throw new Error('不能移动根节点')
+  if (fromSegs.length === 0) throw new SpecError('move.rootNode')
   const toSegs = toSegments(toParent)
 
   if (isSelfOrDescendant(from, toParent)) {
-    throw new Error('不能把节点移动到它自己的子树下')
+    throw new SpecError('move.intoOwnSubtree')
   }
 
   const next = structuredClone(spec)
@@ -227,11 +223,11 @@ export function copyNode(
   spec: Spec, from: string, toParent: string, newName: string, isDir: boolean,
 ): { spec: Spec; path: string } {
   const fromSegs = toSegments(from)
-  if (fromSegs.length === 0) throw new Error('不能复制根节点')
+  if (fromSegs.length === 0) throw new SpecError('copy.rootNode')
   const toSegs = toSegments(toParent)
 
   if (isSelfOrDescendant(from, toParent)) {
-    throw new Error('不能把节点粘贴到它自己或它的子树下')
+    throw new SpecError('copy.intoOwnSubtree')
   }
 
   const next = structuredClone(spec)
@@ -250,12 +246,7 @@ export function copyNode(
   // 一旦放行，merge（name→node 的 Map，后者覆盖前者）与 spec-edit 的其他函数
   // （list.find 命中第一个）会对"哪一个才算数"给出相反答案，最后在 save() 的自校验
   // 那一步才炸——那时用户已经交互过一整轮。判重不该依赖"另一个函数会先让开"。
-  if (siblings.some(n => n.name === newName)) {
-    throw new Error(
-      `${toSegs.length === 0 ? '根' : `\`${toSegs.join('/')}\``} 下已经有同名节点 \`${newName}\`：` +
-      '同层同名兄弟是重复声明，解析器会拒绝，请换个名字',
-    )
-  }
+  if (siblings.some(n => n.name === newName)) throw duplicateSibling(toSegs, newName)
 
   siblings.push(copy)
   const path = toSegs.length === 0 ? newName : `${toSegs.join('/')}/${newName}`
@@ -293,7 +284,7 @@ export function copyNode(
  */
 export function renameNode(spec: Spec, path: string, newName: string, isDir: boolean): Spec {
   const segs = toSegments(path)
-  if (segs.length === 0) throw new Error('不能重命名根节点')
+  if (segs.length === 0) throw new SpecError('rename.rootNode')
 
   const next = structuredClone(spec)
   const parentSegs = segs.slice(0, -1)
@@ -301,12 +292,7 @@ export function renameNode(spec: Spec, path: string, newName: string, isDir: boo
   const siblings = parentSegs.length === 0 ? next.nodes : ensure(next.nodes, parentSegs, true).children
 
   const target = siblings.find(n => n.name === oldName)
-  if (siblings.some(n => n !== target && n.name === newName)) {
-    throw new Error(
-      `${parentSegs.length === 0 ? '根' : `\`${parentSegs.join('/')}\``} 下已经有同名节点 \`${newName}\`：` +
-      '同层同名兄弟是重复声明，解析器会拒绝，请换个名字',
-    )
-  }
+  if (siblings.some(n => n !== target && n.name === newName)) throw duplicateSibling(parentSegs, newName)
 
   // 契约里没有该节点时新建一个——它表达"我声明它应该叫这个名字"，本身就是有效数据
   // （与 moveNode 里那句同源：对 actual-only 节点改名是有意义的声明）。
@@ -352,7 +338,7 @@ export function renameNode(spec: Spec, path: string, newName: string, isDir: boo
  */
 export function removeNode(spec: Spec, path: string): Spec {
   const segs = toSegments(path)
-  if (segs.length === 0) throw new Error('不能移除根节点')
+  if (segs.length === 0) throw new SpecError('remove.rootNode')
 
   const next = structuredClone(spec)
   let list = next.nodes
@@ -366,10 +352,7 @@ export function removeNode(spec: Spec, path: string): Spec {
 
   const target = list[idx]
   if (target.children.some(hasContent)) {
-    throw new Error(
-      `\`${path}\` 下还有带注释/角色/模板/严重级别的子节点，移除会连带丢失这些声明：` +
-      '请先分别移除这些子节点自己的声明，再移除该节点本身',
-    )
+    throw new SpecError('remove.subtreeHasContent', { path })
   }
 
   list.splice(idx, 1)
@@ -437,14 +420,29 @@ function detach(nodes: SpecNode[], segs: string[]): SpecNode | null {
   return list.splice(idx, 1)[0]
 }
 
-/** 四个"用户内容"字段在报错文案里的中文叫法。与 hasContent 判定的是同一组字段——
- *  「什么算人写下的内容」这件事在本文件里只有一份定义，move 与 removeNode 共用。 */
+/** 四个"用户内容"字段在报错文案里的英文叫法（报错 message 一律英文，见 errors.ts
+ *  的要点 1）。与 hasContent 判定的是同一组字段——「什么算人写下的内容」这件事在本
+ *  文件里只有一份定义，move 与 removeNode 共用。 */
 const CONTENT_FIELD_LABELS: ReadonlyArray<{ key: 'annotation' | 'role' | 'template' | 'severity'; label: string }> = [
-  { key: 'annotation', label: '注释' },
-  { key: 'role', label: '语义角色' },
-  { key: 'template', label: '模板' },
-  { key: 'severity', label: '严重级别' },
+  { key: 'annotation', label: 'comment' },
+  { key: 'role', label: 'semantic role' },
+  { key: 'template', label: 'template' },
+  { key: 'severity', label: 'severity' },
 ]
+
+/**
+ * 同层重名的报错。createNode / copyNode / renameNode 三处共用——判据本来就是同一条
+ * （同层同名兄弟是重复声明，解析器会拒绝），文案与错误码没有理由分叉成三份。
+ *
+ * 根与非根拆成两个码，而不是往一句话里插一个 "the workspace root" / "`a/b`" 的变量：
+ * 那个词一旦插进 message，它就固定是英文了——中文那侧会得到"the workspace root 下
+ * 已经有同名节点"。params 里只放**数据**（路径、名字），不放已经渲染好的措辞。
+ */
+function duplicateSibling(parentSegs: string[], name: string): SpecError {
+  return parentSegs.length === 0
+    ? new SpecError('name.duplicateSiblingAtRoot', { name })
+    : new SpecError('name.duplicateSibling', { parent: parentSegs.join('/'), name })
+}
 
 /**
  * 红线闸门：mergeInto 会用 incoming 的内容字段覆盖 target 的同名字段，这一步不能
@@ -471,10 +469,14 @@ function assertNoMergeConflict(target: SpecNode, incoming: SpecNode, path: strin
   const conflicts: string[] = []
   collectMergeConflicts(target, incoming, path, conflicts)
   if (conflicts.length === 0) return
-  throw new Error(
-    `目标位置已经有同名节点，这次移动会覆盖掉它已经写下的内容：${conflicts.join('；')}。` +
-    '请先决定保留哪一份（把其中一侧清空，或把两侧改成相同内容），再重试这次移动',
-  )
+  // conflicts 是一串**已经渲染好的英文**，作为一个整体塞进 params。这是本轮唯一一处
+  // 参数不是纯数据的地方，理由：冲突是一个长度不定的列表，每一条自己还带着字段名、
+  // 路径和两侧的值，而 SpecError 的 params 是扁平的 Record<string, string|number>，
+  // 装不下一个"可翻译的子句数组"。取舍是：宁可让中文那侧的这一句里嵌着英文明细，
+  // 也不要只报第一条冲突——**少报一条冲突就等于把一条会被覆盖的注释藏起来**，
+  // 而本工具唯一能造成的伤害正是弄丢人写的注释。要根治得让 params 支持嵌套的
+  // {code, params} 列表，那是另一件事（见 error-i18n-core-report.md 的顾虑一节）。
+  throw new SpecError('move.mergeConflict', { conflicts: conflicts.join('; '), count: conflicts.length })
 }
 
 function collectMergeConflicts(target: SpecNode, incoming: SpecNode, path: string, out: string[]): void {
@@ -482,7 +484,7 @@ function collectMergeConflicts(target: SpecNode, incoming: SpecNode, path: strin
     const kept = target[key]
     const coming = incoming[key]
     if (kept && coming && kept !== coming) {
-      out.push(`\`${path}\` 的${label}「${kept}」会被「${coming}」覆盖`)
+      out.push(`the ${label} of \`${path}\` (“${kept}”) would be overwritten by “${coming}”`)
     }
   }
   for (const c of incoming.children) {

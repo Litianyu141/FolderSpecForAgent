@@ -7,6 +7,7 @@ import { gitStatus } from './git.js'
 import { merge } from './merge.js'
 import { copyNode, createNode, emptySpec, findSpecNode, isSelfOrDescendant, moveNode, removeNode, renameNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
+import { SpecError } from './errors.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
 import type { Api, ApiMethod, AnnotateParams, CopyNodeParams, CreateNodeParams, EditResult, MoveParams, OpenResult, RenameParams, SaveResult, SetGroupParams, SetLangParams, SetViewModeParams, ViewModeResult } from './api.js'
@@ -25,7 +26,7 @@ const FORBIDDEN_IN_IDENTIFIER = /[`\]\s]/
 function assertValidIdentifier(field: string, v: string | null | undefined): void {
   if (v === undefined || v === null) return
   if (FORBIDDEN_IN_IDENTIFIER.test(v)) {
-    throw new Error(`${field} 不能包含反引号、"]" 或空白字符（会破坏 \`[${field}:...]\` 标签语法）：${JSON.stringify(v)}`)
+    throw new SpecError('identifier.forbiddenChar', { field, value: JSON.stringify(v) })
   }
 }
 
@@ -53,7 +54,7 @@ const FORBIDDEN_IN_NODE_NAME = /[`\r\n]/
 
 function assertRepresentablePath(path: string): void {
   if (FORBIDDEN_IN_NODE_NAME.test(path)) {
-    throw new Error(`路径 ${JSON.stringify(path)} 含有反引号或换行，当前契约格式无法表示；请重命名该文件或目录`)
+    throw new SpecError('path.unrepresentable', { path: JSON.stringify(path) })
   }
 }
 
@@ -68,15 +69,15 @@ function assertRepresentablePath(path: string): void {
  *     "应该存在的目录"会分不清这是笔误还是真要在上级目录动手。
  */
 function assertValidNodeName(name: string): void {
-  if (name === '') throw new Error('名字不能为空')
+  if (name === '') throw new SpecError('name.empty')
   if (name.includes('/')) {
-    throw new Error(`名字 ${JSON.stringify(name)} 不能包含 "/"：这里只接受单个路径段，不是路径`)
+    throw new SpecError('name.hasSlash', { name: JSON.stringify(name) })
   }
   if (FORBIDDEN_IN_NODE_NAME.test(name)) {
-    throw new Error(`名字 ${JSON.stringify(name)} 含有反引号或换行，当前契约格式无法表示`)
+    throw new SpecError('name.unrepresentable', { name: JSON.stringify(name) })
   }
   if (name === '.' || name === '..') {
-    throw new Error(`名字不能是 "${name}"：在文件系统里有特殊含义`)
+    throw new SpecError('name.reserved', { name })
   }
 }
 
@@ -388,7 +389,7 @@ export class Session {
     assertValidNodeName(newName)
 
     const segs = path.split('/').filter(Boolean)
-    if (segs.length === 0) throw new Error('不能重命名根节点')
+    if (segs.length === 0) throw new SpecError('rename.rootNode')
     const parentSegs = segs.slice(0, -1)
     const parentPath = parentSegs.join('/')
     // 按段拼接（而不是字符串直接相连）：与 renameNode 内部的 toSegments 归一化保持
@@ -409,9 +410,9 @@ export class Session {
     if (!inSpec) {
       const { node: onDisk, unscanned } = lookupActual(this.actual, path)
       if (unscanned) {
-        throw new Error(`\`${path}\` 尚未扫描到，无法确认它是文件还是目录；请先展开它所在的目录再重试`)
+        throw new SpecError('node.unscannedKind', { path })
       }
-      if (!onDisk) throw new Error(`契约里和磁盘上都没有 \`${path}\`，没有可以重命名的节点`)
+      if (!onDisk) throw new SpecError('rename.sourceMissing', { path })
       diskIsDir = onDisk.kind === 'dir'
     }
 
@@ -434,13 +435,10 @@ export class Session {
       // 一个节点的全部注释挂到磁盘上另一个真实存在的东西上，是不可逆的丢失。代价是
       // 用户要先展开那一层再重试，报错原文已经写明这条出路。
       if (unscanned) {
-        throw new Error(`\`${to}\` 尚未扫描到，无法确认磁盘上有没有同名的东西；请先展开它所在的目录再重试`)
+        throw new SpecError('rename.targetUnscanned', { path: to })
       }
       if (occupied) {
-        throw new Error(
-          `\`${to}\` 在磁盘上已经存在：改成这个名字会让契约把两个不同的东西说成同一个，` +
-          '两边的注释也会被揉到一起。请换一个名字（本工具不会去动磁盘上的文件名）',
-        )
+        throw new SpecError('rename.targetOccupiedOnDisk', { path: to })
       }
     }
 
@@ -530,14 +528,11 @@ export class Session {
     assertValidParentPath(toParent)
 
     const fromSegs = from.split('/').filter(Boolean)
-    if (fromSegs.length === 0) throw new Error('不能复制根节点')
+    if (fromSegs.length === 0) throw new SpecError('copy.rootNode')
 
     // 提前判，理由见方法头部；判据与 moveNode 共用 isSelfOrDescendant
     if (isSelfOrDescendant(from, toParent)) {
-      throw new Error(
-        '不能把节点粘贴到它自己或它的子树下：那会让这个节点声明自己内部还有一份自己，' +
-        '再粘一次又翻一倍，而契约的消费者是会照着它真去建目录的 Agent',
-      )
+      throw new SpecError('copy.intoOwnSubtree')
     }
 
     // 源节点落在 hidden 上时拒绝（ancestorChain 逐级走完，祖先被拖走也一并覆盖）。
@@ -555,9 +550,9 @@ export class Session {
     else {
       const { node: onDisk, unscanned } = lookupActual(this.actual, from)
       if (unscanned) {
-        throw new Error(`\`${from}\` 尚未扫描到，无法确认它是文件还是目录；请先展开它所在的目录再重试`)
+        throw new SpecError('node.unscannedKind', { path: from })
       }
-      if (!onDisk) throw new Error(`契约里和磁盘上都没有 \`${from}\`，没有可以复制的节点`)
+      if (!onDisk) throw new SpecError('copy.sourceMissing', { path: from })
       isDir = onDisk.kind === 'dir'
     }
 
@@ -625,9 +620,7 @@ export class Session {
     // 父级），但两处判据不该靠"另一处会先拦下"来成立；children === undefined 那一档
     // 则是实打实可达的——右键一个从没展开过的目录就是它。
     if (unscanned || (parentOnDisk !== null && parentOnDisk.children === undefined)) {
-      throw new Error(
-        `\`${toParent}\` 的子项尚未扫描，无法确认磁盘上有没有同名的东西；请先展开该目录再重试`,
-      )
+      throw new SpecError('copy.targetChildrenUnscanned', { path: toParent })
     }
     for (const c of parentOnDisk?.children ?? []) taken.add(c.name)
 
@@ -659,10 +652,7 @@ export class Session {
   private assertNotHidden(path: string): void {
     for (const p of ancestorChain(path)) {
       if (this.hidden.has(p)) {
-        throw new Error(
-          `\`${p}\` 是本次会话里刚被拖走的旧位置，它和它下面的一切在树上都不显示；` +
-          '在这里写下的声明用户既看不见也删不掉，请改用它现在所在的位置',
-        )
+        throw new SpecError('hidden.oldLocation', { path: p })
       }
     }
   }
@@ -705,14 +695,14 @@ export class Session {
       // 只来自树上一个已经可见的节点，可见就意味着它自己已经被扫到了。
       const { node: onDisk, unscanned } = lookupActual(this.actual, p)
       if (unscanned) {
-        throw new Error(`\`${p}\` 尚未扫描到，无法确认磁盘上是文件还是目录；请先展开该节点再重试`)
+        throw new SpecError('parent.unscanned', { path: p })
       }
       if (onDisk && onDisk.kind !== 'dir') {
-        throw new Error(`\`${p}\` 在磁盘上是一个文件，不能在它下面新建节点`)
+        throw new SpecError('parent.fileOnDisk', { path: p })
       }
       const inSpec = findSpecNode(this.spec.nodes, p)
       if (inSpec && !inSpec.isDir) {
-        throw new Error(`\`${p}\` 在契约里被声明为文件，不能在它下面新建节点`)
+        throw new SpecError('parent.fileInSpec', { path: p })
       }
     }
   }
@@ -750,19 +740,18 @@ export class Session {
     // "把节点拖回它原来的位置"这个完全合法的动作，move() 里的 this.hidden.delete(to)
     // 正是为它准备的；对 createNode 而言没有任何合法解释。
     if (!allowHidden && this.hidden.has(path)) {
-      throw new Error(
-        `\`${path}\` 是本次会话里刚被拖走的旧位置，在这里新建的声明不会显示在树上；` +
-        '请改用它现在所在的位置',
-      )
+      throw new SpecError('hidden.resultPath', { path })
     }
 
     const { node: onDisk, unscanned } = lookupActual(this.actual, path)
     if (unscanned || !onDisk) return
     const diskIsDir = onDisk.kind === 'dir'
     if (diskIsDir !== isDir) {
-      throw new Error(
-        `\`${path}\` 在磁盘上是一个${diskIsDir ? '目录' : '文件'}，不能在契约里把它声明成${isDir ? '目录' : '文件'}：` +
-        '树上只会按磁盘上的真实类型显示，界面看不出任何异常，而契约里留下的是一条 Agent 会照做的假声明',
+      // 两个方向各一个码，而不是把"目录"/"文件"当参数插进一句话：那个词插进去就再也
+      // 翻不动了（中文那侧会得到"在磁盘上是一个 directory"）。params 只放数据。
+      throw new SpecError(
+        diskIsDir ? 'declare.typeConflictDiskDir' : 'declare.typeConflictDiskFile',
+        { path },
       )
     }
   }
@@ -979,9 +968,9 @@ export class Session {
     // 落盘（或交给宿主落盘）前自校验：序列化的结果必须能被自己解析回来（spec §8）
     const verify = parseSpec(text)
     if (!verify.ok) {
-      throw new Error(
-        `序列化自校验失败，已中止以免损坏契约文件：${verify.errors.map(e => `第 ${e.line} 行 ${e.message}`).join('；')}`,
-      )
+      throw new SpecError('serialize.selfCheckFailed', {
+        details: verify.errors.map(e => `line ${e.line}: ${e.message}`).join('; '),
+      })
     }
 
     return text
@@ -1097,6 +1086,10 @@ export class Session {
       case 'spec/redo':
         return this.redo() as Api[K]['result']
       default:
+        // 不是 SpecError，故意的：Api 里没有的方法名只可能来自调用方违约（宿主转发了
+        // 一个不存在的方法、或前后端版本对不上），用户的任何一次合法操作都到不了这里。
+        // 给它配一句翻译，等于把"这是程序缺陷"包装成"你操作错了"——用户照着做什么
+        // 都改变不了。判据见 errors.ts 末尾那一段（面向用户 vs 程序员错误）。
         throw new Error(`未知方法 "${String(method)}"`)
     }
   }
@@ -1169,6 +1162,14 @@ export class Session {
     if (this.undoStack.length > MAX_UNDO_DEPTH) this.undoStack.shift()
   }
 
+  /**
+   * 这一条**不是** SpecError，与 assertWritable 里那两条刻意不同。
+   *
+   * "没 open() 就调方法"是宿主的生命周期契约被违反，用户点不出来——界面上根本不存在
+   * "在打开工作区之前编辑"这个动作。它读者是我们自己（错误会出现在日志里），措辞里
+   * 那句"否则会用空 spec 覆盖用户已有的契约文件"记的是这道闸为什么必须存在，是给
+   * 后来改代码的人看的，不是给用户看的。判据见 errors.ts 末尾那一段。
+   */
   private assertOpened(): void {
     if (!this.opened) {
       throw new Error('会话尚未打开：必须先调用 open()，否则会用空 spec 覆盖用户已有的契约文件')
@@ -1178,14 +1179,14 @@ export class Session {
   private assertWritable(): void {
     this.assertOpened()
     if (this.parseErrors !== null) {
-      throw new Error('契约文件解析失败，当前为只读模式，请先修复文件')
+      throw new SpecError('readonly.parseFailed')
     }
     // disk 视图只按磁盘扫描结果建树，节点路径与契约里的路径可能对不上（节点被移动过
     // 时尤其如此）。如果在这个视图上放行编辑，改动会挂到用户当前视图里看到的路径上，
     // 那条路径未必是契约打算表达的那条——标注会悄悄挂错地方，而用户全程看不出来。
     // 闸放在这里而不是 UI 层：两个宿主的写操作都经过 assertWritable()，UI 不可能绕过去。
     if (this.viewMode === 'disk') {
-      throw new Error('当前处于「原始结构」视图，为只读模式；切回「我的结构」视图后即可编辑')
+      throw new SpecError('readonly.diskView')
     }
   }
 }

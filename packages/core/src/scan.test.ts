@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
 import { scan, MAX_CHILDREN } from './scan.js'
+import { specError } from './errors.test-support.js'
 import type { ActualNode } from './types.js'
 
 let root: string
@@ -177,7 +178,8 @@ describe('scan', () => {
   })
 
   it('拒绝越界的 subPath', async () => {
-    await expect(scan(root, { subPath: '../../..' })).rejects.toThrow(/不得包含 "\.\." 段/)
+    await expect(scan(root, { subPath: '../../..' }))
+      .rejects.toThrow(specError('path.parentSegment', { path: '"../../.."' }))
   })
 
   it('subPath 经符号链接指向工作区外时拒绝，且不枚举到工作区外的文件名', async () => {
@@ -185,15 +187,16 @@ describe('scan', () => {
     // 纯词法校验拦不住，必须靠 resolveWithinWorkspace 的 realpath 比对（与 file-read
     // 共用同一处实现）。这里泄漏的是文件名而非内容，比 file/read 轻，但同一类缺口。
     let result: ActualNode | undefined
-    let threw = false
+    let caught: unknown
     try {
       result = await scan(root, { subPath: 'escape-dir', depth: 1 })
-    } catch {
-      threw = true
+    } catch (e) {
+      caught = e
     }
     const leakedNames = result?.children?.map(c => c.name) ?? []
     expect(leakedNames).not.toContain('secret-marker-file.txt')
-    expect(threw).toBe(true)
+    // 断到 code 而不是只断"抛了"：一个"恰好也抛了别的错"的实现同样能让后者变绿。
+    expect(caught).toEqual(specError('path.escapesWorkspace', { path: '"escape-dir"' }))
   })
 
   it('symlink 环（自引用/相互引用）作为 subPath 时标 unreadable 而非抛错', async () => {
