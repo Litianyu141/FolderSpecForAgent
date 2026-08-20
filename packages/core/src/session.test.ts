@@ -108,6 +108,40 @@ describe('Session.open', () => {
   })
 })
 
+// OpenResult.lang 回归：UI 靠这个字段给语言开关设初态，三种载入结局各自钉一条，
+// 逐条对应 api.ts OpenResult.lang 字段注释里枚举的三种情形。
+describe('OpenResult.lang', () => {
+  it('解析成功且契约写着 lang: en 时，lang 是 en', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), [
+      '---', 'folderspec: 1', 'root: .', 'ownership: human', 'lang: en', '---',
+      '', '# T', '', '## Structure', '', '',
+    ].join('\n'))
+    const r = await new Session(root).open()
+    expect(r.lang).toBe('en')
+  })
+
+  it('没有契约文件（hasSpec === false）时，lang 是默认值 zh，不是 undefined', async () => {
+    const r = await new Session(root).open()
+    expect(r.hasSpec).toBe(false)
+    expect(r.lang).toBe('zh')
+  })
+
+  // 解析失败时不嗅探原始字节里"看起来"是哪种语言，老实给默认值——即便文件里其实
+  // 全是英文，也不去猜。这条钉住的是"给默认值而不是给一个可能读错的值"这个取向：
+  // 用一份内容明显是英文、但格式非法（缺 '## 结构'/'## Structure' 小节标题）的文件
+  // 来证明"即便嗅探起来会像 en"，本实现也不做这种猜测。
+  it('解析失败时，lang 是默认值 zh，不是从原始字节里嗅探出来的值', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), [
+      '---', 'folderspec: 1', 'root: .', 'ownership: human', 'lang: en', '---',
+      '', '# English Contract', '', 'this file is not a legal folderspec body',
+    ].join('\n'))
+    const s = new Session(root)
+    const r = await s.open()
+    expect(r.parseErrors).not.toBeNull() // 先确认它真的走了解析失败分支，否则下面的断言没有区分力
+    expect(r.lang).toBe('zh')
+  })
+})
+
 describe('Session 未 open 时的防御性检查', () => {
   it('save 在未 open 时抛错，且绝不覆盖磁盘上已有的契约文件', async () => {
     const original = [

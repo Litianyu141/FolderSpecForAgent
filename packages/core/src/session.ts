@@ -247,6 +247,11 @@ export class Session {
       parseErrors: this.parseErrors,
       tree: this.tree(),
       groups: this.groupsSnapshot(),
+      // 直接读 this.spec.lang：上面三个分支已经把 this.spec 定成了"这次 open() 该
+      // 采用的那份 Spec"（解析成功是 parsed.value；没有文件/读失败/解析失败都是
+      // emptySpec() 默认的 'zh'），不需要在这里重新分支——完整推导见 OpenResult.lang
+      // 的字段注释（api.ts）。
+      lang: this.spec.lang,
     }
   }
 

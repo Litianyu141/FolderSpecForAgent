@@ -19,6 +19,28 @@ export interface OpenResult {
   tree: ViewNode
   /** 当前契约里的全部分组。UI 需要完整的 text/severity，ViewNode.groups 只有 id */
   groups: Group[]
+  /**
+   * 刚载入的契约的展示语言，取自 Session.spec.lang——不是猜出来的，是这次 open()
+   * 实际采用的那份 Spec 真实携带的值。没有它，UI 的语言开关拿不到正确初态：载入一份
+   * `lang: en` 的契约后，开关会停在与文件内容不符的语言上，用户第一次点它其实是在
+   * "切回" 而不是"切到"，体验上等于开关一直显示错的那一侧。
+   *
+   * 三种载入结局，值分别来自：
+   * - 解析成功：`parsed.value.lang`——契约文件 front-matter 里写的那个（缺省时
+   *   parser 按 'zh' 补齐，见 parse/index.ts）。
+   * - `hasSpec === false`（仓库里还没有 `.folderspec.md`）：`emptySpec()` 的默认值
+   *   `'zh'`。这里没有"文件内容"可言，'zh' 只是本工具一贯的默认语言，不是猜测。
+   * - 解析失败（只读模式，`parseErrors !== null`）：同样是 `emptySpec()` 的默认值
+   *   `'zh'`，**不是**试图从读不懂的原始字节里嗅探这份契约"看起来"是哪种语言。
+   *   这里特意不做嗅探：一份解析失败的文件很可能只是格式坏了，其余内容仍是完整的
+   *   某种语言，嗅探错了会让 UI 显示一个"看似有依据、实则读错"的语言，比老老实实给
+   *   一个双方都心知肚明的默认值更容易误导人（只读模式下语言开关本就不可编辑，
+   *   这个值目前只用于显示，给错比给默认更糟）。
+   *
+   * 三种情形对应的 Session 内部状态都是同一件事——`this.spec` 就是上面选中的那份
+   * Spec，所以实现上直接读 `this.spec.lang`，不需要在 open() 里分支处理。
+   */
+  lang: Lang
 }
 
 export interface AnnotateParams {
