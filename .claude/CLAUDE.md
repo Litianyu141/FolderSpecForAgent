@@ -64,10 +64,11 @@ pnpm workspace，依赖单向：
 packages/core/   @folderspec/core   纯 TS · 无 DOM · 无 UI · 是唯一碰文件系统的地方
 packages/ui/     @folderspec/ui     React SPA · 零 node 依赖 · 不认识文件系统
 packages/cli/    folderspec         宿主：http + ws + 浏览器 --app 无边框窗口
-packages/vscode/                    宿主：CustomTextEditorProvider —— 设计里有，尚未实现
+packages/vscode/  folderspec-vscode  宿主：CustomTextEditorProvider
 ```
 
-`packages/vscode` 与端到端冒烟测试（计划的 Task 16/17）**还没做**。设计文档按四个包写，实际仓库只有三个。
+四个包都已实现。`packages/vscode` 的端到端冒烟测试（`src/test/suite/smoke.test.ts`）需要图形环境，
+本地无 `DISPLAY` 时跑不了，只在 CI 里通过 `xvfb-run` 执行。
 
 ### Bridge：一份 UI 跑两个宿主的关键
 

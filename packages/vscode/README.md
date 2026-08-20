@@ -1,63 +1,81 @@
 # FolderSpec
 
-可视化地给仓库**声明结构意图**，产出一份 `.folderspec.md` —— 既给人读、也给 AI Agent 当结构契约的文件。
+Declare your repository's **structural intent** visually and emit a `.folderspec.md` — a file
+humans can read and AI agents can follow.
 
-## 它解决什么问题
+## The problem
 
-你让 Agent 干活，它把新文件放得到处都是；你在 `CLAUDE.md` 里写一段「案例都应该放在 `src/cases` 下」，
-它有时看有时不看，而且这段话和真实目录树是脱节的。
+You ask an agent to do some work and it scatters new files wherever. You write "test cases
+belong under `src/cases`" in `CLAUDE.md`, and it sometimes reads that and sometimes doesn't —
+and the sentence is disconnected from the actual directory tree anyway.
 
-FolderSpec 让你**对着真实的目录树**把这些意图点出来，产出的契约里每一条都对应一个真实存在（或你声明它应该存在）的节点。
+FolderSpec lets you point at the **real tree** and say what you mean. Every line in the
+resulting contract corresponds to a node that exists, or that you declared should exist.
 
-## 最重要的一件事：它不动你的磁盘
+## The one thing to know: it does not touch your disk
 
-**本工具只写 `.folderspec.md` 这一个文件**，绝不 `mv` / `mkdir` / `rm`。
+**FolderSpec writes exactly one file — `.folderspec.md` — and never runs `mv` / `mkdir` / `rm`.**
 
-界面上的拖拽、「新建目录」、「重命名」全都只改契约里那句「它应该在哪儿 / 应该叫什么」，
-磁盘上的文件纹丝不动。真正去搬动的是随后读契约的 Agent —— 它比工具更清楚一次移动会牵连哪些
-import、构建配置和测试。
+Dragging, "New directory", and "Rename" only change what the contract *says* about where
+things belong and what they should be called. Nothing on disk moves. The agent that reads
+the contract is what actually rearranges the repository — and it knows far better than this
+tool which imports, build configs, and tests a move would drag along.
 
-## 怎么用
+## Getting started
 
-1. 在仓库里打开命令面板（`Ctrl+Shift+P`），运行 **FolderSpec：打开结构契约**
-2. 左栏是仓库树，中间是选中文件的预览，右栏写注释
-3. 点一个节点写注释；`Shift` / `Ctrl` 多选可以给一批节点写一条共享注释
-4. 右键菜单：**新建目录 / 新建文件（仅契约）**、**重命名（仅契约）**、**取消声明**
-5. 存盘后，在 `CLAUDE.md` 或 `AGENTS.md` 里加一句 `@.folderspec.md` 引用它
+1. Open the command palette (`Ctrl+Shift+P`) and run **FolderSpec：打开结构契约**
+   (the extension's command title is not localized)
+2. Left pane: the repository tree. Middle: a preview of the selected file. Right: the annotation editor.
+3. Click a node and write an annotation. `Shift` / `Ctrl` select several nodes at once to give
+   them one shared annotation.
+4. Right-click for **New directory / New file (contract only)**, **Rename (contract only)**,
+   **Remove declaration**, **Copy / Paste**, and **Copy Path / Copy Relative Path**.
+5. Save, then reference the contract from `CLAUDE.md` or `AGENTS.md` with `@.folderspec.md`.
 
-## 界面上有什么
+## What's in the editor
 
-- **拖拽**改变声明的位置；**撤销 / 重做**覆盖每一笔编辑（只作用于内存，不写盘）
-- **「原始结构 / 我的结构」切换**：对照自己到底改了什么
-- **中 / 英双语**：右上角开关同时切界面与契约里的样板文字；**你写的注释保留原文，一个字不动**
-- **跟随 VSCode 主题**：配色、字体、语法高亮取色全部来自当前主题
-- **git 状态着色**：目录取整棵子树的聚合状态，和资源管理器一致
-- 首屏只扫两层、展开时按需扫，开窗时间与仓库规模基本无关
+- **Drag** to declare a new location; **Undo / Redo** covers every edit and touches only memory,
+  never the disk — it guards against "I dropped that in the wrong place", not against corruption
+- **"Disk Structure" vs "My Structure"** — switch to see what the disk actually looks like,
+  so you can compare it against what you have declared
+- **Bilingual (中文 / English)** — the toggle switches both the interface and the boilerplate
+  headings in the contract. **Your own text is never touched**: annotations, group notes, rule
+  text, template descriptions, semantic roles, and paths all keep the language you wrote them in
+- **Follows your VS Code theme** — colors, fonts, and syntax highlighting all come from the
+  active theme
+- **Git status colors** — a directory takes the aggregate status of its whole subtree, the same
+  way the built-in explorer does
+- Only two levels are scanned up front and subdirectories load on expand, so open time is
+  roughly independent of repository size
 
-## 契约长什么样
+## What the contract looks like
 
 ````markdown
-## 结构
+## Structure
 
-- `src/` — 源码根
-  - `cases/` `[role:test-case]` — 每个案例一个子目录，禁止散落在 examples 下
+- `src/` — engine sources
+  - `cases/` `[role:test-case]` — one directory per case; never scatter these under examples/
     - `demo/`
-- `docs/` — 只放面向用户的文档
+- `docs/` — user-facing documentation only
 ````
 
-结构区是 Markdown 嵌套列表，一行一节点；模板区与规则区是内嵌 YAML。
-完整格式说明见[仓库 README](https://github.com/Litianyu141/FolderSpecForAgent#readme)。
+The structure section is a nested Markdown list, one node per line. Template and rule sections
+are embedded YAML. Full format reference: [repository README](https://github.com/Litianyu141/FolderSpecForAgent#readme).
 
-## 已知限制
+## Known limitations
 
-- 重新载入后，工具无法知道契约里的 `src/cases/foo` 和磁盘上的 `examples/foo` 是同一个东西
-  —— 这是声明式原则的代价，不影响主用途
-- 只产出契约，不校验仓库是否符合契约（没有 `folderspec validate`）
-- 节点名不能含反引号或换行（当前格式无法转义，工具会在标注时就明确拒绝并点名该路径）
-- 文件图标是自带的，不跟随你的 file icon theme（VSCode 不把图标主题暴露给 webview）
+- After a reload the tool cannot tell that `src/cases/foo` in the contract and `examples/foo` on
+  disk are the same thing — that is the price of being declarative, and it does not affect the
+  main use case
+- It emits a contract; it does not verify the repository against it (there is no `folderspec validate`)
+- Node names cannot contain backticks or newlines — the current format cannot escape them, so the
+  tool refuses at annotation time and names the offending path rather than writing a file it
+  cannot read back
+- File icons are built in and do not follow your file icon theme (VS Code does not expose the
+  active icon theme to webviews)
 
-更完整的清单见仓库 README 的「MVP 已知限制」。
+The fuller list lives in the repository README.
 
-## 许可
+## License
 
 Apache-2.0
