@@ -10,7 +10,7 @@ const sdir = (name: string, children: SpecNode[] = [], extra: Partial<SpecNode> 
   ({ name, isDir: true, children, ...extra })
 
 const spec = (nodes: SpecNode[]): Spec => ({
-  version: 1, root: '.', ownership: 'human', title: '', preamble: [],
+  version: 1, root: '.', ownership: 'human', lang: 'zh', title: '', preamble: [],
   nodes, templates: [], rules: [], groups: [],
 })
 
@@ -118,7 +118,7 @@ describe('merge', () => {
 })
 
 const specG = (nodes: SpecNode[], groups: Spec['groups']): Spec => ({
-  version: 1, root: '.', ownership: 'human', title: '', preamble: [],
+  version: 1, root: '.', ownership: 'human', lang: 'zh', title: '', preamble: [],
   nodes, templates: [], rules: [], groups,
 })
 

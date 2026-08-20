@@ -41,10 +41,23 @@ export interface Group {
   severity?: Severity
 }
 
+/**
+ * 我们生成的样板文字（标题行、导言、四个章节标题）用哪种语言。用户写的内容——节点
+ * 注释、分组说明、规则文字、模板描述、语义角色、节点名、路径——一律不受它影响。
+ *
+ * 存进 front-matter 而不是由宿主/UI 各自记在本地设置里：语言是「不可重算的区分」，
+ * 无法从磁盘 + 契约反推出用户想要哪种，因此不违反"派生状态一律不落盘"。存进文件
+ * 还让协作者拉下来看到的语言与写入时一致，两人界面语言不同也不会互相改写这个字段
+ * 引发 git 里的来回拉锯（用户已裁定，见 lang-core-report.md）。
+ */
+export type Lang = 'zh' | 'en'
+
 export interface Spec {
   version: number
   root: string
   ownership: string
+  /** 缺失的老文件按 'zh' 处理，见 parse/index.ts 与 spec-edit.ts 的 emptySpec()。 */
+  lang: Lang
   title: string
   preamble: string[]
   nodes: SpecNode[]

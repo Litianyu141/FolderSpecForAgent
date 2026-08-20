@@ -1,4 +1,4 @@
-import type { Group, Severity, Spec, SpecNode } from './types.js'
+import type { Group, Lang, Severity, Spec, SpecNode } from './types.js'
 
 export interface AnnotationPatch {
   annotation?: string | null
@@ -7,22 +7,78 @@ export interface AnnotationPatch {
   severity?: Severity | null
 }
 
-export function emptySpec(): Spec {
-  return {
-    version: 1,
-    root: '.',
-    ownership: 'human',
+/**
+ * 标题行与导言的两语言默认文案，emptySpec() 与 setLang() 共用同一份——两处各自维护
+ * 一份的话，改一个字就要记得改两处，迟早会走样。
+ *
+ * zh 这份必须与本工具引入双语支持之前的默认值逐字相同：控制器裁定"lang === 'zh' 时
+ * 序列化输出必须与今天逐字节相同"，这份文案正是那条不变量的源头（title/preamble 只
+ * 在 emptySpec() 里出现一次默认值，serializeSpec 本身不认识"默认值"这个概念）。
+ * en 这份用户已给定，不是自译，见 lang-core-report.md。
+ */
+const LANG_DEFAULTS: Record<Lang, { title: string; preamble: string[] }> = {
+  zh: {
     title: '仓库结构契约',
     preamble: [
       '本文件声明本仓库的**结构意图**，是长期不变量，不是一次性操作指令。',
       'Agent 应读取本文件、对照实际仓库、自行决定如何变更磁盘。',
       'Agent 不应自行修改本文件；若认为规则不合理，请向人类提出修改建议。',
     ],
+  },
+  en: {
+    title: 'Repository Structure Contract',
+    preamble: [
+      'This file declares the **structural intent** of this repository. It states long-lived invariants, not one-off operations.',
+      'Agents should read this file, compare it against the actual repository, and decide for themselves how to change the disk.',
+      'Agents should not modify this file themselves; if a rule seems wrong, raise it with a human.',
+    ],
+  },
+}
+
+export function emptySpec(lang: Lang = 'zh'): Spec {
+  const d = LANG_DEFAULTS[lang]
+  return {
+    version: 1,
+    root: '.',
+    ownership: 'human',
+    lang,
+    title: d.title,
+    preamble: [...d.preamble],
     nodes: [],
     templates: [],
     rules: [],
     groups: [],
   }
+}
+
+/**
+ * 切换 Spec 展示语言的纯函数。只动 lang 字段与"未被用户改过"的样板文字（标题行、
+ * 导言）；节点注释、分组说明、规则文字、模板描述与名字、语义角色、节点名、路径——
+ * 这些都是用户内容，一个字都不碰（见需求原话："用户的注释保留原始语言"）。
+ *
+ * 判据：当前 title / preamble 是否逐字等于**切换前**那个语言的默认值。这里比较的
+ * 基准是"切换前的语言"而不是目标语言——因为整个系统只有两种语言，"切换前的语言"
+ * 与"目标语言之外的另一语言"永远是同一个，两种说法在语义上等价。
+ *
+ * 逐字相等 → 换成新语言的默认值；哪怕只改了一个字（不逐字相等）→ 当作用户内容，
+ * 原样保留。preamble 按整段（三句合在一起）比较，不是逐句比较：导言是一个语义
+ * 整体，用户只改了其中一句也说明他动过这段文字，不该把其余两句悄悄换到另一语言、
+ * 让一段导言里混着两种语言。
+ */
+export function setLang(spec: Spec, lang: Lang): Spec {
+  const next = structuredClone(spec)
+  const from = LANG_DEFAULTS[spec.lang]
+  const to = LANG_DEFAULTS[lang]
+
+  if (next.title === from.title) next.title = to.title
+  if (arraysEqual(next.preamble, from.preamble)) next.preamble = [...to.preamble]
+
+  next.lang = lang
+  return next
+}
+
+function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i])
 }
 
 export function setAnnotation(spec: Spec, path: string, isDir: boolean, patch: AnnotationPatch): Spec {

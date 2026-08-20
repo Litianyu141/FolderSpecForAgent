@@ -48,6 +48,9 @@ export function parseSpec(markdown: string): Result<Spec> {
       version,
       root: s.frontMatter.root ?? '.',
       ownership: s.frontMatter.ownership ?? 'human',
+      // 缺失或无法识别的值一律按 'zh'——保证没有 lang: 字段的老文件行为不变，
+      // 而不是让一个手误的值把只读模式以外的地方也搞出崩溃或报错噪音。
+      lang: s.frontMatter.lang === 'en' ? 'en' : 'zh',
       title: s.title,
       preamble: s.preamble,
       nodes: (nodes as { ok: true; value: Spec['nodes'] }).value,

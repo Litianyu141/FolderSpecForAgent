@@ -1,7 +1,7 @@
-import type { Group, ParseError, Severity, ViewMode, ViewNode } from './types.js'
+import type { Group, Lang, ParseError, Severity, ViewMode, ViewNode } from './types.js'
 import type { FileReadResult } from './file-read.js'
 
-export type { GitState, Group, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewMode, ViewNode } from './types.js'
+export type { GitState, Group, Lang, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewMode, ViewNode } from './types.js'
 export type { FileReadResult } from './file-read.js'
 
 /**
@@ -97,6 +97,10 @@ export interface SetViewModeParams {
   mode: ViewMode
 }
 
+export interface SetLangParams {
+  lang: Lang
+}
+
 export interface ViewModeResult {
   tree: ViewNode
   mode: ViewMode
@@ -122,6 +126,16 @@ export interface Api {
   'spec/raw': { params: Record<string, never>; result: { markdown: string } }
   'spec/setGroup': { params: SetGroupParams; result: EditResult & { id: string } }
   'spec/deleteGroup': { params: { id: string }; result: EditResult }
+  /**
+   * 切换我们生成的样板文字（标题行、导言、四个章节标题）的语言。用户写的内容——节点
+   * 注释、分组说明、规则文字、模板描述与名字、语义角色、节点名、路径——一个字都不动，
+   * 只有逐字等于切换前那个语言默认值的标题/导言才会跟着换（见 spec-edit.ts 的 setLang）。
+   *
+   * 归在 `spec/` 而不是 `view/`：它改的是 Spec 本身（lang 字段与可能被替换的
+   * title/preamble），要落盘、要经过 assertWritable()、要进撤销栈——与 view/setMode
+   * 那种纯显示、不碰 Spec 的操作是两类不同的东西（对比 view/setMode 上的注释）。
+   */
+  'spec/setLang': { params: SetLangParams; result: EditResult }
   'file/read': { params: { path: string }; result: FileReadResult }
   /** 切换「原始结构 / 我的结构」显示模式。纯显示状态，不写盘、不置 dirty（见 Session.setViewMode）。 */
   'view/setMode': { params: SetViewModeParams; result: ViewModeResult }

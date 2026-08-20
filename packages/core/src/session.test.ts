@@ -630,6 +630,102 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
   })
 })
 
+describe('Session.setLang（切换展示语言：样板文字未改过才跟着换，走既有写路径闸门）', () => {
+  it('无契约文件时以 zh 打开，raw() 不带 lang 字段', async () => {
+    const s = new Session(root); await s.open()
+    expect(s.raw()).not.toContain('lang:')
+  })
+
+  it('open 时读取 front-matter 里的 lang: en', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), [
+      '---', 'folderspec: 1', 'root: .', 'ownership: human', 'lang: en', '---',
+      '', '# Repository Structure Contract', '', '## Structure', '',
+    ].join('\n'))
+    const s = new Session(root); await s.open()
+    expect(s.raw()).toContain('lang: en')
+  })
+
+  it('切换到 en：未改过的默认标题与导言跟着换，且置脏', async () => {
+    const s = new Session(root); await s.open()
+    expect(s.isDirty()).toBe(false)
+    const r = s.setLang('en')
+    expect(r.dirty).toBe(true)
+    expect(s.raw()).toContain('lang: en')
+    expect(s.raw()).toContain('# Repository Structure Contract')
+    expect(s.raw()).toContain('## Structure')
+  })
+
+  it('用户手改过标题时，切换语言不动它——契约文件里标题不是默认文案', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), [
+      '---', 'folderspec: 1', 'root: .', 'ownership: human', '---',
+      '', '# 我自己起的标题', '', '## 结构', '',
+    ].join('\n'))
+    const s = new Session(root); await s.open()
+    s.setLang('en')
+    expect(s.raw()).toContain('我自己起的标题')
+    expect(s.raw()).not.toContain('Repository Structure Contract')
+    // 章节标题不是用户内容，仍然按新语言输出
+    expect(s.raw()).toContain('## Structure')
+  })
+
+  it('切换语言进撤销栈：canUndo 变 true，撤销后语言与文案都回到切换前、dirty 归零，重做后回来', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.setLang('en')
+    expect(r.canUndo).toBe(true)
+
+    const u = s.undo()
+    expect(u.dirty).toBe(false)
+    expect(s.raw()).not.toContain('lang: en')
+    expect(s.raw()).toContain('## 结构')
+
+    const red = s.redo()
+    expect(red.dirty).toBe(true)
+    expect(s.raw()).toContain('lang: en')
+  })
+
+  it('只读模式（契约解析失败）下 setLang 抛错', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
+    const s = new Session(root); await s.open()
+    expect(() => s.setLang('en')).toThrow('只读模式')
+  })
+
+  it('disk 视图下 setLang 抛错', async () => {
+    const s = new Session(root); await s.open()
+    s.setViewMode('disk')
+    expect(() => s.setLang('en')).toThrow('原始结构')
+  })
+
+  it('未 open 时 setLang 抛错', () => {
+    const s = new Session(root)
+    expect(() => s.setLang('en')).toThrow('尚未打开')
+  })
+
+  it('handle("spec/setLang") 分发正确', async () => {
+    const s = new Session(root); await s.open()
+    const r = await s.handle('spec/setLang', { lang: 'en' })
+    expect((r as { dirty: boolean }).dirty).toBe(true)
+  })
+
+  // 端到端护栏：切完语言后 raw() 必须仍然成功——直接守着「别把会话弄成永远存不了盘」，
+  // 与 createNode 那条同名护栏（本文件上方）共用同一道 serialize→parse 自校验闸门。
+  it('setLang 之后 raw() 仍能成功序列化并自校验', async () => {
+    const s = new Session(root); await s.open()
+    s.setLang('en')
+    expect(() => s.raw()).not.toThrow()
+  })
+
+  it('save() 落盘后重新 open()，lang 与切换后的文案都保留', async () => {
+    const s = new Session(root); await s.open()
+    s.setLang('en')
+    await s.save()
+
+    const s2 = new Session(root)
+    await s2.open()
+    expect(s2.raw()).toContain('lang: en')
+    expect(s2.raw()).toContain('Repository Structure Contract')
+  })
+})
+
 describe('Session 的视图模式（原始结构 / 我的结构）', () => {
   it('默认是 spec 视图：树按契约里的结构合成', async () => {
     const s = new Session(root)

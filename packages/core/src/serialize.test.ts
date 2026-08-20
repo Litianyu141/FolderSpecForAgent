@@ -3,7 +3,7 @@ import { serializeSpec } from './serialize.js'
 import type { Spec } from './types.js'
 
 const base: Spec = {
-  version: 1, root: '.', ownership: 'human',
+  version: 1, root: '.', ownership: 'human', lang: 'zh',
   title: '仓库结构契约', preamble: ['Agent 不应自行修改本文件。'],
   nodes: [], templates: [], rules: [], groups: [],
 }
@@ -119,5 +119,49 @@ describe('serializeSpec', () => {
       groups: [{ id: 'g', members: ['a.ts'], text: 't' }],
     })
     expect(out).not.toContain('severity')
+  })
+})
+
+describe('serializeSpec 的双语支持', () => {
+  it('lang 为 zh 时不输出 lang 字段——今天的输出格式必须原样保留', () => {
+    const out = serializeSpec({
+      ...base,
+      nodes: [{ name: 'src', isDir: true, annotation: '核心源码', children: [] }],
+    })
+    expect(out).not.toContain('lang:')
+    expect(out).toContain('## 结构')
+  })
+
+  it('lang 为 en 时 front-matter 带上 lang: en，四个章节标题换成英文', () => {
+    const out = serializeSpec({
+      ...base,
+      lang: 'en',
+      nodes: [{ name: 'src', isDir: true, children: [] }],
+      templates: [{ name: 't', children: [], exemplar: [] }],
+      rules: [{ id: 'r', severity: 'error', scope: '**', text: 'x' }],
+      groups: [{ id: 'g', members: ['a'], text: 'y' }],
+    })
+    expect(out).toContain('lang: en')
+    expect(out).toContain('## Structure')
+    expect(out).toContain('## Templates')
+    expect(out).toContain('## Rules')
+    expect(out).toContain('## Groups')
+    expect(out).not.toContain('## 结构')
+    expect(out).not.toContain('## 模板')
+    expect(out).not.toContain('## 规则')
+    expect(out).not.toContain('## 分组')
+  })
+
+  it('节点注释、分组说明、规则文字这些用户内容不受 lang 影响，原样输出', () => {
+    const out = serializeSpec({
+      ...base,
+      lang: 'en',
+      nodes: [{ name: 'src', isDir: true, annotation: '核心源码，别动它', children: [] }],
+      rules: [{ id: 'r1', severity: 'error', scope: '**', text: '这是用户写的规则文字' }],
+      groups: [{ id: 'g1', members: ['src'], text: '用户写的分组说明' }],
+    })
+    expect(out).toContain('核心源码，别动它')
+    expect(out).toContain('这是用户写的规则文字')
+    expect(out).toContain('用户写的分组说明')
   })
 })

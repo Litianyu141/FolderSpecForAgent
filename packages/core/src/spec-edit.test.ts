@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, setAnnotation, setGroup } from './spec-edit.js'
+import { createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
 import type { Spec, SpecNode } from './types.js'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
@@ -438,5 +438,76 @@ describe('moveNode 与分组成员', () => {
     s = setGroup(s, null, ['src/core-utils/a.ts'], { text: '工具' }).spec
     s = moveNode(s, 'src/core', 'lib', true)
     expect(s.groups[0].members).toEqual(['src/core-utils/a.ts'])
+  })
+})
+
+describe('emptySpec 的语言默认值', () => {
+  it('不传参数时默认为 zh，标题与导言是中文默认文案', () => {
+    const s = emptySpec()
+    expect(s.lang).toBe('zh')
+    expect(s.title).toBe('仓库结构契约')
+    expect(s.preamble).toHaveLength(3)
+  })
+
+  it("传 'en' 时标题与导言换成英文默认文案", () => {
+    const s = emptySpec('en')
+    expect(s.lang).toBe('en')
+    expect(s.title).toBe('Repository Structure Contract')
+    expect(s.preamble[0]).toContain('structural intent')
+  })
+})
+
+describe('setLang（切换展示语言：样板文字未改过才跟着换，用户内容一字不动）', () => {
+  it('标题与导言仍是切换前语言的默认值时，跟着换成新语言的默认值', () => {
+    const s = setLang(emptySpec('zh'), 'en')
+    expect(s.lang).toBe('en')
+    expect(s.title).toBe('Repository Structure Contract')
+    expect(s.preamble[0]).toContain('structural intent')
+    expect(s.preamble).toHaveLength(3)
+  })
+
+  it('标题被用户改过（哪怕只改了一个字）时，切换语言原样保留——不是恰好等于任一语言默认值的字符串', () => {
+    const custom = { ...emptySpec('zh'), title: '仓库结构契约！' }
+    // 这个标题必须真的与两种语言的默认值都不相等，断言才有区分力
+    expect(custom.title).not.toBe('仓库结构契约')
+    expect(custom.title).not.toBe('Repository Structure Contract')
+    const after = setLang(custom, 'en')
+    expect(after.title).toBe('仓库结构契约！')
+    expect(after.lang).toBe('en') // lang 字段本身仍然要换
+  })
+
+  it('导言里哪怕只有一句被改过，整段导言原样保留（判据是整段逐字相等，不是逐句）', () => {
+    const base = emptySpec('zh')
+    const custom: Spec = { ...base, preamble: [...base.preamble] }
+    custom.preamble[0] = '本文件声明本仓库的结构意图（这句话被用户改过一个字）。'
+    const after = setLang(custom, 'en')
+    expect(after.preamble).toEqual(custom.preamble)
+  })
+
+  it('反向切换（en → zh）同样遵守未改过才换的规则', () => {
+    const s = setLang(emptySpec('en'), 'zh')
+    expect(s.title).toBe('仓库结构契约')
+    expect(s.preamble).toHaveLength(3)
+  })
+
+  it('反向切换时用户改过的英文标题同样原样保留', () => {
+    const custom = { ...emptySpec('en'), title: 'My Own Title' }
+    const after = setLang(custom, 'zh')
+    expect(after.title).toBe('My Own Title')
+  })
+
+  it('不修改传入的 spec（返回新对象）', () => {
+    const before = emptySpec('zh')
+    const after = setLang(before, 'en')
+    expect(before.lang).toBe('zh')
+    expect(before.title).toBe('仓库结构契约')
+    expect(after.lang).toBe('en')
+  })
+
+  it('切换到同一种语言是安全的空操作——标题与导言不受影响', () => {
+    const s = emptySpec('zh')
+    const after = setLang(s, 'zh')
+    expect(after.title).toBe(s.title)
+    expect(after.preamble).toEqual(s.preamble)
   })
 })

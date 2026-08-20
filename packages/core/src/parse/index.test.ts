@@ -79,6 +79,28 @@ describe('parseSpec 分组区', () => {
   })
 })
 
+describe('parseSpec 的 lang 字段', () => {
+  it('front-matter 没有 lang 时默认为 zh——保证既有文件行为不变', () => {
+    const r = parseSpec(DOC)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.lang).toBe('zh')
+  })
+
+  it('front-matter 里 lang: en 时解析为 en', () => {
+    const doc = DOC.replace('ownership: human', 'ownership: human\nlang: en')
+    const r = parseSpec(doc)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.lang).toBe('en')
+  })
+
+  it('lang 是无法识别的值时按 zh 处理，不崩溃、不报错', () => {
+    const doc = DOC.replace('ownership: human', 'ownership: human\nlang: fr')
+    const r = parseSpec(doc)
+    if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.value.lang).toBe('zh')
+  })
+})
+
 describe('parseSpec 拒绝同名兄弟节点', () => {
   // 行号一目了然地对齐：1..5 是 front-matter，6 空行，7 是 "## 结构"，8 空行，
   // 9/10/11 是三个结构行。

@@ -1,14 +1,29 @@
 import { stringify } from 'yaml'
 import { ANNOTATION_SEPARATOR } from './parse/structure.js'
-import type { Group, Rule, Spec, SpecNode, Template } from './types.js'
+import type { Group, Lang, Rule, Spec, SpecNode, Template } from './types.js'
+
+/**
+ * 四个章节标题按语言输出，仅此而已——挂到任何单个节点/规则/模板上的用户内容
+ * 一概不受这张表影响。解析器（parse/sections.ts 的 SECTION_ALIASES）本来就两种
+ * 都认，这里只是决定"我们自己写哪一种"。
+ */
+const SECTION_TITLES: Record<Lang, { structure: string; templates: string; rules: string; groups: string }> = {
+  zh: { structure: '结构', templates: '模板', rules: '规则', groups: '分组' },
+  en: { structure: 'Structure', templates: 'Templates', rules: 'Rules', groups: 'Groups' },
+}
 
 export function serializeSpec(spec: Spec): string {
   const out: string[] = []
+  const t = SECTION_TITLES[spec.lang]
 
   out.push('---')
   out.push(`folderspec: ${spec.version}`)
   out.push(`root: ${spec.root}`)
   out.push(`ownership: ${spec.ownership}`)
+  // zh 是默认值，缺省不写这一行——这样 lang 为 'zh' 时的输出与本工具引入双语支持
+  // 之前逐字节相同（控制器裁定的硬性验收，见 lang-core-report.md），老文件也不会
+  // 因为重新保存一次就平白多出一行从未写过的 front-matter。
+  if (spec.lang === 'en') out.push('lang: en')
   out.push('---')
   out.push('')
 
@@ -22,13 +37,13 @@ export function serializeSpec(spec: Spec): string {
     out.push('')
   }
 
-  out.push('## 结构')
+  out.push(`## ${t.structure}`)
   out.push('')
   for (const n of spec.nodes) emitNode(out, n, 0)
   out.push('')
 
   if (spec.templates.length > 0) {
-    out.push('## 模板')
+    out.push(`## ${t.templates}`)
     out.push('')
     out.push('```yaml')
     out.push(templatesToYaml(spec.templates))
@@ -37,7 +52,7 @@ export function serializeSpec(spec: Spec): string {
   }
 
   if (spec.rules.length > 0) {
-    out.push('## 规则')
+    out.push(`## ${t.rules}`)
     out.push('')
     out.push('```yaml')
     out.push(rulesToYaml(spec.rules))
@@ -46,7 +61,7 @@ export function serializeSpec(spec: Spec): string {
   }
 
   if (spec.groups.length > 0) {
-    out.push('## 分组')
+    out.push(`## ${t.groups}`)
     out.push('')
     out.push('```yaml')
     out.push(groupsToYaml(spec.groups))

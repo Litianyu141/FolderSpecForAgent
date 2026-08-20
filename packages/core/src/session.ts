@@ -5,12 +5,12 @@ import { serializeSpec } from './serialize.js'
 import { scan, DEFAULT_DEPTH } from './scan.js'
 import { gitStatus } from './git.js'
 import { merge } from './merge.js'
-import { createNode, emptySpec, moveNode, setAnnotation, setGroup, deleteGroup } from './spec-edit.js'
+import { createNode, emptySpec, moveNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
-import type { Api, ApiMethod, AnnotateParams, CreateNodeParams, EditResult, MoveParams, OpenResult, SaveResult, SetGroupParams, SetViewModeParams, ViewModeResult } from './api.js'
-import type { ActualNode, GitStates, Group, ParseError, Spec, ViewMode, ViewNode } from './types.js'
+import type { Api, ApiMethod, AnnotateParams, CreateNodeParams, EditResult, MoveParams, OpenResult, SaveResult, SetGroupParams, SetLangParams, SetViewModeParams, ViewModeResult } from './api.js'
+import type { ActualNode, GitStates, Group, Lang, ParseError, Spec, ViewMode, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
 
@@ -354,6 +354,20 @@ export class Session {
   }
 
   /**
+   * 切换样板文字（标题行、导言、四个章节标题）的语言。走与其他四个写方法完全相同的
+   * 收口（assertWritable → 快照 → 纯函数改 spec → commitEdit），因此也天然进撤销栈、
+   * 天然被「原始结构」只读视图拦下、天然会被 raw()/save() 的自校验闸门保护——见
+   * spec-edit.ts 的 setLang() 关于"未改过才换"判据的完整推导。
+   */
+  setLang(lang: Lang): EditResult {
+    this.assertWritable()
+    const before = this.captureState()
+    this.spec = setLang(this.spec, lang)
+    this.commitEdit(before)
+    return this.editResult()
+  }
+
+  /**
    * 退回一次已提交的编辑。粒度是"一次编辑"而不是一次按键：注释面板失焦才提交，
    * 所以一次注释修改就是一步；拖拽、分组增删改同理。
    *
@@ -504,6 +518,8 @@ export class Session {
         return this.setGroup(params as SetGroupParams) as Api[K]['result']
       case 'spec/deleteGroup':
         return this.deleteGroup((params as { id: string }).id) as Api[K]['result']
+      case 'spec/setLang':
+        return this.setLang((params as SetLangParams).lang) as Api[K]['result']
       case 'file/read':
         return (await this.readFile((params as { path: string }).path)) as Api[K]['result']
       case 'view/setMode':

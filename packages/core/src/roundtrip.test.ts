@@ -76,10 +76,14 @@ const groupArb: fc.Arbitrary<Group> = fc.record({
   severity: fc.option(fc.constantFrom('error' as const, 'warning' as const, 'advisory' as const), { nil: undefined }),
 })
 
+/** 两种语言都要生成，round-trip 属性测试才能真的覆盖 lang 字段（需求 9）。 */
+const langArb: fc.Arbitrary<Spec['lang']> = fc.constantFrom('zh' as const, 'en' as const)
+
 const specArb: fc.Arbitrary<Spec> = fc.record({
   version: fc.constant(1),
   root: fc.constant('.'),
   ownership: fc.constant('human'),
+  lang: langArb,
   title: fc.oneof(fc.constant(''), textArb),
   preamble: fc.array(textArb, { maxLength: 3 }),
   nodes: fc.uniqueArray(nodeArb, { maxLength: 4, selector: n => n.name }),
@@ -124,6 +128,22 @@ describe('serializeSpec ↔ parseSpec round-trip', () => {
   })
 })
 
+// 控制器裁定的验收核心：lang 为 zh 时序列化输出必须与老版本（不认识 lang 字段那版）
+// 逐字节相同。序列化器对 zh 唯一的改动就是"front-matter 里不写 lang: 这一行"——
+// 这条属性测试就是在断言这件事在任意随机 Spec 上都成立，而不只是在手写的几个夹具里成立。
+describe('lang 为 zh 时与既有输出格式的兼容性', () => {
+  it('任意 Spec 只要 lang 是 zh，序列化结果里就不出现 "lang:" 这一行', () => {
+    fc.assert(
+      fc.property(specArb.map(s => ({ ...s, lang: 'zh' as const })), spec => {
+        const text = serializeSpec(spec)
+        expect(text.split('\n')).not.toContain('lang: zh')
+        expect(text.split('\n')).not.toContain('lang: en')
+      }),
+      { numRuns: 200 },
+    )
+  })
+})
+
 describe('同名兄弟节点', () => {
   it('任意 Spec 的第一个根节点被复制一份后，序列化的结果必须解析失败', () => {
     // 以前这里有个 dedupeSiblings() 帮解析器把重复项擦掉，注释写着"同名节点在语义上是
@@ -163,7 +183,7 @@ describe('回归：round-trip property test 发现的反例', () => {
     // Map（保证按插入顺序序列化），解析器改为直接遍历 YAML AST 节点的
     // items（保证按文档原始顺序读取）。
     const spec: Spec = {
-      version: 1, root: '.', ownership: 'human', title: 'a', preamble: [],
+      version: 1, root: '.', ownership: 'human', lang: 'zh', title: 'a', preamble: [],
       nodes: [],
       templates: [{
         name: 'a',
@@ -186,7 +206,7 @@ describe('回归：round-trip property test 发现的反例', () => {
   it('模板名本身形如整数时也必须保持声明顺序', () => {
     // 同一个根因的另一处触发点：顶层模板名 → 定义的映射。
     const spec: Spec = {
-      version: 1, root: '.', ownership: 'human', title: 'a', preamble: [],
+      version: 1, root: '.', ownership: 'human', lang: 'zh', title: 'a', preamble: [],
       nodes: [],
       templates: [
         { name: 'b', children: [], exemplar: [] },
