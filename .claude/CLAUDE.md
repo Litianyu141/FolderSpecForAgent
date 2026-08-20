@@ -30,7 +30,13 @@ node packages/cli/dist/main.js [directory]   # run the CLI, needs pnpm build fir
 **`@folderspec/core` points to `dist/` via `exports`, not `src`.** As a result:
 
 - `packages/cli`'s tests actually import core at runtime (`server.ts` uses `Session`), so **cli tests fail if core hasn't been built**. Before running tests for the first time after cloning, run `pnpm -C packages/core build` (the `pnpm typecheck` script already does this; `pnpm test` does not).
-- `packages/ui` only ever does `import type` from core, so it has no runtime dependency on `dist` — but `tsc` still needs `dist/*.d.ts`.
+- `packages/ui` **production** code only ever does `import type` from core, so the shipped
+  bundle carries no core runtime code (verified: `EN_MESSAGES` appears 0 times in `ui/dist`).
+  `tsc` still needs `dist/*.d.ts`. **One test is a deliberate exception**: `i18n.test.ts`
+  imports `EN_MESSAGES` at runtime to assert that every error code core defines has a Chinese
+  translation — a guard that is impossible to write without knowing core's code list, and one
+  that would silently rot if the list were duplicated. Consequence: **`packages/ui` tests now
+  need `pnpm -C packages/core build` first**, same as `packages/cli` tests always have.
 
 `core` and `cli`'s tsconfigs exclude `src/**/*.test.ts` from typechecking; `ui`'s does not, so its tests get typechecked too.
 
