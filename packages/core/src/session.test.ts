@@ -724,6 +724,47 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
   })
 })
 
+// 旁路 2：assertCreatableParent 受懒加载深度限制。DEFAULT_DEPTH=2 时，
+// root→depth1(src)→depth2(src/deep) 都会被扫描，但 depth2 节点自己的 children
+// （depth3）不会——src/deep 的下一层内容此刻在 ActualNode 树里根本不存在任何条目，
+// 不是"扫过了、没找到"。旧实现的 findActual 对"没扫到"和"确实没有"给出同一个 null，
+// assertCreatableParent 于是会在 parentPath 落在这个边界之下时完全跳过磁盘冲突检查。
+describe('Session.createNode 懒加载边界（旁路 2）', () => {
+  // 关键夹具：src/deep/leaf.txt 必须是真实存在、但深度超过 DEFAULT_DEPTH 的文件——
+  // 只有这样"findActual 返回 null"的原因才是"没扫到"而不是"路径本来就不存在"，
+  // 否则这条用例即使实现完全没做懒加载区分也会通过（上一轮复审专门点过这个坑）。
+  it('parentPath 落在懒加载边界之下（未扫描）时拒绝，不能悄悄放行', async () => {
+    await fs.writeFile(nodePath.join(root, 'src/deep/leaf.txt'), '')
+    const s = new Session(root); await s.open()
+    // 先证明它确实没被扫到：src/deep 本身在树上可见（depth2），但它的子项还不可见。
+    expect(find(s.tree(), 'src/deep')).not.toBeNull()
+    expect(find(s.tree(), 'src/deep/leaf.txt')).toBeNull()
+    expect(() => s.createNode({ parentPath: 'src/deep/leaf.txt', name: 'child.md', isDir: false }))
+      .toThrow('尚未扫描')
+  })
+
+  // 对照组，防止过度拦截：'brand/new' 落在已扫描范围内（root.children 已知，
+  // 里面确实没有 'brand'），这是"确实没有"，不是"没扫到"，必须继续放行——
+  // 这条本来就有覆盖（538 行"父级链条不存在时按需补齐"），这里单独钉一次
+  // 区分力，证明"未扫描才拒"这条判据没有连带误伤"扫描范围内的全新路径"。
+  it('对照：parentPath 在已扫描范围内确实不存在时仍然放行', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: 'brand/new', name: 'leaf.ts', isDir: false })).not.toThrow()
+  })
+
+  // 端到端复现上一轮复审记录的失效链条：旧实现里这一串操作会让 child.md 写进
+  // raw()、随后 expand 一揭穿磁盘真相（leaf.txt 是文件）就从树上永久消失。
+  // 修复之后第一步就该被挡下，链条根本走不到"消失"那一步。
+  it('回归：即便先侥幸放行，expand 之后也不该让新声明从树上消失——这里改成在源头直接拒绝', async () => {
+    await fs.writeFile(nodePath.join(root, 'src/deep/leaf.txt'), '')
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: 'src/deep/leaf.txt', name: 'child.md', isDir: false })).toThrow()
+    // 被拒绝的调用不该产生任何副作用
+    expect(s.isDirty()).toBe(false)
+    expect(s.raw()).not.toContain('child.md')
+  })
+})
+
 describe('Session.removeNode（撤销节点声明——只影响契约，不碰磁盘）', () => {
   it('移除一个叶子声明，raw() 里不再出现它的注释', async () => {
     const s = new Session(root); await s.open()

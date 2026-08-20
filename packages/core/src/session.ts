@@ -364,7 +364,26 @@ export class Session {
    * 悄悄把用户之前"这是个文件"的声明改写成目录。
    */
   private assertCreatableParent(parentPath: string): void {
-    const onDisk = findActual(this.actual, parentPath)
+    // parentPath 可能落在懒加载边界（DEFAULT_DEPTH）之下——此时磁盘扫描结果里既
+    // 没有它、也没有证据证明它不存在，lookupActual 用 unscanned 把这种"还不知道"
+    // 与"确实没有"区分开（下面 findActual 对两者给出同一个 null，分不出来）。
+    //
+    // 取向：宁可让用户多点一次"展开"重试，也不要在不知道的时候放行——一旦
+    // parentPath 真实存在且是文件，merge 会在下次展开时把它按磁盘判定为文件，
+    // 刚新建的子声明从树上永久消失（正是上一轮复审用真实 Session 复现出来的那条
+    // 链路：createNode 放行 → raw() 里有 child.md → expand 之后 child.md 从树上
+    // 消失）。
+    //
+    // 代价：合法的深层声明——parentPath 磁盘上其实并不存在，纯粹是要往下声明新
+    // 内容——如果恰好落在这个边界之下，也会被一并挡下，需要先展开那一层再重试。
+    // 这个代价小于"悄悄产生一个用户看不见的结果"：多数真实 UI 流程里，用户得先
+    // 在树上展开、选中 parentPath 才能把它当新建目标，那一刻它的父级八成已经展开
+    // 过；直接手写深层路径调 API 的场景本来就该对"这一层到底有什么"更谨慎，一条
+    // 可操作的报错（"先展开再重试"）比一个静默的坏结果更安全。
+    const { node: onDisk, unscanned } = lookupActual(this.actual, parentPath)
+    if (unscanned) {
+      throw new Error(`\`${parentPath}\` 尚未扫描到，无法确认磁盘上是文件还是目录；请先展开该节点再重试`)
+    }
     if (onDisk && onDisk.kind !== 'dir') {
       throw new Error(`\`${parentPath}\` 在磁盘上是一个文件，不能在它下面新建节点`)
     }
@@ -704,4 +723,29 @@ function findActual(node: ActualNode, path: string): ActualNode | null {
     if (hit) return hit
   }
   return null
+}
+
+/**
+ * 沿路径逐段查找磁盘节点，同时区分"这段路径磁盘上确实没有"与"还不知道，因为
+ * 半路上某一级目录尚未扫描"（ActualNode.children === undefined，见 scan.ts 的
+ * 懒加载边界：DEFAULT_DEPTH 决定 walk() 递归几层，超出的那层节点会作为条目
+ * 出现在父级的 children 里，但它自己的 children 保持 undefined）。
+ *
+ * findActual() 原来的实现（上面）对这两种情况给出同一个 null，assertCreatableParent
+ * 若照单全收，会把"没扫到"误判成"磁盘上真没有"——见该方法上方的讨论。
+ *
+ * 用逐段下潜而不是 findActual 那种全树 DFS：既更直接（路径本就是分段的），也顺带
+ * 让"半路撞上未扫描目录"这件事在遍历过程中自然可见，不需要额外再跑一遍判断。
+ */
+function lookupActual(node: ActualNode, path: string): { node: ActualNode | null; unscanned: boolean } {
+  if (path === '') return { node, unscanned: false }
+  let cur = node
+  for (const seg of path.split('/')) {
+    if (seg === '') continue
+    if (cur.children === undefined) return { node: null, unscanned: true }
+    const next = cur.children.find(c => c.name === seg)
+    if (!next) return { node: null, unscanned: false }
+    cur = next
+  }
+  return { node: cur, unscanned: false }
 }
