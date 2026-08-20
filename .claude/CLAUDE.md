@@ -2,129 +2,128 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 环境
+## Environment
 
-Node 与 pnpm **只存在于 conda 环境 `folderspec` 里**，不在默认 PATH 上。任何一条命令之前先：
+Node and pnpm exist **only inside the `folderspec` conda environment** — they are not on the default PATH. Before running any command:
 
 ```bash
 export PATH="$HOME/miniconda3/envs/folderspec/bin:$PATH"   # node v26 + pnpm 9
 ```
 
-否则会得到 `pnpm: command not found`。
+Skip this and you'll get `pnpm: command not found`.
 
-## 常用命令
+## Common commands
 
 ```bash
-pnpm test                                    # 全量：core 143 + ui 70 + cli 21
-pnpm build                                   # core(tsc) → ui(vite) → cli(tsc + 复制 ui 产物)
-pnpm typecheck                               # 先 build core，再逐包 tsc --noEmit
+pnpm test                                    # full suite: core 143 + ui 70 + cli 21
+pnpm build                                   # core(tsc) → ui(vite) → cli(tsc + copy ui output)
+pnpm typecheck                               # builds core first, then tsc --noEmit per package
 
-pnpm -C packages/core test                   # 单包
-pnpm -C packages/core test -- src/merge.test.ts   # 单文件
-pnpm -C packages/core test -- -t "截断"       # 按用例名过滤
+pnpm -C packages/core test                   # single package
+pnpm -C packages/core test -- src/merge.test.ts   # single file
+pnpm -C packages/core test -- -t "截断"       # filter by test name
 
-pnpm -C packages/ui dev                      # Vite dev server（无宿主，Bridge 会连不上）
-node packages/cli/dist/main.js [目录]        # 跑 CLI，需先 pnpm build
+pnpm -C packages/ui dev                      # Vite dev server (no host, so Bridge can't connect)
+node packages/cli/dist/main.js [directory]   # run the CLI, needs pnpm build first
 ```
 
-**`@folderspec/core` 通过 `exports` 指向 `dist/`，不是 src。** 因此：
+**`@folderspec/core` points to `dist/` via `exports`, not `src`.** As a result:
 
-- `packages/cli` 的测试运行时真的 import 了 core（`server.ts` 用 `Session`），**core 未 build 时 cli 测试会失败**。克隆后第一次跑测试前先 `pnpm -C packages/core build`（`pnpm typecheck` 脚本已内置这一步，`pnpm test` 没有）。
-- `packages/ui` 对 core 全是 `import type`，运行时不依赖 dist，但 tsc 需要 `dist/*.d.ts`。
+- `packages/cli`'s tests actually import core at runtime (`server.ts` uses `Session`), so **cli tests fail if core hasn't been built**. Before running tests for the first time after cloning, run `pnpm -C packages/core build` (the `pnpm typecheck` script already does this; `pnpm test` does not).
+- `packages/ui` only ever does `import type` from core, so it has no runtime dependency on `dist` — but `tsc` still needs `dist/*.d.ts`.
 
-`core` 与 `cli` 的 tsconfig 把 `src/**/*.test.ts` 排除在 typecheck 之外；`ui` 的没有排除，它的测试会被类型检查。
+`core` and `cli`'s tsconfigs exclude `src/**/*.test.ts` from typechecking; `ui`'s does not, so its tests get typechecked too.
 
-## 这个项目是什么
+## What this project is
 
-一个可视化工具：读当前仓库的目录树，让人给目录/文件写注释、声明结构意图，产出 `.folderspec.md` ——一份既给人读、也给 Agent 当结构契约的文件。
+A visualization tool: it reads the current repo's directory tree, lets a person annotate directories/files and declare structural intent, and produces `.folderspec.md` — a file meant to be read by humans and used by an Agent as a structural contract.
 
-设计文档是权威来源，改动前先读：`docs/superpowers/specs/2026-08-19-folderspec-design.md`（377 行，含竞品调研、技术选型依据、被否决方案及理由）。实现计划与逐任务记录在 `docs/superpowers/plans/2026-08-19-folderspec-mvp.md` 与 `.superpowers/sdd/`（后者不入库）。
+The design doc is the source of truth; read it before making changes: `docs/superpowers/specs/2026-08-19-folderspec-design.md` (377 lines; covers competitive research, technology-choice rationale, and rejected alternatives with reasons). The implementation plan and per-task history live in `docs/superpowers/plans/2026-08-19-folderspec-mvp.md` and `.superpowers/sdd/` (the latter is not checked in).
 
-## 不可违反的不变量
+## Invariants that must not be violated
 
-这四条来自设计文档第 3 节，违反其一即为设计错误，不是风格问题：
+These four come from §3 of the design doc. Violating any one of them is a design error, not a style issue:
 
-1. **只写 `.folderspec.md` 这一个文件。** 绝不 `mv` / `mkdir` / `rm`。真正搬文件的是 Agent，不是本工具。推论：不需要 undo 栈、dry-run、回滚。（`Session.undoStack`——见 `packages/core/src/session.ts`——不违反这条：这里的原判断针对的是"安全"，本工具从不改动磁盘上除 `.folderspec.md` 外的任何文件，没有"操作把仓库弄坏了要回滚"这回事；用户后来要的撤销栈解决的是另一件事——"纠正误操作"，只作用于内存里的 `Spec`，一样一个字节都不写磁盘，只读铁律没有被动摇。）
-2. **声明式，不是命令式。** 契约描述长期不变量（"case 应该在 src/cases 下"），不描述一次性操作（"把 examples/foo 移过去"）。**拖拽后绝不记录"从哪儿来"**——操作记录一被执行就过期，契约从此携带一条谎言。
-3. **稀疏覆盖层。** 文件只含被人工标注过的节点及其父级链条，不是仓库镜像。完整结构由实时扫描提供。
-4. **存储格式即输出格式。** 没有单独的"导出"步骤，没有需要保持同步的第二份产物。
+1. **The only file this tool writes is `.folderspec.md`.** Never `mv` / `mkdir` / `rm`. Actually moving files is the Agent's job, not this tool's. Corollary: no undo stack, dry-run, or rollback is needed. (`Session.undoStack` — see `packages/core/src/session.ts` — does not violate this: the original reasoning here was about *safety* — this tool never touches anything on disk besides `.folderspec.md`, so there is no "an operation broke the repo, roll it back" scenario. The undo stack users later asked for solves a different problem, "undo a mistake," and it only ever acts on the in-memory `Spec`; it still writes zero bytes to disk, so the read-only law stands unshaken.)
+2. **Declarative, not imperative.** The contract describes long-lived invariants ("cases should live under src/cases"), not one-off operations ("move examples/foo over there"). **A drag-and-drop must never record "where it came from"** — an action log goes stale the instant it is executed, and from then on the contract carries a lie.
+3. **A sparse overlay.** The file holds only nodes a human has annotated, plus their ancestor chain — it is not a mirror of the repo. The complete structure comes from a live scan.
+4. **Storage format is the output format.** There is no separate "export" step, no second artifact that has to be kept in sync.
 
-由此推导出的具体禁令，改代码时容易踩：
+Concrete prohibitions that follow from this — easy to trip over when changing code:
 
-- **派生状态一律不落盘。** 已被明确否决的标签：`[planned]`（磁盘上存不存在由扫描算出）、`[required]`/`[optional]`（属于模板的 YAML，不重复到树上）、`agent_permissions:` 之类伪权限字段（没有技术手段能阻止 Agent 写文件，写了只是自我安慰）。
-- **绝不用空 spec 覆盖用户文件。** 解析失败 → 只读模式 + 报行号，不静默重写。`Session` 用显式的 `opened` 状态位保证"从未打开"不会被当成"打开成功且契约为空"。
-- **写盘前必须 `serialize → parse` 自校验**，round-trip 不一致就中止写入（`Session.save`）。
-- **本工具唯一能造成的伤害是弄丢人写的注释。** 任何触碰 spec 生命周期的改动都按这条评估。`spec-only` 节点（spec 里有、磁盘上没有）**永远保留、永不自动删除**——"待创建"与"已被删除"在可观测状态上不可区分。
+- **No derived state is ever persisted.** Tags explicitly rejected for this reason: `[planned]` (whether it exists on disk is something a scan can compute), `[required]`/`[optional]` (that belongs to the template's YAML, not duplicated onto the tree), and pseudo-permission fields like `agent_permissions:` (there is no technical means to stop an Agent from writing a file — such a field would be nothing but false comfort).
+- **Never overwrite a user's file with an empty spec.** A parse failure means read-only mode plus a line-numbered report, not a silent rewrite. `Session` uses an explicit `opened` state flag so "never opened" can't be mistaken for "opened successfully with an empty contract."
+- **Before writing to disk, a `serialize → parse` self-check is mandatory** — if the round trip doesn't match, the write is aborted (`Session.save`).
+- **The only harm this tool can do is lose a human-written annotation.** Any change that touches the spec lifecycle should be judged against that. `spec-only` nodes (present in the spec, absent on disk) are **kept forever, never auto-deleted** — "not yet created" and "already deleted" are indistinguishable from what's observable.
 
-## 架构
+## Architecture
 
-pnpm workspace，依赖单向：
-
-```
-packages/core/   @folderspec/core   纯 TS · 无 DOM · 无 UI · 是唯一碰文件系统的地方
-packages/ui/     @folderspec/ui     React SPA · 零 node 依赖 · 不认识文件系统
-packages/cli/    folderspec         宿主：http + ws + 浏览器 --app 无边框窗口
-packages/vscode/  folderspec-vscode  宿主：CustomTextEditorProvider
-```
-
-四个包都已实现。`packages/vscode` 的端到端冒烟测试（`src/test/suite/smoke.test.ts`）需要图形环境，
-本地无 `DISPLAY` 时跑不了，只在 CI 里通过 `xvfb-run` 执行。
-
-### Bridge：一份 UI 跑两个宿主的关键
-
-`packages/core/src/api.ts` 定义 `Api`（7 个方法：`workspace/open`、`tree/get`、`tree/expand`、`spec/annotate`、`spec/move`、`spec/save`、`spec/raw`）与 `Bridge` 接口。这个文件**零 node 依赖**，UI 只 import 它的类型。
-
-- CLI 宿主：`packages/ui/src/ws-bridge.ts` ↔ 同源 WebSocket ↔ `packages/cli/src/server.ts`
-- VSCode 宿主（待实现）：`window.__folderspecBridge` 由 webview 预先注入，`main.tsx` 优先取它
-- 测试：`packages/ui/src/test-bridge.ts` 的 `FakeBridge`，不碰文件系统
-
-`ui` 永远不知道自己跑在哪个宿主，`core` 永远不知道谁在调它。**加功能时先问：新方法该进 `Api` 类型契约，还是根本不该跨过这条边界。**
-
-### 三源合成
+pnpm workspace, dependencies flow one way:
 
 ```
-磁盘扫描 (scan)      ┐
-git 状态 (gitStatus) ├→ merge() 纯函数 → ViewNode 树 → UI
-.folderspec.md       ┘
+packages/core/    @folderspec/core   pure TS · no DOM · no UI · the only package that touches the filesystem
+packages/ui/      @folderspec/ui     React SPA · zero node dependencies · has no notion of the filesystem
+packages/cli/     folderspec         host: http + ws + browser --app frameless window
+packages/vscode/  folderspec-vscode  host: CustomTextEditorProvider
 ```
 
-只有第三个是持久的，前两个从不存盘。`merge` 是纯函数、无 IO，是测试重点，`ViewNode.origin` 穷举四种情形：`both` / `spec-only`（虚线，永不删）/ `actual-only` / `unscanned`（该目录尚未懒加载）。**`merge` 必须对"actual 侧缺失分支"幂等**——懒加载意味着它每次只作用于已加载的那部分树。
+All four packages are implemented. `packages/vscode`'s end-to-end smoke test (`src/test/suite/smoke.test.ts`) requires a graphics environment: it won't run locally without a `DISPLAY`, and only runs in CI via `xvfb-run`.
 
-写路径只有一条：UI 编辑 → 改内存 `Spec` → `serializeSpec` → 写 `.folderspec.md`。
+### Bridge: how one UI serves two hosts
+
+`packages/core/src/api.ts` defines `Api` (7 methods: `workspace/open`, `tree/get`, `tree/expand`, `spec/annotate`, `spec/move`, `spec/save`, `spec/raw`) and the `Bridge` interface. This file has **zero node dependencies** — the UI only imports its types.
+
+- CLI host: `packages/ui/src/ws-bridge.ts` ↔ same-origin WebSocket ↔ `packages/cli/src/server.ts`
+- VSCode host: `window.__folderspecBridge` is injected by the webview ahead of time; `main.tsx` picks it up first if it's present
+- Tests: `FakeBridge` in `packages/ui/src/test-bridge.ts`, which never touches the filesystem
+
+`ui` never knows which host it's running under, and `core` never knows who's calling it. **When adding a feature, ask first: should the new method join the `Api` type contract, or should it not cross this boundary at all?**
+
+### Three-source merge
+
+```
+disk scan (scan)       ┐
+git status (gitStatus) ├→ merge() pure function → ViewNode tree → UI
+.folderspec.md          ┘
+```
+
+Only the third source is persistent; the other two are never written to disk. `merge` is a pure, IO-free function and the focus of testing; `ViewNode.origin` enumerates four cases: `both` / `spec-only` (dashed, never deleted) / `actual-only` / `unscanned` (that directory hasn't been lazily loaded yet). **`merge` must be idempotent with respect to a missing branch on the actual side** — lazy loading means it only ever operates on the portion of the tree that has already been loaded.
+
+There is exactly one write path: UI edit → mutate the in-memory `Spec` → `serializeSpec` → write `.folderspec.md`.
 
 ### Session
 
-`packages/core/src/session.ts` 是宿主无关的会话控制器，两个宿主都通过 `session.handle(method, params)` 复用同一套逻辑，宿主本身只剩一层薄壳。
+`packages/core/src/session.ts` is a host-agnostic session controller; both hosts share the same logic through `session.handle(method, params)`, leaving each host as a thin shell.
 
-`Session` 自己**不处理换工作区**——`workspace/open` 只重扫它自己的 root。切换根目录 = 由宿主换一个新 `Session`（见 `cli/src/server.ts`）。
+`Session` itself **doesn't handle switching workspaces** — `workspace/open` only re-scans its own root. Switching roots means the host swaps in a new `Session` (see `cli/src/server.ts`).
 
-会话内的 `hidden` 集合记录当次拖拽的旧位置，是临时 UI 状态，`open()` 时清空，永不落盘（对应不变量 2）。
+The session's `hidden` set records the old position from the current drag operation; it's transient UI state, cleared on `open()`, and never persisted (this follows from invariant 2).
 
-### `.folderspec.md` 格式
+### `.folderspec.md` format
 
-单文件三区，各用各的强项（详见设计文档 §4）：
+A single file, three sections, each playing to its own strengths (see design doc §4 for details):
 
-- **结构区**：Markdown 嵌套列表。一行一节点，`<2n空格>- \`名称/\` \`[role:x]\` — 注释`。缩进必须是 2 的倍数且不得跳级；注释分隔符是 ` — `（空格 + U+2014 EM DASH + 空格），首次出现的那个生效。
-- **模板区 / 规则区**：内嵌 YAML 块。规则是横切的（有 id、glob scope、severity），挂不到任何单个树节点上。
+- **Structure section**: a nested Markdown list. One node per line: `<2n spaces>- \`name/\` \`[role:x]\` — comment`. Indentation must be a multiple of 2 and may not skip a level; the comment delimiter is ` — ` (space + U+2014 EM DASH + space) — whichever one appears first wins.
+- **Template / rules sections**: embedded YAML blocks. Rules are cross-cutting — they carry an id, a glob scope, a severity — and don't attach to any single tree node.
 
-解析器分四个文件：`parse/sections.ts`（切三区）→ `structure.ts` / `templates.ts` / `rules.ts`，`parse/index.ts` 串联。**写入端保证格式规范，读取端容错并报行号**——错误必须带上行号，不能崩溃、不能静默丢数据。
+The parser is split across four files: `parse/sections.ts` (splits the three sections) → `structure.ts` / `templates.ts` / `rules.ts`, chained together by `parse/index.ts`. **The writer guarantees well-formed output; the reader is tolerant and reports line numbers** — errors must carry a line number, never crash, and never silently drop data.
 
-`Session.annotate` 在输入边界就拦下会破坏格式的值：`role`/`template` 含反引号、`]`、空白 → 直接报错（悄悄改掉一个标识符比报错更糟）；注释里的换行 → 归一化为空格（面板是 textarea，用户按回车是自然动作）。
+`Session.annotate` rejects format-breaking values right at the input boundary: a `role`/`template` containing a backtick, `]`, or whitespace triggers an immediate error (silently mangling an identifier is worse than raising one); a newline inside a comment gets normalized to a space (the panel is a textarea, and pressing Enter is a natural thing to do).
 
-### 性能约束
+### Performance constraints
 
-目标：10 万文件仓库首屏 < 200ms。手段：首屏只扫 depth=2（`DEFAULT_DEPTH`）、展开时按需扫；`ignore` 规则做**目录级剪枝**（命中即整棵不进入）；git 状态一次 `git status --porcelain=v2 -z --untracked-files=all --ignored=matching` 批量拿三态，**绝不逐文件查询**；react-arborist 虚拟化；序列化复杂度是 O(标注节点数) 而非 O(仓库文件数)。
+Target: sub-200ms first paint for a 100k-file repo. Means: the first paint only scans to depth=2 (`DEFAULT_DEPTH`), scanning further on expand; `ignore` rules prune **at the directory level** (a match skips the whole subtree without descending into it); git status comes from a single batched call — `git status --porcelain=v2 -z --untracked-files=all --ignored=matching` — that gets all three states at once, **never a per-file query**; react-arborist virtualizes the list; serialization complexity is O(annotated nodes), not O(repo files).
 
-单目录超过 `MAX_CHILDREN`(10k) 截断并打标；readdir 失败（通常是权限）标 `unreadable` 继续走，不中断；符号链接默认不跟随。
+A single directory beyond `MAX_CHILDREN` (10k) is truncated and flagged; a `readdir` failure (usually a permissions issue) is marked `unreadable` and scanning continues rather than aborting; symlinks are not followed by default.
 
-## 约定
+## Conventions
 
-**中文。** 代码注释、错误信息、UI 文案、commit 说明全是中文。commit 用 conventional commits 前缀 + 中文主题：`feat(core): 三源合成 merge 纯函数`。
+**Chinese.** Code comments, error messages, UI copy, and commit messages are all written in Chinese. Commits use a conventional-commits prefix plus a Chinese subject line, e.g. `feat(core): 三源合成 merge 纯函数`.
 
-**注释解释"为什么"，不解释"做什么"。** 现有代码里的长注释几乎都在记录一次踩坑或一条裁定（例如 `cli/src/server.ts` 里为什么 `decodeURIComponent` 必须包在 try 里、`ui/src/AnnotationPanel.tsx` 里为什么 useEffect 依赖只能是 `node?.path`）。**别把这类注释删成一行**——它们是防止后人"修回去"的唯一屏障。
+**Comments explain "why," not "what."** Nearly every long comment in the codebase records a hard-won lesson or a judgment call (for example, why `decodeURIComponent` must be wrapped in try in `cli/src/server.ts`, or why the `useEffect` dependency in `ui/src/AnnotationPanel.tsx` can only be `node?.path`). **Don't trim these down to one line** — they are the only thing stopping someone later from "fixing" it back to the broken version.
 
-**TDD，先测后码。** `core` 覆盖率目标 100%。
+**TDD: tests before code.** `core`'s coverage target is 100%.
 
-**回归测试必须做 RED/GREEN 实证。** 项目记录里出现过**六次**"回归测试无法侦测它要防的回归"（见 `.superpowers/sdd/*/progress.md`）。补回归测试时，必须先施加它要防的那个单点变异、亲眼看它变红，再恢复看它变绿。口头断言不作数。
+**Regression tests require RED/GREEN proof.** This project's history has **six** recorded cases of "a regression test that couldn't detect the regression it was meant to catch" (see `.superpowers/sdd/*/progress.md`). When adding a regression test, you must first apply the exact single-point mutation it's meant to guard against, watch it fail (go red) with your own eyes, then revert and watch it pass (go green). A verbal assertion doesn't count.
 
-关键测试：`core/src/roundtrip.test.ts` 用 fast-check 做 property test——随机 `Spec` → serialize → parse → 必须严格等于原对象。**这条保护的正是"不丢注释"这个最关键的不变量，改序列化或解析器时它是第一道闸门。**
+Key test: `core/src/roundtrip.test.ts` uses fast-check for a property test — a random `Spec` → serialize → parse → must be strictly equal to the original. **This is exactly what protects the single most critical invariant — "never lose an annotation" — and it's the first gate any change to the serializer or parser has to pass.**
