@@ -10,7 +10,7 @@ import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
 import type { Api, ApiMethod, AnnotateParams, CreateNodeParams, EditResult, MoveParams, OpenResult, SaveResult, SetGroupParams, SetLangParams, SetViewModeParams, ViewModeResult } from './api.js'
-import type { ActualNode, GitStates, Group, Lang, ParseError, Spec, ViewMode, ViewNode } from './types.js'
+import type { ActualNode, GitStates, Group, Lang, ParseError, Spec, SpecNode, ViewMode, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
 
@@ -411,6 +411,45 @@ export class Session {
   }
 
   /**
+   * removeNode 撤掉一条声明之后，回收 hidden 里因此变成孤儿的旧位置。
+   *
+   * hidden 只记旧位置、不记去向，它的有效性完全依赖一个**隐含前提**：被拖走的那个
+   * spec 节点还活着。removeNode 可以把那个节点删掉（连同它整棵纯脚手架子树），却
+   * 一直没有对称地撤掉 hidden 里对应的条目——于是磁盘上货真价实、装着文件的目录
+   * 连同整棵子树从树上凭空消失，`tree/expand` 也拉不回来，本次会话里既看不见也无法
+   * 给它或它的任何后代写注释。方向上是"弄丢人写的注释"这条红线的镜像：不是契约里有
+   * 而树上没有，是磁盘上有而树上没有。move() 为对称场景专门写了 this.hidden.delete(to)，
+   * 这里补上另一半。
+   *
+   * **判据为什么是 basename。** 不变量 2 明令禁止记录"从哪儿来"，所以工具没有任何
+   * 数据能把"hidden 里的这条旧位置"与"契约里的哪个节点"对应起来。唯一可依赖、且由
+   * moveNode 本身保证的事实是：移动不改名（`const name = fromSegs[fromSegs.length-1]`，
+   * 落点用的是同一个 name，本工具也没有"重命名"这个操作）。所以被移除的子树里出现
+   * 过的每一个名字，都可能是某条 hidden 的那个节点。
+   *
+   * **宁可多解除，不可少解除。** 多解除的最坏后果是旧位置多显示一行（节点在新旧两处
+   * 同时出现，一处带标注一处不带）——难看、可撤销、用户看得见；少解除的后果是磁盘上
+   * 真实存在的整棵子树在本次会话里彻底够不着，按本项目的定义等同于丢失。两种错误的
+   * 量级不对等，判据就必须往"多解除"那一侧偏。
+   *
+   * 必须在 this.spec 被换掉**之前**调用：要数的是即将消失的那棵子树里有哪些名字。
+   * 也必须在 captureState() **之后**——快照里的 hidden 得是这次操作之前的原样，
+   * 撤销才能把隐藏一并还原回去（见 Snapshot 的注释）。
+   */
+  private releaseHiddenFor(removedPath: string): void {
+    if (this.hidden.size === 0) return
+    const removed = findSpecNode(this.spec.nodes, removedPath)
+    if (!removed) return
+
+    const names = new Set<string>()
+    collectNames(removed, names)
+    for (const h of [...this.hidden]) {
+      const base = h.split('/').filter(Boolean).pop() ?? ''
+      if (names.has(base)) this.hidden.delete(h)
+    }
+  }
+
+  /**
    * 撤销一个节点的声明——只影响 spec.nodes 这一条（及其被判定为纯脚手架的子树），
    * 不碰磁盘上的任何文件/目录。走与其他写方法完全相同的收口（assertWritable →
    * 快照 → 纯函数改 spec → commitEdit），因此也天然进撤销栈、天然被「原始结构」
@@ -442,6 +481,9 @@ export class Session {
     const candidate = removeNode(this.spec, path)
     if (specsEqual(candidate, this.spec)) return this.editResult()
     const before = this.captureState()
+    // 顺序要紧：captureState() 之后（快照里的 hidden 必须是这次操作之前的原样，
+    // 撤销才还得回来）、this.spec 被换掉之前（要数的是即将消失的那棵子树）。
+    this.releaseHiddenFor(path)
     this.spec = candidate
     this.commitEdit(before)
     return this.editResult()
@@ -757,6 +799,13 @@ export class Session {
       throw new Error('当前处于「原始结构」视图，为只读模式；切回「我的结构」视图后即可编辑')
     }
   }
+}
+
+/** 一棵 spec 子树里出现过的全部节点名（含根自己）。供 releaseHiddenFor 用，判据的
+ *  推导见那里。 */
+function collectNames(n: SpecNode, out: Set<string>): void {
+  out.add(n.name)
+  for (const c of n.children) collectNames(c, out)
 }
 
 function findActual(node: ActualNode, path: string): ActualNode | null {

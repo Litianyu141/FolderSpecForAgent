@@ -1624,3 +1624,80 @@ describe('Session.move 红线：合并到同名节点时不覆盖目标已有的
   })
 })
 
+// 乙：hidden 只记旧位置、不记去向，它的有效性完全依赖"被拖走的那个 spec 节点还
+// 活着"这个隐含前提。removeNode 能把那个节点删掉，却一直没有对称地回收 hidden——
+// 于是磁盘上货真价实、装着文件的目录在本次会话里从树上彻底消失。
+// 方向上是甲那条红线的镜像：不是契约里有而树上没有，是磁盘上有而树上没有。
+describe('Session.removeNode 回收 move 遗留的 hidden（乙）', () => {
+  it('红线：拖走后再对新位置「取消声明」，磁盘上真实存在的旧位置连同子树必须回到树上', async () => {
+    // 夹具必须是"磁盘上真实存在、里面还装着文件"的目录——用一个虚构路径的话，
+    // "旧位置有没有回到树上"这条断言对实现完全没有区分力。
+    await fs.writeFile(nodePath.join(root, 'src/core/keep.ts'), '')
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '核心模块' })
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+
+    // 先确认这次拖拽真的把旧位置记进了 hidden，否则下面全部断言没有区分力
+    expect(find(s.tree(), 'src/core')).toBeNull()
+    expect(find(s.tree(), 'core')?.origin).toBe('spec-only')
+
+    const r = s.removeNode('core')
+
+    const back = find(r.tree, 'src/core')
+    expect(back).not.toBeNull()
+    expect(back?.origin).toBe('actual-only')
+    // 整棵子树都要能重新够着：终审实测里连 tree/expand 都拉不回来。
+    const expanded = await s.expand('src/core')
+    expect(find(expanded, 'src/core/keep.ts')).not.toBeNull()
+    // 磁盘上本来就一个字节都没被动过（只写 .folderspec.md 这条铁律）
+    expect((await fs.stat(nodePath.join(root, 'src/core'))).isDirectory()).toBe(true)
+  })
+
+  it('被移除的是祖先、hidden 里的旧位置属于它的后代时同样回收', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: '', name: 'holder', isDir: true })
+    s.move({ from: 'src/core', toParent: 'holder', isDir: true })
+    expect(find(s.tree(), 'src/core')).toBeNull()
+    expect(find(s.tree(), 'holder/core')).not.toBeNull()
+
+    // holder/core 是纯脚手架（没有任何一层携带内容），removeNode 允许连同收走——
+    // 于是 hidden 里那条 'src/core' 的落点跟着 holder 一起没了。
+    const r = s.removeNode('holder')
+    expect(find(r.tree, 'holder')).toBeNull()
+    expect(find(r.tree, 'src/core')).not.toBeNull()
+  })
+
+  it('撤销之后 hidden 必须恢复原状——声明回到新位置，旧位置重新隐藏', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(find(s.tree(), 'src/core')).toBeNull()
+    s.removeNode('core')
+    expect(find(s.tree(), 'src/core')).not.toBeNull()
+
+    const u = s.undo()
+    // 撤销把 core 这条声明放了回去；旧位置若不跟着重新隐藏，同一个节点会在新旧
+    // 两处同时出现——正是 Snapshot 注释里"hidden 必须和 spec 一起进快照"守的那条。
+    expect(find(u.tree, 'core')).not.toBeNull()
+    expect(find(u.tree, 'src/core')).toBeNull()
+  })
+
+  it('对照：移除一条与 hidden 无关的声明，不该顺手把旧位置解除隐藏', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    s.annotate({ path: 'README.md', isDir: false, annotation: '与那次拖拽无关' })
+
+    s.removeNode('README.md')
+    // 这条钉的是"别图省事一把清空 hidden"：core 的声明还在根下活着，旧位置理应
+    // 继续隐藏，否则同一个节点会在两处同时出现。
+    expect(find(s.tree(), 'src/core')).toBeNull()
+    expect(find(s.tree(), 'core')).not.toBeNull()
+  })
+
+  it('对照：路径不存在的真空操作不该动 hidden', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    const r = s.removeNode('does/not/exist')
+    expect(find(r.tree, 'src/core')).toBeNull()
+  })
+})
+
