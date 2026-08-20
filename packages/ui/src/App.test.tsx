@@ -38,6 +38,11 @@ const openResult = (over: Partial<OpenResult> = {}): OpenResult => ({
   parseErrors: null,
   tree: tree(FIXTURE),
   groups: [G1],
+  // core 侧 OpenResult 已经带上必填的 lang 字段（另一轮加的，本轮的双语开关本身
+  // 不读它——见 App.tsx 里 `lang` state 上那段注释）。这里只是补齐类型要求的
+  // 一个默认值，不是本轮功能范围；这条 fixture 与本轮 UI 双语无关的既有用例
+  // 全都不必关心它，所以放在最前面、可以被 `over` 覆盖。
+  lang: 'zh',
   ...over,
 })
 
@@ -2079,5 +2084,77 @@ describe('App', () => {
 
       expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
     })
+  })
+})
+
+// 本轮（UI 双语）范围严格限定在"操作界面"本身：开关不调用 spec/setLang（那会写进
+// front-matter，是下一轮的事），初始语言也不取自 OpenResult.lang——即便这个字段现在
+// 已经存在（core 侧另一轮已经加上了，openResult() 工厂那句 `lang: 'zh'` 就是为了满足
+// 这个必填字段），本轮仍然按 brief 的既定范围不接这根线，留给下一轮一起接。所以这里的
+// 用例只覆盖"点了开关之后界面文案真的变了"，不涉及任何 bridge 调用、不涉及持久化——
+// 默认永远是 zh，这是有意的、暂时的行为。
+describe('App 界面语言切换（右上角开关）', () => {
+  it('默认是中文界面', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    expect(screen.getByText('载入')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '中文' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'English' }).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('点击 English 后，顶栏按钮文案切成英文，且不需要重新载入工作区', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    const openCallsBefore = bridge.calls.filter(c => c.method === 'workspace/open').length
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+
+    expect(screen.getByText('Load')).toBeTruthy()
+    expect(screen.getByText('My Structure')).toBeTruthy()
+    expect(screen.getByText('Disk Structure')).toBeTruthy()
+    expect(screen.getByText('Undo')).toBeTruthy()
+    expect(screen.getByText('Redo')).toBeTruthy()
+    expect(screen.getByText('Save')).toBeTruthy()
+    expect(screen.getByLabelText('Workspace path')).toBeTruthy()
+    // 切语言是纯前端状态，不经过 bridge——没有多打一次 workspace/open
+    expect(bridge.calls.filter(c => c.method === 'workspace/open').length).toBe(openCallsBefore)
+  })
+
+  it('切到 English 再切回中文，文案回到今天原本的样子', async () => {
+    const bridge = bridgeWith()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    expect(screen.getByText('Load')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '中文' }))
+    expect(screen.getByText('载入')).toBeTruthy()
+    expect(screen.getByText('撤销')).toBeTruthy()
+    expect(screen.getByText('重做')).toBeTruthy()
+    expect(screen.getByLabelText('工作区路径')).toBeTruthy()
+  })
+
+  // 本轮唯一的安全属性钉在这里：切到英文界面，用户自己写的中文注释必须原样显示，
+  // 不能被当成"界面文案"一起过一遍字典。annotation 是数据，不是我们写的 chrome。
+  it('英文界面下，节点上用户写的中文注释原样显示，不被翻译', async () => {
+    const bridge = bridgeWith({
+      tree: tree([{ ...SRC, annotation: '核心源码', origin: 'both' }, DOCS, README]),
+    })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    expect(screen.getByText('Load')).toBeTruthy() // 先确认界面确实已经在英文态，不是误判
+
+    // 行内摘要（NodeRow 里的 .fs-annotation）在切到英文之前就已经渲染，且从不经过 t()
+    expect(screen.getByText('核心源码')).toBeTruthy()
+
+    clickFirstRow(container) // FIXTURE 顺序固定，第一行是带注释的 src
+    await waitFor(() => screen.getByLabelText('Annotation'))
+    expect((screen.getByLabelText('Annotation') as HTMLTextAreaElement).value).toBe('核心源码')
   })
 })

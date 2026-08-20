@@ -2,6 +2,7 @@ import { useId } from 'react'
 import type { Group, Severity } from '@folderspec/core/api'
 import { SEVERITY_BADGE } from './colors.js'
 import { matchingGroups } from './selection.js'
+import { useT } from './i18n.js'
 
 export interface GroupSubmit {
   id: string | null
@@ -69,6 +70,7 @@ export function GroupPanel(
   // 成员列表原先没有标题，用户反馈"不知道那几行是什么"。用 aria-labelledby 把标题与
   // 列表本身关联（而不只是视觉上挨着），组件可能同屏出现多份（理论上），id 不能写死。
   const memberListHeadingId = useId()
+  const t = useT()
 
   const matches = matchingGroups(members, groups)
   // 上层指定的目标优先；它指向一个已经不存在的分组（比如注释被清空后 core 把它删了）
@@ -116,17 +118,17 @@ export function GroupPanel(
 
   return (
     <div className="fs-panel">
-      <h2 className="fs-panel-path">已选中 {members.length} 项</h2>
+      <h2 className="fs-panel-path">{t('groupPanel.selectedCount', { count: members.length })}</h2>
 
       {matches.length > 1 && (
         <div className="fs-panel-note">
-          有 {matches.length} 个分组的成员完全相同，当前编辑的是 {current?.id}
+          {t('groupPanel.sameMembersNote', { count: matches.length, currentId: current?.id ?? '' })}
           <ul className="fs-group-choices">
             {matches.map(g => (
               <li key={g.id}>
                 <button
                   type="button" className="fs-group-link" disabled={disabled}
-                  aria-label={`改为编辑分组 ${g.id}`}
+                  aria-label={t('groupPanel.editGroupAriaLabel', { id: g.id })}
                   aria-current={g.id === current?.id}
                   onClick={() => onEditGroup(g.id)}
                 >{g.id}</button>
@@ -137,35 +139,39 @@ export function GroupPanel(
       )}
 
       <label className="fs-field">
-        <span>分组名</span>
+        <span>{t('groupPanel.name')}</span>
         <input
-          aria-label="分组名" type="text" value={name} disabled={disabled}
-          placeholder="留空则自动取名"
+          aria-label={t('groupPanel.name')} type="text" value={name} disabled={disabled}
+          placeholder={t('groupPanel.namePlaceholder')}
           onChange={e => onDraftChange({ ...draft, name: e.target.value })}
           onBlur={() => { if (name.trim() !== (current?.id ?? '')) submit({ name: name.trim() }) }}
         />
       </label>
 
       <label className="fs-field">
-        <span>分组注释</span>
+        <span>{t('groupPanel.text')}</span>
         <textarea
-          aria-label="分组注释" rows={6} value={text} disabled={disabled}
+          aria-label={t('groupPanel.text')} rows={6} value={text} disabled={disabled}
           onChange={e => onDraftChange({ ...draft, text: e.target.value })}
           onBlur={() => { if (text.trim() !== (current?.text ?? '')) submit({ text: text.trim() }) }}
         />
       </label>
 
       <label className="fs-field">
-        <span>约束强度</span>
+        <span>{t('common.severity')}</span>
         <select
-          aria-label="约束强度" value={severity} disabled={disabled}
+          aria-label={t('common.severity')} value={severity} disabled={disabled}
           onChange={e => {
             const next = e.target.value === '' ? '' : (e.target.value as Severity)
             onDraftChange({ ...draft, severity: next })
             submit({ severity: next === '' ? null : next })
           }}
         >
-          <option value="">（仅注释，不强制）</option>
+          {/* 这三个 option 的正文（不含徽标）本来就是纯英文的技术词——Severity 类型自身
+              的取值（'advisory'/'warning'/'error'），不是我们写的中文 chrome，两种语言下
+              显示相同，因此不经过 t()。AnnotationPanel 那份多带了中文说明后缀，那部分
+              才在字典里。 */}
+          <option value="">{t('common.severityNone')}</option>
           <option value="advisory">{SEVERITY_BADGE.advisory} advisory</option>
           <option value="warning">{SEVERITY_BADGE.warning} warning</option>
           <option value="error">{SEVERITY_BADGE.error} error</option>
@@ -180,19 +186,20 @@ export function GroupPanel(
             用户照那句话去"放弃"，得到的是把当前分组原有的注释覆盖掉——本项目唯一那条红线。
             界面上没有放弃入口就得如实说没有，别让文案许诺一个不存在的动作。 */}
         <span className="fs-field-label" id={memberListHeadingId}>
-          {locked ? '成员（编辑中已锁定）' : '成员（点击 × 移出选中集）'}
+          {locked ? t('groupPanel.membersLocked') : t('groupPanel.membersUnlocked')}
         </span>
         {locked && (
           <p className="fs-lock-hint">
-            编辑尚未提交，成员暂不可增减。点输入框以外任意处即提交并解锁——包括树上的节点，本工具没有“放弃”入口。
+            {t('groupPanel.lockHint')}
           </p>
         )}
         <ul className="fs-member-list" role="group" aria-labelledby={memberListHeadingId}>
           {members.map(m => (
             <li key={m}>
               <span className="fs-member-path">{m}</span>
-              <button type="button" aria-label={`从选中集移除 ${m}`} disabled={disabled || locked}
-                title={locked ? '编辑尚未提交，成员暂不可增减' : undefined}
+              <button type="button" aria-label={t('groupPanel.removeMemberAriaLabel', { path: m })}
+                disabled={disabled || locked}
+                title={locked ? t('groupPanel.removeMemberLockedTitle') : undefined}
                 onClick={() => onRemoveMember(m)}>×</button>
             </li>
           ))}

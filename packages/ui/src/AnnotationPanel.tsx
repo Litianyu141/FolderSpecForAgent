@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Group, Severity, ViewNode } from '@folderspec/core/api'
 import { SEVERITY_BADGE } from './colors.js'
+import { useT } from './i18n.js'
 
 export interface PanelPatch {
   annotation?: string | null
@@ -21,6 +22,7 @@ export interface AnnotationPanelProps {
 export function AnnotationPanel({ node, disabled, onChange, groupsOfNode, onPickGroup }: AnnotationPanelProps) {
   const [annotation, setAnnotation] = useState('')
   const [role, setRole] = useState('')
+  const t = useT()
 
   // 只在选中的节点变化时重置本地编辑态。
   // 不要把 annotation/role 放进依赖：本面板是这两个字段唯一的编辑者，
@@ -32,7 +34,7 @@ export function AnnotationPanel({ node, disabled, onChange, groupsOfNode, onPick
   }, [node?.path])
 
   if (!node) {
-    return <div className="fs-panel-empty">在左侧选中一个文件或目录</div>
+    return <div className="fs-panel-empty">{t('annotationPanel.empty')}</div>
   }
 
   const commit = (key: 'annotation' | 'role', local: string, original: string | undefined) => {
@@ -43,19 +45,19 @@ export function AnnotationPanel({ node, disabled, onChange, groupsOfNode, onPick
 
   return (
     <div className="fs-panel">
-      <h2 className="fs-panel-path">{node.path === '' ? '（工作区根）' : node.path}</h2>
+      <h2 className="fs-panel-path">{node.path === '' ? t('annotationPanel.workspaceRoot') : node.path}</h2>
       <p className="fs-panel-origin">
         {node.origin === 'spec-only'
-          ? 'spec 中声明，磁盘上不存在——可能待创建，也可能已被删除'
+          ? t('annotationPanel.originSpecOnly')
           : node.origin === 'unscanned'
-            ? '所在目录尚未扫描，展开后自动重新解析'
-            : node.isDir ? '目录' : '文件'}
+            ? t('annotationPanel.originUnscanned')
+            : node.isDir ? t('annotationPanel.kindDir') : t('annotationPanel.kindFile')}
       </p>
 
       <label className="fs-field">
-        <span>注释</span>
+        <span>{t('annotationPanel.annotationLabel')}</span>
         <textarea
-          aria-label="注释"
+          aria-label={t('annotationPanel.annotationLabel')}
           rows={6}
           value={annotation}
           disabled={disabled}
@@ -65,11 +67,11 @@ export function AnnotationPanel({ node, disabled, onChange, groupsOfNode, onPick
       </label>
 
       <label className="fs-field">
-        <span>语义角色</span>
+        <span>{t('annotationPanel.roleLabel')}</span>
         <input
-          aria-label="语义角色"
+          aria-label={t('annotationPanel.roleLabel')}
           type="text"
-          placeholder="例如 core-engine"
+          placeholder={t('annotationPanel.rolePlaceholder')}
           value={role}
           disabled={disabled}
           onChange={e => setRole(e.target.value)}
@@ -78,23 +80,23 @@ export function AnnotationPanel({ node, disabled, onChange, groupsOfNode, onPick
       </label>
 
       <label className="fs-field">
-        <span>约束强度</span>
+        <span>{t('common.severity')}</span>
         <select
-          aria-label="约束强度"
+          aria-label={t('common.severity')}
           value={node.severity ?? ''}
           disabled={disabled}
           onChange={e => onChange({ severity: e.target.value === '' ? null : (e.target.value as Severity) })}
         >
-          <option value="">（仅注释，不强制）</option>
-          <option value="advisory">{SEVERITY_BADGE.advisory} advisory — 建议</option>
-          <option value="warning">{SEVERITY_BADGE.warning} warning — 应遵守，违反须说明</option>
-          <option value="error">{SEVERITY_BADGE.error} error — 必须遵守</option>
+          <option value="">{t('common.severityNone')}</option>
+          <option value="advisory">{SEVERITY_BADGE.advisory} {t('annotationPanel.severityAdvisory')}</option>
+          <option value="warning">{SEVERITY_BADGE.warning} {t('annotationPanel.severityWarning')}</option>
+          <option value="error">{SEVERITY_BADGE.error} {t('annotationPanel.severityError')}</option>
         </select>
       </label>
 
       {groupsOfNode.length > 0 && (
         <div className="fs-owning-groups">
-          <span className="fs-field-label">所属分组</span>
+          <span className="fs-field-label">{t('annotationPanel.owningGroups')}</span>
           <ul>
             {groupsOfNode.map(g => (
               <li key={g.id}>

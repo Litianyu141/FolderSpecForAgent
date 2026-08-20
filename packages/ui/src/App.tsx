@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Bridge, FileReadResult, Group, OpenResult, ParseError, SetGroupParams, ViewMode, ViewNode,
 } from '@folderspec/core/api'
@@ -14,6 +14,8 @@ import type { TreeApi } from 'react-arborist'
 import { useSplitter } from './splitter.js'
 import { useElementSize } from './useElementSize.js'
 import { Toolbar } from './Toolbar.js'
+import { I18nContext, translate } from './i18n.js'
+import type { I18n, Lang } from './i18n.js'
 
 export interface AppProps {
   bridge: Bridge
@@ -90,6 +92,24 @@ export function App({ bridge, initialRoot }: AppProps) {
    */
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
+  /**
+   * 界面语言，默认中文，纯前端状态——不落盘、不经过 bridge。本轮（UI 双语）只做
+   * "操作界面"这一半，两根线留给下一轮接：
+   * 1. 开关不调用 `spec/setLang`——那会把语言写进 front-matter（"导出的 folderspec
+   *    里的结构化内容"用哪种语言），是 core 侧另一份状态，本轮不碰。
+   * 2. 初始值不取自 `OpenResult.lang`——这个字段现在已经存在（core 侧另一轮加的，
+   *    写这行时以为它还没落地，核对后发现已经在了），但按 brief 的既定范围本轮仍不
+   *    接这根线：openRoot() 里没有读它、也没有据此 setLang，留给下一轮把"载入工作区
+   *    后开关自动对齐契约里写的语言"一起接上。
+   * 所以每次刷新页面/重新打开工作区，界面语言都会回到默认的中文，这是有意的、暂时的
+   * 行为，不是漏做了持久化，见 i18n-brief.md。
+   */
+  const [lang, setLang] = useState<Lang>('zh')
+  const t = useCallback<I18n['t']>((key, params) => translate(lang, key, params), [lang])
+  // I18nContext 的 value：见 i18n.ts 里那段解释"为什么用 Context 而不是一路传 props"
+  // 的注释。这里用 useMemo 是因为 Provider 的 value 一变，整棵消费了 useContext 的
+  // 子树都会重渲染——lang 没变时不必跟着 App 别的 state 变化一起抖一遍。
+  const i18n = useMemo(() => ({ lang, t }), [lang, t])
 
   const headerRef = useRef<HTMLDivElement>(null)
   const treeApiRef = useRef<TreeApi<ViewNode> | undefined>(undefined)
@@ -260,9 +280,9 @@ export function App({ bridge, initialRoot }: AppProps) {
   // window.confirm 在两个宿主里都可用，且失败安全：万一某个 webview 环境屏蔽了它，
   // 返回值是 falsy，重载会被取消，用户必须先保存——不存在悄悄丢数据的路径。
   const requestReload = useCallback(() => {
-    if (dirty && !window.confirm('有未保存的改动，重新载入会丢弃它们。确定要继续吗？')) return
+    if (dirty && !window.confirm(t('dialog.reloadConfirm'))) return
     void openRoot(root)
-  }, [dirty, openRoot, root])
+  }, [dirty, openRoot, root, t])
 
   const handleExpand = useCallback(async (path: string) => {
     try {
@@ -610,108 +630,113 @@ export function App({ bridge, initialRoot }: AppProps) {
     : groups.filter(g => g.members.includes(selectedPath))
 
   return (
-    <div className="fs-shell">
-      <div className="fs-header" ref={headerRef}>
-        <Toolbar
-          root={root}
-          searchTerm={searchTerm}
-          dirty={dirty}
-          disabled={readOnly}
-          viewMode={viewMode}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          onOpenRoot={p => void openRoot(p)}
-          onSearch={setSearchTerm}
-          onSave={() => void handleSave()}
-          onSetViewMode={m => void switchViewMode(m)}
-          onUndo={() => void handleUndo()}
-          onRedo={() => void handleRedo()}
-        />
+    <I18nContext.Provider value={i18n}>
+      <div className="fs-shell">
+        <div className="fs-header" ref={headerRef}>
+          <Toolbar
+            root={root}
+            searchTerm={searchTerm}
+            dirty={dirty}
+            disabled={readOnly}
+            viewMode={viewMode}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            lang={lang}
+            onOpenRoot={p => void openRoot(p)}
+            onSearch={setSearchTerm}
+            onSave={() => void handleSave()}
+            onSetViewMode={m => void switchViewMode(m)}
+            onUndo={() => void handleUndo()}
+            onRedo={() => void handleRedo()}
+            onSetLang={setLang}
+          />
 
-        {parseErrors && (
-          <div className="fs-banner" role="alert">
-            契约文件解析失败，当前为<strong>只读模式</strong>。已保留你的原文件未做任何改动，请修复后重新载入。
-            <ul>
-              {parseErrors.map(e => <li key={`${e.line}-${e.message}`}>第 {e.line} 行：{e.message}</li>)}
-            </ul>
-          </div>
-        )}
-
-        {viewMode === 'disk' && (
-          <div className="fs-banner" role="status">
-            当前为<strong>「原始结构」</strong>视图：只按磁盘扫描结果显示，忽略契约里的结构性调整，因此暂时无法编辑。
-            点击顶栏「我的结构」切换回可编辑视图。
-          </div>
-        )}
-
-        {externalChange && (
-          <div className="fs-banner" role="status">
-            契约文件已在外部修改。
-            <button type="button" onClick={requestReload}>重新载入</button>
-          </div>
-        )}
-
-        {error && <div className="fs-banner" role="alert">{error}</div>}
-      </div>
-
-      <div className="fs-body">
-        <div className="fs-pane-tree" ref={treePaneRef} style={{ flexBasis: `${left.width}px` }}>
-          {tree && (
-            <SpecTree
-              data={tree.children ?? []}
-              selectedPaths={shown.selected}
-              searchTerm={searchTerm}
-              width={treeWidth}
-              height={treeHeight}
-              disabled={readOnly}
-              onSelect={handleSelect}
-              onExpand={path => void handleExpand(path)}
-              onMove={(from, toParent, isDir) => void handleMove(from, toParent, isDir)}
-              onGroupClick={handlePickGroup}
-              apiRef={treeApiRef}
-            />
+          {parseErrors && (
+            <div className="fs-banner" role="alert">
+              {t('banner.parseErrorPrefix')}<strong>{t('banner.parseErrorReadOnly')}</strong>{t('banner.parseErrorSuffix')}
+              <ul>
+                {parseErrors.map(e => (
+                  <li key={`${e.line}-${e.message}`}>{t('banner.parseErrorLine', { line: e.line })}{e.message}</li>
+                ))}
+              </ul>
+            </div>
           )}
-        </div>
 
-        <div className="fs-splitter" role="separator" aria-orientation="vertical"
-          onPointerDown={left.onPointerDown} />
-
-        <div className="fs-pane-content">
-          <ContentPane node={contentNode} content={content} loading={contentLoading} />
-        </div>
-
-        <div className="fs-splitter" role="separator" aria-orientation="vertical"
-          onPointerDown={right.onPointerDown} />
-
-        <div className="fs-pane-panel" style={{ flexBasis: `${right.width}px` }}>
-          {shown.selected.length >= 2 ? (
-            <GroupPanel
-              members={shown.selected}
-              groups={groups}
-              // 两个 `?? null` 都是**语义精确**的压缩，不是把两种状态揉成一种：草稿与
-              // 绑定目标只可能存在于一轮编辑里（handleGroupDraft 一定先 takePending），
-              // 没有轮次就必然两者皆无。面板也不再有任何按"有没有轮次"分岔的本地状态——
-              // 那条按成员键重置草稿的规则连同它冻结的身份拷贝已经删掉了，草稿的生死
-              // 全在上面这份 pending 里决定。
-              currentGroupId={pending?.groupId ?? null}
-              draft={pending?.draft ?? null}
-              disabled={readOnly}
-              onSubmit={handleGroupSubmit}
-              onDraftChange={handleGroupDraft}
-              onRemoveMember={handleRemoveMember}
-              onEditGroup={handleEditGroup}
-            />
-          ) : (
-            <AnnotationPanel
-              node={selectedNode}
-              disabled={readOnly}
-              onChange={patch => void handlePatch(patch)}
-              groupsOfNode={groupsOfNode}
-              onPickGroup={handlePickGroup}
-            />
+          {viewMode === 'disk' && (
+            <div className="fs-banner" role="status">
+              {t('banner.diskViewPrefix')}<strong>{t('banner.diskViewLabel')}</strong>{t('banner.diskViewSuffix')}
+            </div>
           )}
+
+          {externalChange && (
+            <div className="fs-banner" role="status">
+              {t('banner.externalChange')}
+              <button type="button" onClick={requestReload}>{t('banner.reload')}</button>
+            </div>
+          )}
+
+          {error && <div className="fs-banner" role="alert">{error}</div>}
+        </div>
+
+        <div className="fs-body">
+          <div className="fs-pane-tree" ref={treePaneRef} style={{ flexBasis: `${left.width}px` }}>
+            {tree && (
+              <SpecTree
+                data={tree.children ?? []}
+                selectedPaths={shown.selected}
+                searchTerm={searchTerm}
+                width={treeWidth}
+                height={treeHeight}
+                disabled={readOnly}
+                onSelect={handleSelect}
+                onExpand={path => void handleExpand(path)}
+                onMove={(from, toParent, isDir) => void handleMove(from, toParent, isDir)}
+                onGroupClick={handlePickGroup}
+                apiRef={treeApiRef}
+              />
+            )}
+          </div>
+
+          <div className="fs-splitter" role="separator" aria-orientation="vertical"
+            onPointerDown={left.onPointerDown} />
+
+          <div className="fs-pane-content">
+            <ContentPane node={contentNode} content={content} loading={contentLoading} />
+          </div>
+
+          <div className="fs-splitter" role="separator" aria-orientation="vertical"
+            onPointerDown={right.onPointerDown} />
+
+          <div className="fs-pane-panel" style={{ flexBasis: `${right.width}px` }}>
+            {shown.selected.length >= 2 ? (
+              <GroupPanel
+                members={shown.selected}
+                groups={groups}
+                // 两个 `?? null` 都是**语义精确**的压缩，不是把两种状态揉成一种：草稿与
+                // 绑定目标只可能存在于一轮编辑里（handleGroupDraft 一定先 takePending），
+                // 没有轮次就必然两者皆无。面板也不再有任何按"有没有轮次"分岔的本地状态——
+                // 那条按成员键重置草稿的规则连同它冻结的身份拷贝已经删掉了，草稿的生死
+                // 全在上面这份 pending 里决定。
+                currentGroupId={pending?.groupId ?? null}
+                draft={pending?.draft ?? null}
+                disabled={readOnly}
+                onSubmit={handleGroupSubmit}
+                onDraftChange={handleGroupDraft}
+                onRemoveMember={handleRemoveMember}
+                onEditGroup={handleEditGroup}
+              />
+            ) : (
+              <AnnotationPanel
+                node={selectedNode}
+                disabled={readOnly}
+                onChange={patch => void handlePatch(patch)}
+                groupsOfNode={groupsOfNode}
+                onPickGroup={handlePickGroup}
+              />
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </I18nContext.Provider>
   )
 }

@@ -95,6 +95,21 @@
 .fs-viewmode button + button { border-left: 1px solid var(--fs-border); }
 .fs-viewmode button.fs-viewmode-active { background: var(--fs-selected-bg); opacity: 1; font-weight: 600; }
 
+/* 顶栏右上角：界面语言开关。视觉上刻意照抄 .fs-viewmode 的分段控件形状（同一条
+   "当前态必须靠明显的底色差异表达"的判据），但另起一套类名而不是复用——这两个控件
+   语义不同、以后完全可能各自演化（比如语言开关将来要支持两种以上语言，分段控件就
+   得换成下拉），提前共用一份类名反而会绑住两边。 */
+.fs-lang-toggle {
+  display: flex; flex-shrink: 0; margin-left: auto; border: 1px solid var(--fs-border); border-radius: 4px;
+  overflow: hidden;
+}
+.fs-lang-toggle button {
+  border: none; background: transparent; padding: 4px 10px; font: inherit;
+  color: var(--fs-fg); opacity: 0.7; cursor: pointer;
+}
+.fs-lang-toggle button + button { border-left: 1px solid var(--fs-border); }
+.fs-lang-toggle button.fs-lang-toggle-active { background: var(--fs-selected-bg); opacity: 1; font-weight: 600; }
+
 /* 中间栏：只读文件预览。逐行高亮而非整段高亮是有意的取舍——行号与内容必须严格对齐，
    整段高亮产出的 HTML 会跨行嵌套 token，按 \n 拆行时标签会断。 */
 .fs-content { padding: 8px 12px; font-size: var(--fs-font-size); }
