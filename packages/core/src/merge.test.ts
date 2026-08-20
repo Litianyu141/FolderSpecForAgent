@@ -74,6 +74,64 @@ describe('merge', () => {
     expect(find(after, 'src/gone').origin).toBe('spec-only')
   })
 
+  // 复现 2026-08-20 的真 bug：用户右键新建的空契约目录（spec-only、没有声明任何子节点）
+  // 曾经拿到 children === undefined，而 react-arborist（Tree.tsx 的 childrenAccessor）
+  // 把 undefined 一律当叶子——叶子不能接收拖入的节点，于是"新建目录"这个功能建完之后
+  // 什么都放不进去。spec-only 目录在磁盘上根本不存在，它的子结构完全由 spec 决定，
+  // 没有声明子节点就是"确知为空"，不是"还没问过磁盘"——必须给一个真实的空数组。
+  it('spec-only 空目录 children 为 []（可被拖入），而不是 undefined', () => {
+    const actual = dir('r', '', [dir('src', 'src', [])])
+    const s = spec([sdir('src', [sdir('cases', [])])]) // src/cases 是 spec-only 空目录
+    const v = merge(actual, NO_GIT, s)
+    const cases = find(v, 'src/cases')
+    expect(cases.origin).toBe('spec-only')
+    expect(cases.children).toEqual([])
+  })
+
+  // 磁盘上真实存在的空目录早就是 children: []（fromActual 里 [] 在 JS 是真值，
+  // `if (children) v.children = children` 会命中）。这条用例钉住"两类空目录行为一致"
+  // 这个验收标准本身：spec-only 空目录与磁盘空目录必须拿到同样形状的 children。
+  it('spec-only 空目录与磁盘上真实存在的空目录，children 形状一致（都是 []）', () => {
+    const actual = dir('r', '', [dir('real-empty', 'real-empty', [])])
+    const s = spec([sdir('spec-only-empty', [])])
+    const v = merge(actual, NO_GIT, s)
+    expect(find(v, 'real-empty').children).toEqual([])
+    expect(find(v, 'spec-only-empty').children).toEqual([])
+  })
+
+  // 护栏用例，防止把上面的修复做过头。unscanned 与 spec-only 都可能出现
+  // "s.children.length === 0"，但语义完全不同：spec-only 的父目录**已经**扫描过磁盘，
+  // 这个节点在磁盘上确实不存在，children 因此是"确知空"；unscanned 恰恰相反——它是
+  // 父目录**还没**扫描到的地方提前物化出来的 spec 结构，我们根本不知道它在磁盘上是否
+  // 真的存在、更不知道它下面有什么。undefined 在这里必须保留"还没问过磁盘，点开再问"
+  // 这层含义（Tree.tsx 的 onToggle 正是靠 children === undefined 触发 onExpand 去真扫描）。
+  // 如果这条用例也被"修"成 []，UI 会误以为已经问过磁盘、答案是空，从而失去继续往下
+  // 问的机会——这正是本条要防的"修过头"。
+  it('unscanned 目录（父目录尚未扫描）的 children 仍是 undefined，不会被误判为"确知空"', () => {
+    const actual = dir('r', '', [dir('src', 'src')]) // src.children undefined —— 尚未扫描
+    const s = spec([sdir('src', [sdir('core', [])])]) // src/core 声明为空目录，但父目录未扫描
+    const v = merge(actual, NO_GIT, s)
+    const core = find(v, 'src/core')
+    expect(core.origin).toBe('unscanned')
+    expect(core.children).toBeUndefined()
+  })
+
+  // 把上面两条串成一条幂等链路：同一个节点，扫描前是 unscanned + undefined
+  // （不确知），扫描后磁盘证实它不存在 → 落地为 spec-only + []（确知空）。
+  // 这正是 merge 对"actual 侧缺失分支"必须幂等的具体体现：只作用于已加载的那部分树，
+  // 展开后用新的 actual 重新合成即可得到确定结果，不依赖任何遗留状态。
+  it('展开后重新合成：原本 unscanned 的空声明目录，磁盘扫描证实不存在后落地为 spec-only 且 children 变为 []', () => {
+    const s = spec([sdir('src', [sdir('core', [])])])
+    const before = merge(dir('r', '', [dir('src', 'src')]), NO_GIT, s) // src 尚未扫描
+    expect(find(before, 'src/core').origin).toBe('unscanned')
+    expect(find(before, 'src/core').children).toBeUndefined()
+
+    // 用户展开 src 触发真实扫描：磁盘上 src 存在但是空的（core 目录并不存在）
+    const after = merge(dir('r', '', [dir('src', 'src', [])]), NO_GIT, s)
+    expect(find(after, 'src/core').origin).toBe('spec-only')
+    expect(find(after, 'src/core').children).toEqual([])
+  })
+
   it('附上 git 状态', () => {
     const actual = dir('r', '', [file('a.txt', 'a.txt'), file('b.txt', 'b.txt')])
     const git: GitStates = new Map([['a.txt', 'modified'], ['b.txt', 'ignored']])

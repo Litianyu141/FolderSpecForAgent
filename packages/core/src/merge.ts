@@ -143,11 +143,37 @@ function fromSpec(
   applySpecFields(v, s)
   applyGroups(v, groupsByPath)
 
-  if (s.isDir && s.children.length > 0) {
-    const kids = s.children
-      .map(c => fromSpec(path, c, origin, git, hidden, groupsByPath))
-      .filter((c): c is ViewNode => c !== null)
-    v.children = sortView(kids)
+  if (s.isDir) {
+    if (s.children.length > 0) {
+      const kids = s.children
+        .map(c => fromSpec(path, c, origin, git, hidden, groupsByPath))
+        .filter((c): c is ViewNode => c !== null)
+      v.children = sortView(kids)
+    } else if (origin === 'spec-only') {
+      // spec-only 目录在磁盘上根本不存在——它能被物化出来，本身就是因为父目录已经
+      // 扫描过磁盘、扫描结果里没有这个名字（mergeChildren 的"补上 spec-only 遗留项"
+      // 那段）。它的子结构完全由 spec 决定，没有更高权威的磁盘可去问；s.children 为空
+      // 就是"确知这里没有子节点"，不是"还没来得及看"。必须给一个真实的空数组 []，
+      // 否则 react-arborist（childrenAccessor="children"，见 Tree.tsx）会把 undefined
+      // 一律当叶子——叶子既不能展开也不能接收拖入的节点，用户右键新建的空契约目录
+      // 建完之后就什么都放不进去（真实复现：2026-08-20 empty-dir-drop 报告，右键
+      // 「新建目录（仅契约）」建出 src/cases 后拖 examples/case-alpha 进去，落点被判成
+      // src 的同级而不是 cases 的子级）。磁盘上真实存在的空目录在 fromActual 里早就是
+      // children: []（[] 在 JS 里是真值，`if (children) v.children = children` 会命中）
+      // ——这里补齐的正是让 spec-only 空目录跟它拿到同一种"可放入"的行为，两类空目录
+      // 不该有可观测的差别（这也是 merge.test.ts 里专门验证"行为一致"那条用例的由来）。
+      v.children = []
+    }
+    // 剩下唯一会走到这里的分支是 origin === 'unscanned'：children 必须留 undefined，
+    // 绝不能套用上面 spec-only 的逻辑改成 []。unscanned 节点是父目录**还没**被磁盘
+    // 扫描到时、由 mergeChildren 提前把 spec 结构物化出来的（见上面"该目录尚未扫描"
+    // 分支），我们并不知道它在磁盘上是否真的存在、更不知道它下面有没有磁盘独有的
+    // 子节点——跟 spec-only 那种"父目录已扫描、明确查无此名"完全是两回事。undefined
+    // 必须保留"还没问过磁盘，展开时再去问"这层含义：Tree.tsx 的 onToggle 正是靠
+    // `n.children === undefined` 判断要不要调用 onExpand 触发真实扫描；一旦这里也
+    // 给了 []，UI 会误以为已经问过磁盘、答案就是空，从而永远失去继续往下问的机会——
+    // 展开后重新 merge 时它才会按磁盘结果被重判为 both 或 spec-only，那时才谈得上
+    // "确知"（见 merge.test.ts 里把这条链路串起来的幂等用例）。
   }
   return v
 }
