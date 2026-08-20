@@ -14,7 +14,7 @@ FolderSpec 会产出一个 `.folderspec.md` 文件：既能被人读，也能被
 **它是只读工具**——除了这一个文件，它不写磁盘上的任何东西，不执行 `mv` / `mkdir` / `rm`。
 真正改动仓库的是 Agent，FolderSpec 只负责把"应该长成什么样"说清楚。
 
-![FolderSpec 的工作方式：Agent 把文件散得到处都是 → 你声明应有的结构 → Agent 照着契约去搬](docs/media/hero.png)
+![FolderSpec 的工作方式：Agent 把文件散得到处都是 → 你声明应有的结构 → Agent 照着契约去搬](docs/media/folderspec-intent-flow-v2.png)
 
 ---
 
@@ -55,9 +55,6 @@ code --install-extension folderspec-vscode-0.6.0.vsix
 
 或者在 VSCode 里：`Ctrl+Shift+P` → **Extensions: Install from VSIX…** → 选那个文件。
 装完重载窗口（`Developer: Reload Window`）即可。
-
-> 尚未上架 VS Code 应用市场，所以搜不到，只能用 `.vsix` 安装；也因此**不会自动更新**，
-> 换版本要重新下载安装一次。
 
 ### VSCode 扩展怎么用
 
