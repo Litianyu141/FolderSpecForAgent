@@ -1753,6 +1753,16 @@ describe('App', () => {
       const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
       await waitFor(() => screen.getByLabelText('工作区路径'))
 
+      // 切视图前先提交一次编辑，让 dirty 变成 true——保存按钮是
+      // `disabled={disabled || !dirty}`，若切视图前 dirty 仍是初始的 false，
+      // 下面对保存按钮的断言单靠 `!dirty` 那一半就恒真，测不出 `disabled`
+      // （也就是 viewMode === 'disk'）那一半是否真的在起作用。
+      clickFirstRow(container)
+      await waitFor(() => screen.getByLabelText('注释'))
+      fireEvent.change(screen.getByLabelText('注释'), { target: { value: '核心源码' } })
+      fireEvent.blur(screen.getByLabelText('注释'))
+      await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+
       fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
       await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
 
@@ -1760,6 +1770,9 @@ describe('App', () => {
       // 用 role="status" 定位而不是文字：顶栏的切换按钮本身文字也含"原始结构"，
       // 用文字找会撞上"多个元素匹配"（已实测：改用 getByText 前先见过这条报错）。
       await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/原始结构/))
+      // dirty 此刻仍是 true（switchViewMode 不碰它）；保存按钮被禁用必须是
+      // viewMode === 'disk' 起的作用，不是靠 !dirty 侥幸为真——这才是本用例
+      // 真正要守住的那句断言。
       expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
 
       clickFirstRow(container)
@@ -1951,10 +1964,18 @@ describe('App', () => {
       fireEvent.blur(screen.getByLabelText('注释'))
       await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false))
 
+      // 撤销一次，把 canRedo 也变成 true（桩的 spec/undo 回 canRedo: true）——
+      // 不然下面对"重做"按钮的断言在 open() 之前本来就是 false（初始态从未启用过），
+      // open() 有没有把它复位跟这句断言毫无关系，是一句恒真断言，测不出任何东西。
+      fireEvent.click(screen.getByText('撤销'))
+      await waitFor(() => expect((screen.getByText('重做') as HTMLButtonElement).disabled).toBe(false))
+
       fireEvent.click(screen.getByText('载入'))   // 重新打开当前根
 
       await waitFor(() => expect(bridge.calls.filter(c => c.method === 'workspace/open').length).toBe(2))
       await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true))
+      // 此刻 canRedo 承重：open() 之前它确实是 true（上面已断言过），这里变回
+      // true 才真正证明 open() 把它复位了，而不是从头到尾都没变过。
       expect((screen.getByText('重做') as HTMLButtonElement).disabled).toBe(true)
     })
 
