@@ -1,6 +1,6 @@
 # The `.folderspec.md` format
 
-[← Back to README](../README.md)
+[← Back to README](../README.md) · [中文](FORMAT.zh-CN.md)
 
 Reference for the file FolderSpec produces: what each section means, the exact line
 syntax, and the limitations you should know about before relying on it.

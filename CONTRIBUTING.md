@@ -1,6 +1,6 @@
 # Contributing
 
-[← Back to README](README.md)
+[← Back to README](README.md) · [中文](CONTRIBUTING.zh-CN.md)
 
 
 Requirements: Node ≥ 20 and pnpm.
