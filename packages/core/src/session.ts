@@ -311,6 +311,13 @@ export class Session {
     this.assertWritable()
     assertRepresentablePath(params.from)
     assertValidParentPath(params.toParent)
+    // 与 createNode 共用同一道闸门：toParent 是不是"能安全新增一条声明的地方"，
+    // 对 createNode 和 move 而言是同一个问题（都是往 toParent/parentPath 下面挂一条
+    // 新的 spec 声明），两条写路径此前给出相反答案——createNode 会拒绝把节点声明
+    // 挂到磁盘上的文件下面，move 却一直放行，是同一条不变量的两个不同实现，界面
+    // 因此在说谎。见 assertCreatableParent 上方注释里对 hidden / 懒加载边界两条
+    // 旁路检查的完整推导。
+    this.assertCreatableParent(params.toParent)
     // 快照必须盖住下面对 hidden 的两处改动，不能只盖 spec——见 Snapshot 的注释
     const before = this.captureState()
     this.spec = moveNode(this.spec, params.from, params.toParent, params.isDir)

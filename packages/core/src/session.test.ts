@@ -785,6 +785,30 @@ describe('Session.createNode 与 hidden（旁路 3）', () => {
   })
 })
 
+// 旁路 4（最该修的一条）：move() 的 toParent 缺同款检查。createNode 已经在
+// assertCreatableParent 里拒绝"父级在磁盘上是文件"，但 move() 一直没走这道闸门——
+// 同一个不变量两条写路径给出相反答案，就是界面在说谎。复现上一轮复审的原始场景：
+// 把带注释的节点拖到磁盘上真实存在的文件下面，move 成功、落盘写进一行 UI 选不中
+// 的声明，原节点自己的注释也从树上消失（内容还在文件里，只是永久够不着）。
+describe('Session.move 的 toParent 磁盘冲突检查（旁路 4）', () => {
+  // 关键夹具：toParent 必须是磁盘上真实存在的文件（README.md，beforeEach 建的），
+  // 不能用虚构路径——否则"toParent 是文件"这条判断没有区分力（上一轮复审点过的坑）。
+  it('toParent 是磁盘上真实存在的文件时拒绝，与 createNode 走同一条判据', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '入口，别丢' })
+    const beforeRaw = s.raw()
+    expect(() => s.move({ from: 'src', toParent: 'README.md', isDir: true })).toThrow('README.md')
+    // 被拒绝的调用不该产生任何副作用：原节点的注释仍在原地，raw() 一个字节都没变
+    expect(find(s.tree(), 'src')?.annotation).toBe('入口，别丢')
+    expect(s.raw()).toBe(beforeRaw)
+  })
+
+  it('对照：toParent 是磁盘上真实存在的目录时不受影响', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.move({ from: 'README.md', toParent: 'src', isDir: false })).not.toThrow()
+  })
+})
+
 describe('Session.removeNode（撤销节点声明——只影响契约，不碰磁盘）', () => {
   it('移除一个叶子声明，raw() 里不再出现它的注释', async () => {
     const s = new Session(root); await s.open()

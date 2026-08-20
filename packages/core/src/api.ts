@@ -133,6 +133,12 @@ export interface Api {
   'tree/get': { params: Record<string, never>; result: { tree: ViewNode } }
   'tree/expand': { params: { path: string }; result: { tree: ViewNode } }
   'spec/annotate': { params: AnnotateParams; result: EditResult }
+  /**
+   * toParent 与 spec/createNode 的 parentPath 走同一道"能不能在这里新增声明"的检查
+   * （Session.assertCreatableParent）：拒绝磁盘上是文件、本次会话刚被拖走（hidden）、
+   * 或落在懒加载边界之下尚未扫描这三种情形——否则 move 会成功、落盘也确实写进这条
+   * 声明，但树上永远看不见，等于用户拖完之后连自己刚拖过去的节点都找不到。
+   */
   'spec/move': { params: MoveParams; result: EditResult }
   /**
    * 在契约里声明一个尚不存在的目录/文件——"这里应该有"，不是"去创建它"（真正建它的是
