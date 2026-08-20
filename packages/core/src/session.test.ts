@@ -1587,3 +1587,40 @@ describe('Session.markSaved', () => {
     expect(s.isDirty()).toBe(false)
   })
 })
+
+
+// ============================================================================
+// 终审红线修复轮（甲 / 乙 / 丙）。三条收敛到同一句话：一次点击不该让人写下的内容
+// 消失，"文件里还在、界面上够不着"与"真的被删掉"在用户那边是同一件事。
+// ============================================================================
+
+// 甲：moveNode 的 mergeInto 用源节点的字段无声覆盖目标同名节点。完整推导见
+// spec-edit.ts 的 assertNoMergeConflict；这里从 Session 这一层端到端钉一次——
+// 纯函数那几条用例证明"判据对不对"，这条证明"这条判据真的长在用户点得到的那条
+// 写路径上"，且失败的调用不留任何残迹。
+describe('Session.move 红线：合并到同名节点时不覆盖目标已有的注释（甲）', () => {
+  it('把带注释的同名文件拖进已有同名注释的目录时拒绝，raw() 一个字节都不变', async () => {
+    await fs.mkdir(nodePath.join(root, 'old'), { recursive: true })
+    await fs.writeFile(nodePath.join(root, 'old/utils.ts'), '')
+    await fs.writeFile(nodePath.join(root, 'src/utils.ts'), '')
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/utils.ts', isDir: false, annotation: '共享工具函数，勿删' })
+    s.annotate({ path: 'old/utils.ts', isDir: false, annotation: '旧的' })
+    const beforeRaw = s.raw()
+
+    expect(() => s.move({ from: 'old/utils.ts', toParent: 'src', isDir: false }))
+      .toThrow('共享工具函数，勿删')
+
+    // 只看"抛没抛错"不够：抛错之后契约、树、hidden 都必须原封不动。
+    expect(s.raw()).toBe(beforeRaw)
+    expect(find(s.tree(), 'src/utils.ts')?.annotation).toBe('共享工具函数，勿删')
+    expect(find(s.tree(), 'old/utils.ts')?.annotation).toBe('旧的')
+
+    // 失败的调用不该往撤销栈里塞一条什么都没变的记录：撤销一次应当退回到"第二次
+    // annotate 之前"，而不是退回到"那次失败的 move 之前"（后者看起来什么也没发生）。
+    const u = s.undo()
+    expect(find(u.tree, 'old/utils.ts')?.annotation).toBeUndefined()
+    expect(find(u.tree, 'src/utils.ts')?.annotation).toBe('共享工具函数，勿删')
+  })
+})
+

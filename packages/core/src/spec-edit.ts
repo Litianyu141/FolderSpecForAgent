@@ -131,6 +131,15 @@ export function createNode(spec: Spec, parentPath: string, name: string, isDir: 
   return { spec: next, path }
 }
 
+/**
+ * 把一个节点（连同它的子树）在契约里挪到另一个父级下——"我声明它应该在那儿"，
+ * 不是"去把它搬过去"（真正动磁盘的是随后读契约的 Agent，见 CLAUDE.md 铁律 1、2）。
+ *
+ * 红线（与 removeNode 的子树保护同源，见下面 assertNoMergeConflict）：目标层已经
+ * 有同名节点时要做一次合并，合并绝不能用源节点的内容把目标已经写下的内容顶掉。
+ * 两条写路径（move / removeNode）对"这次操作会不会弄丢人写的注释"必须给出同一个
+ * 答案：都是**在输入边界拒绝**，都不提供"强制覆盖 / 强制级联"的旁路。
+ */
 export function moveNode(spec: Spec, from: string, toParent: string, isDir: boolean): Spec {
   const fromSegs = toSegments(from)
   if (fromSegs.length === 0) throw new Error('不能移动根节点')
@@ -155,8 +164,14 @@ export function moveNode(spec: Spec, from: string, toParent: string, isDir: bool
   // 出来的节点，工具没有办法分辨）。
   const list = toSegs.length === 0 ? next.nodes : ensure(next.nodes, toSegs, true).children
   const existing = list.find(n => n.name === detached.name)
-  if (existing) mergeInto(existing, detached)
-  else list.push(detached)
+  if (existing) {
+    // 抛在这里而不是函数开头，靠的是 next 是一份 structuredClone：上面 detach()/
+    // ensure() 的就地改动全部发生在这个副本上，抛错时调用方手里的 spec 一个字节
+    // 都没被碰过（removeNode 的子树保护也是同一个写法）。为了把冲突检查提到最前面
+    // 而把 detach 的查找逻辑再实现一遍，只会多出第二份"源节点是谁"的判据。
+    assertNoMergeConflict(existing, detached, toSegs.length === 0 ? detached.name : `${toSegs.join('/')}/${detached.name}`)
+    mergeInto(existing, detached)
+  } else list.push(detached)
 
   const movedName = fromSegs[fromSegs.length - 1]
   const movedTo = toSegs.length === 0 ? movedName : `${toSegs.join('/')}/${movedName}`
@@ -281,6 +296,60 @@ function detach(nodes: SpecNode[], segs: string[]): SpecNode | null {
   const idx = list.findIndex(n => n.name === segs[segs.length - 1])
   if (idx === -1) return null
   return list.splice(idx, 1)[0]
+}
+
+/** 四个"用户内容"字段在报错文案里的中文叫法。与 hasContent 判定的是同一组字段——
+ *  「什么算人写下的内容」这件事在本文件里只有一份定义，move 与 removeNode 共用。 */
+const CONTENT_FIELD_LABELS: ReadonlyArray<{ key: 'annotation' | 'role' | 'template' | 'severity'; label: string }> = [
+  { key: 'annotation', label: '注释' },
+  { key: 'role', label: '语义角色' },
+  { key: 'template', label: '模板' },
+  { key: 'severity', label: '严重级别' },
+]
+
+/**
+ * 红线闸门：mergeInto 会用 incoming 的内容字段覆盖 target 的同名字段，这一步不能
+ * 静默发生。
+ *
+ * 为什么是"拒绝"而不是"把两边并起来"：role/template/severity 是单值标识符与枚举，
+ * 根本不存在"并"这个操作——只能二选一，而"替调用方悄悄选一个"正是本项目一再拒绝
+ * 的做法（见 session.ts 顶部"悄悄改掉一个标识符比报错更糟"）。annotation 虽然能
+ * 字符串拼接，但拼出来的是"共享工具函数，勿删 旧的"这种两句互相矛盾的话——契约是
+ * 给 Agent 读的长期不变量，一条自相矛盾的声明比报错有害得多。四个字段里三个没有
+ * 合并语义，第四个合并出来是垃圾，于是唯一自洽的答案就是与 removeNode 对齐：拒绝，
+ * 让用户自己先决定保留哪一份。
+ *
+ * 判据只认"两侧都非空且不相同"：
+ *   - 目标侧为空 → 合并只是把内容填进一个空位，什么都没丢，必须放行（这是绝大多数
+ *     真实拖拽的形状，收得再紧一点就会把正常操作挡在门外）；
+ *   - 两侧逐字相同 → 覆盖与不覆盖结果一模一样，同样没有内容会消失；
+ *   - 源侧为空 → mergeInto 里那几个 `if (incoming.x)` 本来就不会动目标，天然安全。
+ *
+ * 递归：mergeInto 自己是递归的，被拖过去的子树里每一个同名后代都会各自合并一次，
+ * 冲突可能藏在任意一层——只查顶层等于只堵住最浅的那一格。
+ */
+function assertNoMergeConflict(target: SpecNode, incoming: SpecNode, path: string): void {
+  const conflicts: string[] = []
+  collectMergeConflicts(target, incoming, path, conflicts)
+  if (conflicts.length === 0) return
+  throw new Error(
+    `目标位置已经有同名节点，这次移动会覆盖掉它已经写下的内容：${conflicts.join('；')}。` +
+    '请先决定保留哪一份（把其中一侧清空，或把两侧改成相同内容），再重试这次移动',
+  )
+}
+
+function collectMergeConflicts(target: SpecNode, incoming: SpecNode, path: string, out: string[]): void {
+  for (const { key, label } of CONTENT_FIELD_LABELS) {
+    const kept = target[key]
+    const coming = incoming[key]
+    if (kept && coming && kept !== coming) {
+      out.push(`\`${path}\` 的${label}「${kept}」会被「${coming}」覆盖`)
+    }
+  }
+  for (const c of incoming.children) {
+    const t = target.children.find(x => x.name === c.name)
+    if (t) collectMergeConflicts(t, c, `${path}/${c.name}`, out)
+  }
 }
 
 function mergeInto(target: SpecNode, incoming: SpecNode): void {

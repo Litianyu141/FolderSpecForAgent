@@ -129,8 +129,13 @@ describe('moveNode', () => {
     expect(find(s.nodes, 'src')).not.toBeNull()
   })
 
-  it('目标下已有同名节点时合并，被移动方的字段优先', () => {
-    let s = setAnnotation(emptySpec(), 'src/cases/foo', true, { annotation: '旧的', role: 'keep-me' })
+  // 这条用例的期望值经过一次修订。它原来叫「目标下已有同名节点时合并，被移动方的字段
+  // 优先」，断言 annotation 从『旧的』被改写成『新的』——钉住的恰恰是终审查出的那条
+  // 红线：一次拖拽把目标已经写下的注释无声覆盖掉。同名字段两边都有内容且不相同时
+  // moveNode 现在直接拒绝（推导见它上方的注释），所以这条改成钉「互不相犯的字段照常
+  // 合并」：目标只有 role、源只有 annotation，合并结果两个都在，一个都没丢。
+  it('目标下已有同名节点时合并——字段互不相犯时两边的内容都保留', () => {
+    let s = setAnnotation(emptySpec(), 'src/cases/foo', true, { role: 'keep-me' })
     s = setAnnotation(s, 'examples/foo', true, { annotation: '新的' })
     s = moveNode(s, 'examples/foo', 'src/cases', true)
     expect(find(s.nodes, 'src/cases/foo')?.annotation).toBe('新的')
@@ -152,6 +157,84 @@ describe('moveNode', () => {
   it('拒绝把节点移进它自己的子树', () => {
     const s = setAnnotation(emptySpec(), 'a/b', true, { annotation: 'x' })
     expect(() => moveNode(s, 'a', 'a/b', true)).toThrow('不能把节点移动到它自己的子树下')
+  })
+})
+
+/**
+ * 红线（与 removeNode 那条同源）：moveNode 落到目标层已有的同名节点上时，绝不能用
+ * 源节点的内容无声覆盖目标已经写下的内容。本工具唯一能造成的伤害就是弄丢人写的
+ * 注释；removeNode 为「一次点击丢掉多条已写下的声明」专门加了拒绝级联的保护，move
+ * 是同一份文件里同一条危险的另一条写路径，必须给出同一个答案。
+ *
+ * 判据故意收得很窄——只有**两侧同一字段都非空且不相同**才叫冲突：目标空、源有值
+ * （目标什么都没丢）与两侧逐字相同（覆盖不覆盖结果一样）都必须继续放行，否则最常见
+ * 的那种拖拽会被一道无谓的报错挡住。
+ */
+describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的内容', () => {
+  // 终审给出的原始复现：契约里 src/utils.ts 写着「共享工具函数，勿删」，把 old/utils.ts
+  // （注释「旧的」）拖进 src——最自然不过的一次拖拽，旧实现直接把前者顶掉。
+  it('两侧 annotation 都有内容且不同时拒绝，且原 spec 一个字节都不变', () => {
+    let s = setAnnotation(emptySpec(), 'src/utils.ts', false, { annotation: '共享工具函数，勿删' })
+    s = setAnnotation(s, 'old/utils.ts', false, { annotation: '旧的' })
+
+    expect(() => moveNode(s, 'old/utils.ts', 'src', false)).toThrow('共享工具函数，勿删')
+
+    // 只看"抛没抛错"不够：抛错之后调用方手里的那份 spec 必须原封不动——
+    // 目标的注释还在，源节点也没有被 detach 走。
+    expect(find(s.nodes, 'src/utils.ts')?.annotation).toBe('共享工具函数，勿删')
+    expect(find(s.nodes, 'old/utils.ts')?.annotation).toBe('旧的')
+  })
+
+  it('role 冲突同样拦下', () => {
+    let s = setAnnotation(emptySpec(), 'src/utils.ts', false, { role: 'shared' })
+    s = setAnnotation(s, 'old/utils.ts', false, { role: 'legacy' })
+    expect(() => moveNode(s, 'old/utils.ts', 'src', false)).toThrow('语义角色')
+    expect(find(s.nodes, 'src/utils.ts')?.role).toBe('shared')
+  })
+
+  it('template 冲突同样拦下', () => {
+    let s = setAnnotation(emptySpec(), 'src/cases', true, { template: 'case-dir' })
+    s = setAnnotation(s, 'old/cases', true, { template: 'legacy-dir' })
+    expect(() => moveNode(s, 'old/cases', 'src', true)).toThrow('模板')
+    expect(find(s.nodes, 'src/cases')?.template).toBe('case-dir')
+  })
+
+  it('severity 冲突同样拦下', () => {
+    let s = setAnnotation(emptySpec(), 'src/cases', true, { severity: 'error' })
+    s = setAnnotation(s, 'old/cases', true, { severity: 'warning' })
+    expect(() => moveNode(s, 'old/cases', 'src', true)).toThrow('严重级别')
+    expect(find(s.nodes, 'src/cases')?.severity).toBe('error')
+  })
+
+  // 只查顶层是不够的：mergeInto 是递归的，被拖过去的子树里每一个同名后代都会
+  // 与目标侧的同名后代合并一次，冲突可能藏在任意一层。
+  it('冲突藏在子孙层同样拦下——不能只查被移动的那个节点自己', () => {
+    let s = setAnnotation(emptySpec(), 'src/cases/input.json', false, { annotation: '目标侧的关键说明' })
+    s = setAnnotation(s, 'old/cases/input.json', false, { annotation: '源侧的说明' })
+
+    expect(() => moveNode(s, 'old/cases', 'src', true)).toThrow('目标侧的关键说明')
+    expect(find(s.nodes, 'src/cases/input.json')?.annotation).toBe('目标侧的关键说明')
+  })
+
+  it('对照：目标侧该字段为空时照常合并，什么都没丢', () => {
+    let s = setAnnotation(emptySpec(), 'src/utils.ts', false, { role: 'shared' })
+    s = setAnnotation(s, 'old/utils.ts', false, { annotation: '旧的' })
+    const after = moveNode(s, 'old/utils.ts', 'src', false)
+    expect(find(after.nodes, 'src/utils.ts')?.annotation).toBe('旧的')
+    expect(find(after.nodes, 'src/utils.ts')?.role).toBe('shared')
+  })
+
+  it('对照：两侧逐字相同的字段不算冲突——覆盖与否结果一样，没有内容会消失', () => {
+    let s = setAnnotation(emptySpec(), 'src/utils.ts', false, { annotation: '同一句话' })
+    s = setAnnotation(s, 'old/utils.ts', false, { annotation: '同一句话' })
+    const after = moveNode(s, 'old/utils.ts', 'src', false)
+    expect(find(after.nodes, 'src/utils.ts')?.annotation).toBe('同一句话')
+  })
+
+  it('对照：目标层压根没有同名节点时（最常见的拖拽）不受影响', () => {
+    const s = setAnnotation(emptySpec(), 'old/utils.ts', false, { annotation: '旧的' })
+    const after = moveNode(s, 'old/utils.ts', 'src', false)
+    expect(find(after.nodes, 'src/utils.ts')?.annotation).toBe('旧的')
   })
 })
 
@@ -501,6 +584,17 @@ describe('removeNode 红线：子树里有用户内容时拒绝级联删除', ()
     expect(child?.annotation).toBeUndefined()
     expect(child?.role).toBeUndefined()
     expect(child?.severity).toBeUndefined()
+
+    expect(() => removeNode(s, 'src')).toThrow()
+  })
+
+  it('只有 severity（没有 annotation/role/template）的子孙同样能拦下', () => {
+    let s = emptySpec()
+    ;({ spec: s } = createNode(s, '', 'src', true))
+    s = setAnnotation(s, 'src/cases', false, { severity: 'warning' })
+    const child = find(s.nodes, 'src/cases')
+    expect(child?.severity).toBe('warning')
+    expect(child?.template).toBeUndefined()
 
     expect(() => removeNode(s, 'src')).toThrow()
   })
