@@ -31,9 +31,13 @@ function indexGroups(groups: readonly Group[]): Map<string, string[]> {
   return map
 }
 
-// [...ids] 是必要的：直接赋值会让多个 ViewNode 共享同一个数组引用，
-// 该数组来自本次 merge() 内部的 groupsByPath 索引；一旦下游（UI）就地修改
-// 某个节点的 groups，就可能连带影响其他持有同一引用的节点。
+// [...ids] 是**为将来留的余量，不是在防一个当前存在的缺陷**——别把它读成后者。
+// 当前调用里不可能共享：groupsByPath 的 key 就是 path，而 merge 对每条路径只物化一个
+// ViewNode（fromActual / fromSpec 各生成一次），于是每个 list 至多被读一次。去掉这层拷贝
+// 今天一条用例都判不到（已实测：全量 core 245 条照样绿），因为构造不出"两个 ViewNode 同 path"。
+// 它守的是将来那一步：一旦有人把 groupsByPath 提到 merge 之外跨调用缓存，直接赋值就会让
+// 多次 merge 产出的节点共享同一个数组，下游（UI）就地改一处便串到另一处。
+// 结论：留着，但别为它写一条"证明它有用"的用例——那条用例只能是假的。
 function applyGroups(v: ViewNode, groupsByPath: Map<string, string[]>): void {
   const ids = groupsByPath.get(v.path)
   if (ids && ids.length > 0) v.groups = [...ids]

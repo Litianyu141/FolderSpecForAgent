@@ -166,15 +166,25 @@ describe('merge 的分组派生', () => {
     expect(groups[0].members).toEqual(['a.ts'])
   })
 
-  it('不同节点的 groups 数组互不共享引用，改一处不会串到另一处', () => {
+  // 这条钉的是 merge **输出契约**的一面：ViewNode.groups 归该节点私有，下游（UI）可以就地改。
+  //
+  // 它的前身叫"不同节点的 groups 数组互不共享引用"，夹具里 a.ts 属 g1、b.ts 属 g2 ——
+  // 两条 path、两份互不相干的内容，indexGroups 本来就各建一个新数组，那条用例因此**空转**：
+  // 删掉 applyGroups 里的 [...ids]，core 全量 245 条照样全绿（已实测）。名字听着在替那层
+  // 拷贝担保，实则什么也没证明，是本项目第 7 次同类问题。
+  //
+  // 现在两条 path 归属同一个分组，内容相同——这才踩到真正的危险区：把"内容相同的 id 列表
+  // 折叠成同一个引用"是 indexGroups 上一个看着无害的优化，一旦它和"去掉 [...ids]"同时发生，
+  // 这条就红。诚实说明它的边界：**单点变异仍判不红**（两处各自留一处拷贝就够安全），
+  // 它守的是这一对改动的组合，以及 merge 交出去的那条契约本身。
+  it('内容相同的两条路径各自持有独立的 groups 数组，改一处不会串到另一处', () => {
     const actual = dir('r', '', [file('a.ts', 'a.ts'), file('b.ts', 'b.ts')])
     const v = merge(actual, NO_GIT, specG([], [
-      { id: 'g1', members: ['a.ts'], text: 't1' },
-      { id: 'g2', members: ['b.ts'], text: 't2' },
+      { id: 'g1', members: ['a.ts', 'b.ts'], text: 't1' },
     ]))
     const a = find(v, 'a.ts')
     const b = find(v, 'b.ts')
     a.groups!.push('intruder')
-    expect(b.groups).toEqual(['g2'])
+    expect(b.groups).toEqual(['g1'])
   })
 })
