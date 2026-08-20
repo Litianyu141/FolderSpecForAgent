@@ -15,7 +15,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('folderspec.open', async () => {
       const folder = vscode.workspace.workspaceFolders?.[0]
       if (!folder) {
-        void vscode.window.showErrorMessage('FolderSpec：请先打开一个工作区文件夹。')
+        void vscode.window.showErrorMessage('FolderSpec: open a workspace folder first.')
         return
       }
       const uri = vscode.Uri.joinPath(folder.uri, SPEC_FILENAME)
@@ -29,11 +29,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (!exists) {
         const choice = await vscode.window.showInformationMessage(
-          `本工作区还没有 ${SPEC_FILENAME}，是否创建？`,
+          `This workspace has no ${SPEC_FILENAME} yet. Create one?`,
           { modal: true },
-          '创建',
+          'Create',
         )
-        if (choice !== '创建') return
+        if (choice !== 'Create') return
         await vscode.workspace.fs.writeFile(
           uri,
           new TextEncoder().encode(serializeSpec(emptySpec())),

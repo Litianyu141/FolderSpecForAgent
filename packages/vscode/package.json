@@ -23,7 +23,7 @@
   "bugs": {
     "url": "https://github.com/Litianyu141/FolderSpecForAgent/issues"
   },
-  "version": "0.6.0",
+  "version": "0.6.1",
   "icon": "icon.png",
   "publisher": "folderspec",
   "engines": {
@@ -41,7 +41,7 @@
     "customEditors": [
       {
         "viewType": "folderspec.editor",
-        "displayName": "FolderSpec 结构契约",
+        "displayName": "FolderSpec Structure Contract",
         "selector": [
           {
             "filenamePattern": ".folderspec.md"
@@ -53,7 +53,7 @@
     "commands": [
       {
         "command": "folderspec.open",
-        "title": "FolderSpec：打开结构契约"
+        "title": "FolderSpec: Open structure contract"
       }
     ]
   },

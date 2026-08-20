@@ -70,8 +70,7 @@ There are two ways in, depending on whether the contract exists yet.
 **Starting from scratch — via the command palette:**
 
 1. Press `Ctrl+Shift+P` (`⌘⇧P` on macOS) to open the command palette
-2. Type **FolderSpec** and pick `FolderSpec：打开结构契约`
-   (the extension's command titles are not localized yet — "Open structure contract")
+2. Type **FolderSpec** and pick `FolderSpec: Open structure contract`
 3. If the workspace has no `.folderspec.md` yet, a dialog asks whether to create one.
    Confirm, and the visual editor opens on the new file.
 
@@ -79,7 +78,7 @@ There are two ways in, depending on whether the contract exists yet.
 
 Just open the `.folderspec.md` file — FolderSpec is registered as its default editor,
 so it comes up instead of the plain-text view. To choose explicitly, right-click the
-file → **Open With…** → **FolderSpec 结构契约**. The same menu is how you get back to
+file → **Open With…** → **FolderSpec Structure Contract**. The same menu is how you get back to
 the raw text: pick **Text Editor** there.
 
 Saving goes through VSCode's `WorkspaceEdit`, so the dirty marker, `Ctrl+S`, and the

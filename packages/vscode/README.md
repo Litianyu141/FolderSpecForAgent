@@ -23,8 +23,7 @@ tool which imports, build configs, and tests a move would drag along.
 
 ## Getting started
 
-1. Open the command palette (`Ctrl+Shift+P`) and run **FolderSpec：打开结构契约**
-   (the extension's command title is not localized)
+1. Open the command palette (`Ctrl+Shift+P`) and run **FolderSpec: Open structure contract**
 2. Left pane: the repository tree. Middle: a preview of the selected file. Right: the annotation editor.
 3. Click a node and write an annotation. `Shift` / `Ctrl` select several nodes at once to give
    them one shared annotation.
