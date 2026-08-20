@@ -1,0 +1,69 @@
+# 推一个 v* 标签就发布一次：跑全量测试 → 打 .vsix → 建 Release 并把包挂上去。
+#
+# 为什么在 CI 里重新构建而不是上传本地打好的包：本地产物受开发机上残留状态影响
+# （这个仓库就吃过一次亏——copy-ui.mjs 不清目录，历次构建的旧 bundle 全被打进了 .vsix）。
+# 从干净的 checkout 重建，产物才和标签指向的源码严格对应。
+#
+# 用 runner 自带的 gh 而不是第三方 action：少一个供应链依赖。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write        # 建 Release 需要写权限，GITHUB_TOKEN 默认只读
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20          # 与 ci.yml 保持一致（已在 CI 里验证可行）
+          cache: pnpm
+
+      # 标签与 package.json 的版本必须一致，否则发出去的包会说谎：
+      # 文件名和 Release 标题写着 v0.6.0，装进 VSCode 里却显示 0.5.0，
+      # 用户"更新"之后看不出到底装没装上。宁可在这里失败。
+      - name: 核对标签与 package.json 的版本
+        run: |
+          PKG=$(node -p "require('./packages/vscode/package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "::error::标签 $GITHUB_REF_NAME 与 packages/vscode/package.json 的版本 $PKG 不一致"
+            exit 1
+          fi
+          echo "版本一致：$PKG"
+
+      - run: pnpm install --frozen-lockfile
+
+      # build 必须排在 test 之前：@folderspec/core 的 exports 指向 dist/ 而不是 src，
+      # packages/cli 的测试运行时真的 import 了它（server.ts 用 Session），
+      # core 未 build 时 cli 测试会直接失败。ci.yml 靠先跑 typecheck（内含 build core）
+      # 绕开这一点，这里直接 build 更直白。
+      - run: pnpm build
+
+      # 测试是发布的闸门：标签一旦发出去就有人装，红的不能发
+      - run: pnpm test
+      - run: pnpm typecheck
+
+      # --no-dependencies：这是 pnpm workspace，扩展已由 esbuild 打包成单文件，
+      # 依赖全在 devDependencies 里，不需要 vsce 再去解析 node_modules
+      - name: 打包 .vsix
+        run: pnpm -C packages/vscode exec vsce package --no-dependencies --out "../../folderspec-vscode-${GITHUB_REF_NAME#v}.vsix"
+
+      - name: 建 Release 并挂上 .vsix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "folderspec-vscode-${GITHUB_REF_NAME#v}.vsix" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
