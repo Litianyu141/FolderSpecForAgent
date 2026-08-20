@@ -63,14 +63,14 @@ describe('parseStructure', () => {
     const r = parseStructure(L('- `src/`', '   - `core/`'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0]).toEqual({ line: 2, message: '缩进必须是 2 的倍数，实际 3 个空格' })
+    expect(r.errors[0]).toMatchObject({ line: 2, code: 'parse.indentNotMultipleOfTwo', params: { indent: 3 } })
   })
 
   it('缩进跳级报行号', () => {
     const r = parseStructure(L('- `src/`', '    - `deep/`'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('缩进跳级')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.indentSkipsLevel', params: { prev: 0, depth: 2 } })
     expect(r.errors[0].line).toBe(2)
   })
 
@@ -78,35 +78,35 @@ describe('parseStructure', () => {
     const r = parseStructure(L('- `src/` `[planned]` — 源码'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0]).toEqual({ line: 1, message: '未知标签 [planned]，只允许 role/template/severity' })
+    expect(r.errors[0]).toMatchObject({ line: 1, code: 'parse.unknownTag', params: { tag: 'planned' } })
   })
 
   it('非法 severity 报行号', () => {
     const r = parseStructure(L('- `src/` `[severity:fatal]`'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('severity 只能是 error/warning/advisory')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.severityInvalid', params: { value: 'fatal' } })
   })
 
   it('名称未用反引号包裹时报错', () => {
     const r = parseStructure(L('- src/ — 源码'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('节点名必须用反引号包裹')
+    expect(r.errors[0].code).toBe('parse.nameBackticksRequired')
   })
 
   it('文件节点下挂子节点时报错', () => {
     const r = parseStructure(L('- `a.txt`', '  - `b.txt`'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('不是目录，不能有子项')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.parentNotDir', params: { name: 'a.txt' } })
   })
 
   it('分隔符不是 " — " 时报错', () => {
     const r = parseStructure(L('- `src/`: 源码'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('注释前必须是 " — "')
+    expect(r.errors[0].code).toBe('parse.annotationSeparator')
   })
 
   it('收集多行的多个错误', () => {

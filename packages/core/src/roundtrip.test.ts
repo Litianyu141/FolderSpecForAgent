@@ -163,7 +163,7 @@ describe('同名兄弟节点', () => {
           const back = parseSpec(serializeSpec(dup))
           expect(back.ok).toBe(false)
           if (back.ok) return
-          expect(back.errors.some(e => e.message.includes('重名'))).toBe(true)
+          expect(back.errors.some(e => e.code === 'parse.duplicateSibling')).toBe(true)
         },
       ),
       { numRuns: 200 },

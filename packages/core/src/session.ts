@@ -7,7 +7,7 @@ import { gitStatus } from './git.js'
 import { merge } from './merge.js'
 import { copyNode, createNode, emptySpec, findSpecNode, isSelfOrDescendant, moveNode, removeNode, renameNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
-import { SpecError } from './errors.js'
+import { SpecError, parseError } from './errors.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
 import type { Api, ApiMethod, AnnotateParams, CopyNodeParams, CreateNodeParams, EditResult, MoveParams, OpenResult, RenameParams, SaveResult, SetGroupParams, SetLangParams, SetViewModeParams, ViewModeResult } from './api.js'
@@ -209,10 +209,15 @@ export class Session {
         // 盖掉用户攒了几个月的标注。所以退化到与解析失败完全相同的只读状态：
         // assertWritable() 拦住所有写入，横幅告诉用户到底是哪个文件、什么 errno。
         hasSpec = true
-        readErrors = [{
-          line: 0,
-          message: `无法读取契约文件 ${this.specPath}（${code ?? 'UNKNOWN'}）：${e instanceof Error ? e.message : String(e)}。为避免覆盖已有内容，当前为只读模式`,
-        }]
+        //
+        // 行号是 0：错的不是某一行，是整个文件读不出来。横幅仍然照常渲染"第 0 行："，
+        // 那是刻意的——它与解析失败那一批用的是同一条渲染路径，少一格反而会让人以为
+        // 这条错误不属于"解析失败 → 只读"这一类。
+        readErrors = [parseError(0, 'spec.unreadable', {
+          path: this.specPath,
+          errno: code ?? 'UNKNOWN',
+          detail: e instanceof Error ? e.message : String(e),
+        })]
       }
     }
 

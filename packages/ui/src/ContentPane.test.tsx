@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { ContentPane } from './ContentPane.js'
-import type { ViewNode } from '@folderspec/core/api'
+import { I18nContext, translate } from './i18n.js'
+import type { Lang, ViewNode } from '@folderspec/core/api'
 
 const file = (name = 'a.ts', path = 'src/a.ts'): ViewNode =>
   ({ name, path, isDir: false, origin: 'both' })
@@ -95,5 +96,49 @@ describe('ContentPane', () => {
   it('单行无换行渲染为 1 行', () => {
     render(<ContentPane node={file()} content={{ kind: 'text', text: 'a' }} loading={false} />)
     expect(document.querySelectorAll('.fs-code-line')).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 「无法读取：…」后面那半句同样要跟着语言开关走。
+//
+// 它分两种来路，走两条不同的路，缺一条都会有用户读不懂：
+// - 我们自己判定的（是目录 / 不是普通文件）：core 带了码，按码换语言；
+// - fs 给的（EACCES/EIO…）：没有码，原样显示——errno 是用户唯一能拿去搜索的线索。
+// ---------------------------------------------------------------------------
+
+/** ContentPane 从 Context 拿语言，独立渲染它时要自己包一层（默认值是 zh） */
+const withLang = (lang: Lang, ui: React.ReactElement) => (
+  <I18nContext.Provider value={{ lang, t: (k, pp) => translate(lang, k, pp) }}>{ui}</I18nContext.Provider>
+)
+
+describe('ContentPane：读取失败的原因跟随语言开关', () => {
+  const isDir = { kind: 'unreadable', reason: 'This is a directory, not a file.', code: 'file.isDirectory' } as const
+
+  it('中文界面：按码换成中文', () => {
+    render(withLang('zh', <ContentPane node={file()} content={isDir} loading={false} />))
+    expect(screen.getByText(/无法读取：这是一个目录/)).toBeTruthy()
+  })
+
+  it('英文界面：用 core 渲染好的英文，不在 UI 里另存一份', () => {
+    render(withLang('en', <ContentPane node={file()} content={isDir} loading={false} />))
+    expect(screen.getByText(/Unable to read: This is a directory, not a file\./)).toBeTruthy()
+  })
+
+  it('不是普通文件那一格同样两种语言各一份', () => {
+    const notRegular = { kind: 'unreadable', reason: 'This is not a regular file.', code: 'file.notRegularFile' } as const
+    render(withLang('zh', <ContentPane node={file()} content={notRegular} loading={false} />))
+    expect(screen.getByText(/无法读取：不是普通文件/)).toBeTruthy()
+  })
+
+  it('fs 给的失败没有码，两种语言下都原样显示——errno 绝不能被改掉', () => {
+    for (const lang of ['zh', 'en'] as const) {
+      const { unmount } = render(withLang(
+        lang,
+        <ContentPane node={file()} content={{ kind: 'unreadable', reason: "EACCES: permission denied, open 'src/a.ts'" }} loading={false} />,
+      ))
+      expect(screen.getByText(/EACCES: permission denied/)).toBeTruthy()
+      unmount()
+    }
   })
 })

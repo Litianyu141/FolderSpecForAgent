@@ -1,7 +1,13 @@
 import type { Api, ApiMethod, Bridge, BridgeEvent } from '@folderspec/core/api'
+import { UiError } from './i18n.js'
 import { errorFromWire } from './wire-error.js'
 
-const CONNECTION_LOST_MESSAGE = '与本地服务的连接已断开，请重新启动 folderspec'
+/**
+ * 连接断开。抛的是带**字典键**的 UiError，不是一句渲染好的话：bridge 在 React 之外
+ * 创建（main.tsx），拿不到当前语言，而翻译本来就该推迟到显示那一刻（translateError）。
+ * 这条报错恰恰最需要被读懂——连接断了，用户唯一的出路就是照着它去重启 folderspec。
+ */
+const connectionLost = (): Error => new UiError('error.connectionLost')
 
 /**
  * 把本次启动的一次性令牌拼到 WebSocket URL 上。
@@ -41,8 +47,8 @@ export function createWebSocketBridge(url: string): Bridge {
   const failAll = (): void => {
     if (closed) return
     closed = true
-    readyReject(new Error(CONNECTION_LOST_MESSAGE))
-    for (const slot of pending.values()) slot.reject(new Error(CONNECTION_LOST_MESSAGE))
+    readyReject(connectionLost())
+    for (const slot of pending.values()) slot.reject(connectionLost())
     pending.clear()
   }
 
@@ -67,7 +73,7 @@ export function createWebSocketBridge(url: string): Bridge {
 
   return {
     async request<K extends ApiMethod>(method: K, params: Api[K]['params']): Promise<Api[K]['result']> {
-      if (closed) throw new Error(CONNECTION_LOST_MESSAGE)
+      if (closed) throw connectionLost()
       await ready
       const id = nextId++
       return new Promise<Api[K]['result']>((resolve, reject) => {

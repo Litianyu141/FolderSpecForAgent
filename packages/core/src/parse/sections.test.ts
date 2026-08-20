@@ -56,7 +56,7 @@ describe('splitSections', () => {
     const r = splitSections('# 标题\n\n## 结构\n')
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0]).toEqual({ line: 1, message: '文件必须以 --- 开头的 YAML front-matter 起始' })
+    expect(r.errors[0]).toMatchObject({ line: 1, code: 'parse.frontMatterMissing' })
   })
 
   it('缺少结构区时报错', () => {
@@ -64,7 +64,7 @@ describe('splitSections', () => {
     const r = splitSections(doc)
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('缺少 "## 结构" 区块')
+    expect(r.errors[0].code).toBe('parse.structureSectionMissing')
   })
 
   it('模板区不是 yaml 代码块时报行号', () => {
@@ -72,7 +72,7 @@ describe('splitSections', () => {
     const r = splitSections(doc)
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('必须是 ```yaml 代码块')
+    expect(r.errors[0].code).toBe('parse.yamlFenceRequired')
   })
 
   it('templates/rules 区块缺失时为 null 而非报错', () => {
@@ -89,7 +89,7 @@ describe('splitSections', () => {
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.errors[0].line).toBe(9)
-    expect(r.errors[0].message).toContain('区块外的游离内容')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.strayContent', params: { text: 'some stray text' } })
   })
 
   it('yaml 代码块之后的游离文本同样报错', () => {
@@ -97,7 +97,7 @@ describe('splitSections', () => {
     const r = splitSections(doc)
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors.some(e => e.message.includes('区块外的游离内容'))).toBe(true)
+    expect(r.errors.some(e => e.code === 'parse.strayContent')).toBe(true)
   })
 
   it('front-matter 里的空行不报错', () => {

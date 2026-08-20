@@ -2,7 +2,7 @@ export const CORE_VERSION = '0.1.0'
 
 export * from './types.js'
 export * from './api.js'
-export { SpecError, isSpecError, renderEnglish, toWireError, EN_MESSAGES } from './errors.js'
+export { SpecError, isSpecError, renderEnglish, toWireError, parseError, EN_MESSAGES } from './errors.js'
 export type { SpecErrorCode, SpecErrorParams } from './errors.js'
 export { parseSpec, parseStructure, parseTemplates, parseRules, splitSections, SUPPORTED_VERSION, ANNOTATION_SEPARATOR } from './parse/index.js'
 export { serializeSpec } from './serialize.js'

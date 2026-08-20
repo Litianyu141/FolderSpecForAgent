@@ -1,14 +1,16 @@
 import { isMap, parseDocument } from 'yaml'
+import { parseError } from '../errors.js'
 import { isPlainObject, lineAtOffset, topLevelKeyOffsets } from './yaml-util.js'
 import type { Document } from 'yaml'
 import type { ParseError, Result, Template, TemplateChild, YamlBlock } from '../types.js'
 
 /** 把 yaml 块内的相对行号换算成整个文件的行号 */
 function yamlErrors(doc: ReturnType<typeof parseDocument>, block: YamlBlock): ParseError[] {
-  return doc.errors.map(e => ({
-    line: block.startLine + (e.linePos?.[0].line ?? 1) - 1,
-    message: `YAML 语法错误：${e.message}`,
-  }))
+  return doc.errors.map(e => parseError(
+    block.startLine + (e.linePos?.[0].line ?? 1) - 1,
+    'parse.yamlSyntax',
+    { message: e.message },
+  ))
 }
 
 /** 取出映射键节点对应的字符串值 */
@@ -37,7 +39,7 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
   const raw: unknown = doc.toJS()
   if (raw === null || raw === undefined) return { ok: true, value: [] }
   if (!isMap(doc.contents)) {
-    return { ok: false, errors: [{ line: block.startLine, message: '模板区顶层必须是映射（模板名 → 定义）' }] }
+    return { ok: false, errors: [parseError(block.startLine, 'parse.templatesTopLevel')] }
   }
 
   const errors: ParseError[] = []
@@ -50,11 +52,11 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
   // items，而不是 Object.entries(doc.toJS())。
   for (const pair of doc.contents.items) {
     const name = keyString(pair.key)
-    const at = { line: lineAtOffset(block, keyOffsets.get(name)) }
+    const at = lineAtOffset(block, keyOffsets.get(name))
 
     const defNode = pair.value
     if (!isMap(defNode)) {
-      errors.push({ ...at, message: `模板 "${name}" 的定义必须是映射` })
+      errors.push(parseError(at, 'parse.templateDefNotMap', { name }))
       continue
     }
     const def = defNode.toJS(doc) as Record<string, unknown>
@@ -64,13 +66,13 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
     const allowedKeys = new Set(['description', 'root', 'children', 'exemplar'])
     for (const key of Object.keys(def)) {
       if (!allowedKeys.has(key)) {
-        errors.push({ ...at, message: `模板 "${name}" 有未知字段 "${key}"，只允许 description/root/children/exemplar` })
+        errors.push(parseError(at, 'parse.templateUnknownField', { name, field: key }))
       }
     }
 
     if (def.description !== undefined) {
       if (typeof def.description !== 'string') {
-        errors.push({ ...at, message: `模板 "${name}" 的 description 必须是字符串` })
+        errors.push(parseError(at, 'parse.templateDescriptionType', { name }))
       } else {
         tpl.description = def.description
       }
@@ -78,26 +80,26 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
 
     if (def.root !== undefined) {
       if (!isPlainObject(def.root)) {
-        errors.push({ ...at, message: `模板 "${name}" 的 root 必须是映射` })
+        errors.push(parseError(at, 'parse.templateRootNotMap', { name }))
       } else {
         // Check for unknown keys in root
         const rootAllowedKeys = new Set(['variable', 'naming'])
         for (const key of Object.keys(def.root)) {
           if (!rootAllowedKeys.has(key)) {
-            errors.push({ ...at, message: `模板 "${name}" 的 root 有未知字段 "${key}"，只允许 variable/naming` })
+            errors.push(parseError(at, 'parse.templateRootUnknownField', { name, field: key }))
           }
         }
 
         if (def.root.variable !== undefined) {
           if (typeof def.root.variable !== 'string') {
-            errors.push({ ...at, message: `模板 "${name}" 的 root.variable 必须是字符串` })
+            errors.push(parseError(at, 'parse.templateRootVariableType', { name }))
           } else {
             tpl.rootVariable = def.root.variable
           }
         }
         if (def.root.naming !== undefined) {
           if (typeof def.root.naming !== 'string') {
-            errors.push({ ...at, message: `模板 "${name}" 的 root.naming 必须是字符串` })
+            errors.push(parseError(at, 'parse.templateRootNamingType', { name }))
           } else {
             tpl.rootNaming = def.root.naming
           }
@@ -109,14 +111,14 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
       const childrenPair = defNode.items.find(p => keyString(p.key) === 'children')
       const childrenNode = childrenPair?.value
       if (!isMap(childrenNode)) {
-        errors.push({ ...at, message: `模板 "${name}" 的 children 必须是映射` })
+        errors.push(parseError(at, 'parse.templateChildrenNotMap', { name }))
       } else {
         // 子项名同样可能形如整数（如 "0"），理由同上，按 AST 顺序遍历
         for (const childPair of childrenNode.items) {
           const rawName = keyString(childPair.key)
           const spec = nodeToJS(doc, childPair.value)
           if (!isPlainObject(spec)) {
-            errors.push({ ...at, message: `模板 "${name}" 的子项 "${rawName}" 必须是映射` })
+            errors.push(parseError(at, 'parse.templateChildNotMap', { name, child: rawName }))
             continue
           }
 
@@ -124,12 +126,12 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
           const childAllowedKeys = new Set(['role', 'required'])
           for (const key of Object.keys(spec)) {
             if (!childAllowedKeys.has(key)) {
-              errors.push({ ...at, message: `模板 "${name}" 子项 "${rawName}" 有未知字段 "${key}"，只允许 role/required` })
+              errors.push(parseError(at, 'parse.templateChildUnknownField', { name, child: rawName, field: key }))
             }
           }
 
           if (typeof spec.required !== 'boolean') {
-            errors.push({ ...at, message: `模板 "${name}" 子项 "${rawName}" 的 required 必须是 true 或 false` })
+            errors.push(parseError(at, 'parse.templateChildRequiredType', { name, child: rawName }))
             continue
           }
           const isDir = rawName.endsWith('/')
@@ -140,7 +142,7 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
           }
           if (spec.role !== undefined) {
             if (typeof spec.role !== 'string') {
-              errors.push({ ...at, message: `模板 "${name}" 子项 "${rawName}" 的 role 必须是字符串` })
+              errors.push(parseError(at, 'parse.templateChildRoleType', { name, child: rawName }))
               continue
             }
             child.role = spec.role
@@ -152,7 +154,7 @@ export function parseTemplates(block: YamlBlock | null): Result<Template[]> {
 
     if (def.exemplar !== undefined) {
       if (!Array.isArray(def.exemplar) || def.exemplar.some(x => typeof x !== 'string')) {
-        errors.push({ ...at, message: `模板 "${name}" 的 exemplar 必须是字符串数组` })
+        errors.push(parseError(at, 'parse.templateExemplarType', { name }))
       } else {
         tpl.exemplar = def.exemplar as string[]
       }

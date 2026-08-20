@@ -7,9 +7,10 @@ export type { Lang }
 
 /**
  * 只翻译"我们自己写的字"（按钮/标签/提示语/报错），绝不翻译用户或磁盘给的内容：
- * 节点注释、分组说明、规则文字、模板描述、语义角色、文件名/路径、解析错误里的行号与
- * 原文——字典里没有它们的位置，调用点也不会替它们找一个键（判据见 i18n-brief.md：
- * 这段文字是我们写的还是用户/磁盘给的？我们写的才翻译）。
+ * 节点注释、分组说明、规则文字、模板描述、语义角色、文件名/路径、解析错误**引用的
+ * 那段原文**（跑偏的那一行、yaml 库的原始报错、模板名/规则 id……）——字典里没有它们的
+ * 位置，调用点也不会替它们找一个键（判据见 i18n-brief.md：这段文字是我们写的还是
+ * 用户/磁盘给的？我们写的才翻译）。
  *
  * **`core` 抛出的报错曾被划在"不翻译"那一侧，那是一次错划，本轮已纠正。** 双语那一轮
  * 定这条规矩时，core 的报错还是硬编码的中文整句：UI 拿到的只有一句话，除了原样显示
@@ -21,6 +22,17 @@ export type { Lang }
  * 显示（英文的唯一定义处始终在 core 的 EN_MESSAGES）。判据本身一个字没变，变的只是
  * 这一类文字被归到了正确的一侧。**下面的 ERROR_ZH 不是漏网的用户数据，别照着这段注释
  * 的旧版本把它删回去。**
+ *
+ * **解析错误也是同一次错划的一部分，第三轮一并纠正了**（上一版这里写的是"解析错误里的
+ * 行号与原文"整体不翻译）。改造之后一条解析错误被拆成三段，各归各的：
+ *
+ * - **原因**——我们自己写的话，走 `ERROR_ZH` 按码翻译（`parse.*` 那一批）；
+ * - **行号**——`ParseError.line`，一个数字，由 `banner.parseErrorLine` 渲染成
+ *   "第 N 行："/"Line N: "。它在两种语言下必须是同一个数字：解析失败进只读模式之后，
+ *   照着行号去改文件是用户唯一能做的事，把它揉进任何一种语言的句子里都会让另一种
+ *   语言的用户失去定位手段；
+ * - **它引用的原文**——跑偏的那一行文本、yaml 库的报错、模板名/规则 id，全部走 params，
+ *   两种语言下原样显示。这一段仍然属于上面那条"绝不翻译"的判据。
  *
  * "导出的 folderspec 里的结构化内容"（标题行、导言、四个章节标题）不归这份字典管——
  * 那是 core 侧 `spec/setLang`（提交 9ce8b86）的地盘，本文件只管界面 chrome。
@@ -63,6 +75,17 @@ export const zh = {
   'banner.diskViewSuffix':
     '视图：只按磁盘扫描结果显示，忽略契约里的结构性调整，因此暂时无法编辑。 点击顶栏「我的结构」切换回可编辑视图。',
   'banner.externalChange': '契约文件已在外部修改。',
+  /**
+   * 下面两条是 **UI 自己**产生的报错（不经过 core，因此没有 core 的错误码），
+   * 由 bridge 层抛出：ws-bridge.ts 的连接断开、wire-error.ts 的"宿主说失败却没说
+   * 为什么"。它们进 zh/en 这张对称的表，而不是只有中文的 ERROR_ZH——ERROR_ZH 是
+   * "core 的码 → 中文"，这两条根本没有码可查。
+   *
+   * bridge 是在 React 之外创建的（main.tsx），拿不到当前语言；它抛的是一个带
+   * **字典键**的 UiError，渲染推迟到显示那一刻，于是照样跟着开关走。
+   */
+  'error.connectionLost': '与本地服务的连接已断开，请重新启动 folderspec',
+  'error.unknown': '未知错误：宿主回了一次失败，但没有给出原因',
   /**
    * {text} 是那条本该进剪贴板的路径（数据，不翻译）。**必须原样摆在横幅里**：
    * 复制失败时用户唯一的出路就是从横幅上选中它手动复制，只说"失败了"等于把人
@@ -234,6 +257,8 @@ export const en: Record<TranslationKey, string> = {
   'banner.diskViewSuffix':
     ' view — showing only the raw disk scan and ignoring structural changes from the contract, so editing is disabled for now. Click "My Structure" in the toolbar to switch back to the editable view.',
   'banner.externalChange': 'The contract file was modified outside this app.',
+  'error.connectionLost': 'The connection to the local service has been lost. Please restart folderspec.',
+  'error.unknown': 'Unknown error: the host reported a failure but gave no reason.',
   'banner.copyFailed': 'Copy failed: the browser denied clipboard access. Copy it manually: {text}',
   'banner.reload': 'Reload',
   'dialog.reloadConfirm': 'You have unsaved changes — reloading will discard them. Continue anyway?',
@@ -501,9 +526,110 @@ export const ERROR_ZH: Partial<Record<SpecErrorCode, string>> = {
   'readonly.diskView': '当前处于「原始结构」视图，为只读模式；切回「我的结构」视图后即可编辑',
 
   // ---- 写盘前的自校验 ----
-  // {details} 是解析器给的行号 + 原因。解析层的报错第三轮才配码，在那之前它是中文原文，
-  // 英文界面下会在这一句里嵌一段中文——已知，见本轮报告"未覆盖"一节。
+  // {details} 是 serialize → parse 自校验时解析器给的"行号 + 原因"，从第三轮起它是
+  // **英文**（解析层的 message 由 EN_MESSAGES 渲染）。这一段没有再翻一遍：它是一条
+  // 内部自校验的明细，params 装不下"可翻译的子句数组"（与 move.mergeConflict 的
+  // {conflicts} 是同一个已知缺口，见第一轮报告 §10 顾虑 1）。中文用户读到的是
+  // "序列化自校验失败……：line 3: <英文明细>"——句子读得懂，明细是给我们排障用的。
   'serialize.selfCheckFailed': '序列化自校验失败，已中止以免损坏契约文件：{details}',
+
+  // ==========================================================================
+  // 解析层（core/src/parse/*.ts）。
+  //
+  // **行号不在这些文案里**，它是 ParseError.line，由横幅自己渲染成"第 N 行："
+  // （banner.parseErrorLine）。这一条不能改：解析失败时只读模式下用户唯一能做的事
+  // 就是照着行号去改文件，行号是"能定位"的那一半。
+  //
+  // 文案取自这一批报错改造之前的中文原文，逐字照抄，不是重新翻译一遍——重译只会
+  // 引入与英文措辞不一致的第三种说法。
+  //
+  // 占位符里的值（跑偏的那一行原文、YAML 库的原始报错、模板名、规则 id……）都是
+  // 用户或第三方库给的数据，两种语言下原样显示，不翻译。
+  // ==========================================================================
+
+  // ---- 分区（parse/sections.ts）----
+  'parse.frontMatterMissing': '文件必须以 --- 开头的 YAML front-matter 起始',
+  'parse.frontMatterLine': 'front-matter 行必须是 "键: 值"，实际是 "{text}"',
+  'parse.frontMatterUnclosed': 'front-matter 缺少收尾的 ---',
+  // 中文这侧列的是中文章节名。解析器两种都认（SECTION_ALIASES），所以这不是"翻译了
+  // 关键字"——它是在告诉中文用户该写哪几个字，英文那侧列的同样是它自己那套写法。
+  'parse.unknownSection': '未知区块标题 "## {title}"，只允许 结构/模板/规则/分组',
+  'parse.yamlFenceRequired': '模板区、规则区与分组区必须是 ```yaml 代码块',
+  'parse.yamlBlockOnly': '区块内只允许 ```yaml 代码块，实际是 "{text}"',
+  'parse.yamlFenceUnclosed': 'yaml 代码块缺少收尾的 ```',
+  'parse.strayContent':
+    '区块外的游离内容：请把它放进 ## 结构 / ## 模板 / ## 规则 / ## 分组 之一，或删除；实际是 "{text}"',
+  'parse.structureSectionMissing': '缺少 "## 结构" 区块',
+
+  // ---- 结构区（parse/structure.ts）----
+  'parse.bulletRequired': '结构行必须形如 "- `名称`"',
+  'parse.indentNotMultipleOfTwo': '缩进必须是 2 的倍数，实际 {indent} 个空格',
+  'parse.indentSkipsLevel': '缩进跳级：上一行深度 {prev}，本行深度 {depth}',
+  'parse.nameBackticksRequired': '节点名必须用反引号包裹，例如 `src/`',
+  'parse.nameEmpty': '节点名为空',
+  'parse.tagValueMissing': '[{tag}:...] 缺少取值',
+  'parse.severityInvalid': 'severity 只能是 error/warning/advisory，实际 "{value}"',
+  'parse.unknownTag': '未知标签 [{tag}]，只允许 role/template/severity',
+  'parse.annotationSeparator': '注释前必须是 " — "（空格 + 长破折号 + 空格）',
+  'parse.parentNotFound': '找不到父节点',
+  'parse.parentNotDir': '父节点 `{name}` 不是目录，不能有子项',
+  'parse.duplicateSibling':
+    '同一层出现重名节点 `{name}`（与前面的 `{other}` 重复）：同名兄弟是重复声明，请删掉其中一条或改名',
+
+  // ---- YAML 三区共用 ----
+  // {message} 是 yaml 库给的原始报错，英文，属于第三方数据，不翻译。
+  'parse.yamlSyntax': 'YAML 语法错误：{message}',
+
+  // ---- 模板区（parse/templates.ts）----
+  'parse.templatesTopLevel': '模板区顶层必须是映射（模板名 → 定义）',
+  'parse.templateDefNotMap': '模板 "{name}" 的定义必须是映射',
+  'parse.templateUnknownField': '模板 "{name}" 有未知字段 "{field}"，只允许 description/root/children/exemplar',
+  'parse.templateDescriptionType': '模板 "{name}" 的 description 必须是字符串',
+  'parse.templateRootNotMap': '模板 "{name}" 的 root 必须是映射',
+  'parse.templateRootUnknownField': '模板 "{name}" 的 root 有未知字段 "{field}"，只允许 variable/naming',
+  'parse.templateRootVariableType': '模板 "{name}" 的 root.variable 必须是字符串',
+  'parse.templateRootNamingType': '模板 "{name}" 的 root.naming 必须是字符串',
+  'parse.templateChildrenNotMap': '模板 "{name}" 的 children 必须是映射',
+  'parse.templateChildNotMap': '模板 "{name}" 的子项 "{child}" 必须是映射',
+  'parse.templateChildUnknownField': '模板 "{name}" 子项 "{child}" 有未知字段 "{field}"，只允许 role/required',
+  'parse.templateChildRequiredType': '模板 "{name}" 子项 "{child}" 的 required 必须是 true 或 false',
+  'parse.templateChildRoleType': '模板 "{name}" 子项 "{child}" 的 role 必须是字符串',
+  'parse.templateExemplarType': '模板 "{name}" 的 exemplar 必须是字符串数组',
+
+  // ---- 规则区（parse/rules.ts）----
+  'parse.rulesTopLevel': '规则区顶层必须是序列（每条规则一个 - 项）',
+  'parse.ruleNotMap': '第 {index} 条规则必须是映射',
+  'parse.ruleIdMissing': '第 {index} 条规则缺少非空的 id',
+  'parse.ruleIdDuplicate': '规则 id "{id}" 重复',
+  'parse.ruleUnknownField': '规则 "{id}" 有未知字段 "{field}"，只允许 id/severity/scope/text',
+  'parse.ruleSeverityInvalid': '规则 "{id}" 的 severity 只能是 error/warning/advisory',
+  'parse.ruleScopeMissing': '规则 "{id}" 缺少非空的 scope（glob 表达式）',
+  'parse.ruleTextMissing': '规则 "{id}" 缺少非空的 text',
+
+  // ---- 分组区（parse/groups.ts）----
+  'parse.groupsTopLevel': '分组区顶层必须是序列（每个分组一个 - 项）',
+  'parse.groupNotMap': '第 {index} 个分组必须是映射',
+  'parse.groupIdMissing': '第 {index} 个分组缺少非空的 id',
+  'parse.groupIdDuplicate': '分组 id "{id}" 重复',
+  'parse.groupUnknownField': '分组 "{id}" 有未知字段 "{field}"，只允许 id/members/text/severity',
+  'parse.groupMembersType': '分组 "{id}" 的 members 必须是非空的字符串数组',
+  'parse.groupMembersParentSegment': '分组 "{id}" 的 members 不得包含 ".." 路径段',
+  'parse.groupMembersAbsolute': '分组 "{id}" 的 members 不得是绝对路径，必须是工作区相对 posix 路径',
+  'parse.groupMembersBackslash': '分组 "{id}" 的 members 不得包含反斜杠 "\\"，必须使用 "/" 分隔的 posix 路径',
+  'parse.groupTextMissing': '分组 "{id}" 缺少非空的 text',
+  'parse.groupSeverityInvalid': '分组 "{id}" 的 severity 只能是 error/warning/advisory',
+
+  // ---- 串联（parse/index.ts）----
+  'parse.unsupportedVersion': '不支持的 folderspec 版本 "{version}"，本工具支持 {supported}',
+
+  // ---- 契约文件读不出来（core/src/session.ts）。同样是一条 ParseError，同样进只读横幅。
+  //      {errno} 是 EACCES/EBUSY 这类 node 错误码，{detail} 是 node 给的原文，都不翻译：
+  //      errno 是用户唯一能拿去搜索的线索，改掉它等于把出路堵死。
+  'spec.unreadable': '无法读取契约文件 {path}（{errno}）：{detail}。为避免覆盖已有内容，当前为只读模式',
+
+  // ---- 读文件（core/src/file-read.ts）：中间栏「无法读取：」后面那半句 ----
+  'file.isDirectory': '这是一个目录',
+  'file.notRegularFile': '不是普通文件',
 }
 
 /**
@@ -524,6 +650,26 @@ function isUiMessage(e: unknown): e is UiMessage {
 }
 
 /**
+ * 一条**既是 Error 又是 UiMessage** 的报错，给 bridge 层用（ws-bridge.ts 的连接断开、
+ * wire-error.ts 的"宿主说失败却没说为什么"）。
+ *
+ * **为什么 bridge 不需要知道当前语言**：它抛的是字典键，不是渲染好的句子；翻译照旧
+ * 推迟到 translateError 那一刻。bridge 在 React 之外创建（main.tsx），本来就拿不到
+ * 语言，而这两条报错恰恰最需要被读懂——连接断了，用户唯一的出路就是照着这句话去重启。
+ *
+ * **为什么 `message` 烘焙成英文**：与 core 的 SpecError 逐字同一条取舍——`e.message`
+ * 会进浏览器控制台、会被任何不做翻译的消费者直接显示；空着或塞一个键名，等于把
+ * "这条还没翻译"升级成"谁也看不懂"。显示端永远走 translateError，读不到这个 message，
+ * 所以烘焙英文不会让界面出现不跟随语言的例外。
+ */
+export class UiError extends Error implements UiMessage {
+  constructor(readonly uiKey: TranslationKey, readonly uiParams?: Interpolations) {
+    super(translate('en', uiKey, uiParams))
+    this.name = 'UiError'
+  }
+}
+
+/**
  * 把一个 catch 到的东西按当前语言渲染成横幅上的那句话。
  *
  * 规则只有两条：
@@ -535,10 +681,33 @@ function isUiMessage(e: unknown): e is UiMessage {
  * SpecError`——错误跨过 bridge 是走 JSON 的，原型早就没了，那个函数只对与 core 同进程的
  * 宿主成立。ui 对 core 也只允许 `import type`，运行期符号根本不该出现在这一侧。
  */
+/**
+ * 取出"那句能显示的话"。
+ *
+ * 三格，顺序不能换：
+ *
+ * 1. `Error` 实例——core 抛的 SpecError 过 bridge 之后被 wire-error.ts 还原成的
+ *    BridgeError、UI 自己的 UiError、以及任何一处 `catch (e)` 里的普通 Error。
+ * 2. **纯数据的 `{ message: string }`**——`ParseError` 就长这样（`{ line, message,
+ *    code?, params? }`）。它从来不是 Error 实例：解析错误是被**收集**的、要成组经
+ *    JSON 过 bridge，Error 过不去。没有这一格，英文界面下每一条解析错误都会掉进
+ *    下面的 `String(e)`、显示成 "[object Object]"——横幅上还剩一个行号，原因整段没了。
+ *    "解析失败 → 只读 + 报行号"这条铁律里"能定位"的那一半就是这么被拆掉的。
+ * 3. 其余一切退化成 `String(e)`，与接线之前 `e instanceof Error ? e.message : String(e)`
+ *    对非对象值的行为逐字一致（字符串、null、undefined 都还是原来那样）。
+ */
+function messageOf(e: unknown): string {
+  if (e instanceof Error) return e.message
+  if (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string') {
+    return (e as { message: string }).message
+  }
+  return String(e)
+}
+
 export function translateError(e: unknown, lang: Lang): string {
   if (isUiMessage(e)) return translate(lang, e.uiKey, e.uiParams)
 
-  const message = e instanceof Error ? e.message : String(e)
+  const message = messageOf(e)
   if (lang !== 'zh') return message
 
   const wire = typeof e === 'object' && e !== null

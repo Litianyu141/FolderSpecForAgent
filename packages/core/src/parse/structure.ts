@@ -1,3 +1,4 @@
+import { parseError } from '../errors.js'
 import { isSeverity } from '../types.js'
 import type { Line, ParseError, Result, SpecNode } from '../types.js'
 
@@ -19,24 +20,24 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
 
     const bullet = BULLET_RE.exec(text)
     if (!bullet) {
-      errors.push({ line, message: '结构行必须形如 "- `名称`"' })
+      errors.push(parseError(line, 'parse.bulletRequired'))
       continue
     }
     const indent = bullet[1].length
     if (indent % 2 !== 0) {
-      errors.push({ line, message: `缩进必须是 2 的倍数，实际 ${indent} 个空格` })
+      errors.push(parseError(line, 'parse.indentNotMultipleOfTwo', { indent }))
       continue
     }
     const depth = indent / 2
     if (depth > prevDepth + 1) {
-      errors.push({ line, message: `缩进跳级：上一行深度 ${prevDepth}，本行深度 ${depth}` })
+      errors.push(parseError(line, 'parse.indentSkipsLevel', { prev: prevDepth, depth }))
       continue
     }
 
     let rest = bullet[2]
     const nameMatch = NAME_RE.exec(rest)
     if (!nameMatch) {
-      errors.push({ line, message: '节点名必须用反引号包裹，例如 `src/`' })
+      errors.push(parseError(line, 'parse.nameBackticksRequired'))
       continue
     }
     rest = rest.slice(nameMatch[0].length)
@@ -44,7 +45,7 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
     const isDir = raw.endsWith('/')
     const name = isDir ? raw.slice(0, -1) : raw
     if (name === '') {
-      errors.push({ line, message: '节点名为空' })
+      errors.push(parseError(line, 'parse.nameEmpty'))
       continue
     }
 
@@ -59,7 +60,7 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
       const value = tag[2]
       if (key === 'role' || key === 'template') {
         if (!value) {
-          errors.push({ line, message: `[${key}:...] 缺少取值` })
+          errors.push(parseError(line, 'parse.tagValueMissing', { tag: key }))
           tagError = true
           break
         }
@@ -67,13 +68,13 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
         else node.template = value
       } else if (key === 'severity') {
         if (!isSeverity(value)) {
-          errors.push({ line, message: `severity 只能是 error/warning/advisory，实际 "${value ?? ''}"` })
+          errors.push(parseError(line, 'parse.severityInvalid', { value: value ?? '' }))
           tagError = true
           break
         }
         node.severity = value
       } else {
-        errors.push({ line, message: `未知标签 [${key}]，只允许 role/template/severity` })
+        errors.push(parseError(line, 'parse.unknownTag', { tag: key }))
         tagError = true
         break
       }
@@ -82,7 +83,7 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
 
     if (rest.length > 0) {
       if (!rest.startsWith(ANNOTATION_SEPARATOR)) {
-        errors.push({ line, message: '注释前必须是 " — "（空格 + 长破折号 + 空格）' })
+        errors.push(parseError(line, 'parse.annotationSeparator'))
         continue
       }
       const annotation = rest.slice(ANNOTATION_SEPARATOR.length)
@@ -95,11 +96,11 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
     } else {
       const parent = stack[depth - 1]
       if (!parent) {
-        errors.push({ line, message: '找不到父节点' })
+        errors.push(parseError(line, 'parse.parentNotFound'))
         continue
       }
       if (!parent.isDir) {
-        errors.push({ line, message: `父节点 \`${parent.name}\` 不是目录，不能有子项` })
+        errors.push(parseError(line, 'parse.parentNotDir', { name: parent.name }))
         continue
       }
       siblings = parent.children
@@ -120,10 +121,7 @@ export function parseStructure(lines: Line[]): Result<SpecNode[]> {
     if (dup) {
       const shown = `${node.name}${node.isDir ? '/' : ''}`
       const other = `${dup.name}${dup.isDir ? '/' : ''}`
-      errors.push({
-        line,
-        message: `同一层出现重名节点 \`${shown}\`（与前面的 \`${other}\` 重复）：同名兄弟是重复声明，请删掉其中一条或改名`,
-      })
+      errors.push(parseError(line, 'parse.duplicateSibling', { name: shown, other }))
       continue
     }
     siblings.push(node)

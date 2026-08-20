@@ -1,3 +1,4 @@
+import { parseError } from '../errors.js'
 import type { Line, ParseError, RawSections, Result, YamlBlock } from '../types.js'
 
 const SECTION_ALIASES: Record<string, 'structure' | 'templates' | 'rules' | 'groups'> = {
@@ -18,7 +19,7 @@ export function splitSections(md: string): Result<RawSections> {
 
   // ---- front-matter ----
   if (lines[0]?.trim() !== '---') {
-    return { ok: false, errors: [{ line: 1, message: '文件必须以 --- 开头的 YAML front-matter 起始' }] }
+    return { ok: false, errors: [parseError(1, 'parse.frontMatterMissing')] }
   }
   const frontMatter: Record<string, string> = {}
   i = 1
@@ -29,13 +30,13 @@ export function splitSections(md: string): Result<RawSections> {
     if (t.trim() === '') continue
     const idx = t.indexOf(':')
     if (idx === -1) {
-      errors.push({ line: i + 1, message: `front-matter 行必须是 "键: 值"，实际是 "${t}"` })
+      errors.push(parseError(i + 1, 'parse.frontMatterLine', { text: t }))
       continue
     }
     frontMatter[t.slice(0, idx).trim()] = t.slice(idx + 1).trim()
   }
   if (!closed) {
-    return { ok: false, errors: [{ line: 1, message: 'front-matter 缺少收尾的 ---' }] }
+    return { ok: false, errors: [parseError(1, 'parse.frontMatterUnclosed')] }
   }
 
   // ---- 标题 ----
@@ -70,7 +71,7 @@ export function splitSections(md: string): Result<RawSections> {
     if (h) {
       const kind = SECTION_ALIASES[h[1]]
       if (!kind) {
-        errors.push({ line: i + 1, message: `未知区块标题 "## ${h[1]}"，只允许 结构/模板/规则/分组` })
+        errors.push(parseError(i + 1, 'parse.unknownSection', { title: h[1] }))
         current = null
         continue
       }
@@ -86,9 +87,9 @@ export function splitSections(md: string): Result<RawSections> {
       if (t.trim() === '') continue
       if (!/^```ya?ml\s*$/.test(t.trim())) {
         if (t.trim().startsWith('```')) {
-          errors.push({ line: i + 1, message: '模板区、规则区与分组区必须是 ```yaml 代码块' })
+          errors.push(parseError(i + 1, 'parse.yamlFenceRequired'))
         } else {
-          errors.push({ line: i + 1, message: `区块内只允许 \`\`\`yaml 代码块，实际是 "${t.trim()}"` })
+          errors.push(parseError(i + 1, 'parse.yamlBlockOnly', { text: t.trim() }))
         }
         current = null
         continue
@@ -102,7 +103,7 @@ export function splitSections(md: string): Result<RawSections> {
         body.push(lines[i])
       }
       if (!fenceClosed) {
-        errors.push({ line: startLine, message: 'yaml 代码块缺少收尾的 ```' })
+        errors.push(parseError(startLine, 'parse.yamlFenceUnclosed'))
         continue
       }
       const block: YamlBlock = { text: body.join('\n').replace(/\n+$/, ''), startLine }
@@ -113,12 +114,12 @@ export function splitSections(md: string): Result<RawSections> {
       continue
     }
     if (t.trim() !== '' && current === null) {
-      errors.push({ line: i + 1, message: `区块外的游离内容：请把它放进 ## 结构 / ## 模板 / ## 规则 / ## 分组 之一，或删除；实际是 "${t.trim()}"` })
+      errors.push(parseError(i + 1, 'parse.strayContent', { text: t.trim() }))
     }
   }
 
   if (!seenStructure) {
-    errors.push({ line: lines.length, message: '缺少 "## 结构" 区块' })
+    errors.push(parseError(lines.length, 'parse.structureSectionMissing'))
   }
   if (errors.length) return { ok: false, errors }
   return { ok: true, value: { frontMatter, title, preamble, structure, templatesYaml, rulesYaml, groupsYaml } }

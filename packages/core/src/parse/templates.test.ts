@@ -57,50 +57,52 @@ describe('parseTemplates', () => {
     const r = parseTemplates(block('- a\n- b'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('模板区顶层必须是映射')
+    expect(r.errors[0].code).toBe('parse.templatesTopLevel')
   })
 
   it('required 不是布尔时报错', () => {
     const r = parseTemplates(block('case:\n  children:\n    a.txt: { required: yes-please }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('required 必须是 true 或 false')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.templateChildRequiredType', params: { name: 'case', child: 'a.txt' } })
   })
 
   it('exemplar 不是字符串数组时报错', () => {
     const r = parseTemplates(block('case:\n  children: {}\n  exemplar: 42'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('exemplar 必须是字符串数组')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.templateExemplarType', params: { name: 'case' } })
   })
 
   it('root.variable 不是字符串时报错', () => {
     const r = parseTemplates(block('case:\n  root: { variable: 123 }\n  children: {}'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('root.variable 必须是字符串')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.templateRootVariableType', params: { name: 'case' } })
   })
 
   it('root.naming 不是字符串时报错', () => {
     const r = parseTemplates(block('case:\n  root: { naming: 123 }\n  children: {}'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('root.naming 必须是字符串')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.templateRootNamingType', params: { name: 'case' } })
   })
 
   it('模板顶层未知字段报错', () => {
     const r = parseTemplates(block('case:\n  descriptin: typo\n  children: {}'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('有未知字段 "descriptin"')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.templateUnknownField', params: { name: 'case', field: 'descriptin' } })
   })
 
   it('children 条目的未知字段报错', () => {
     const r = parseTemplates(block('case:\n  children:\n    a.txt: { requird: true }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('有未知字段 "requird"')
-    expect(r.errors[0].message).toContain('a.txt')
+    expect(r.errors[0]).toMatchObject({
+      code: 'parse.templateChildUnknownField',
+      params: { name: 'case', child: 'a.txt', field: 'requird' },
+    })
   })
 
   it('多行模板的错误指向该模板的名字行', () => {

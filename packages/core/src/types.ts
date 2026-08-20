@@ -1,3 +1,5 @@
+import type { SpecErrorCode, SpecErrorParams } from './errors.js'
+
 export type Severity = 'error' | 'warning' | 'advisory'
 
 export interface SpecNode {
@@ -66,9 +68,22 @@ export interface Spec {
   groups: Group[]
 }
 
+/**
+ * 解析失败时报给用户的一条：**行号 + 渲染好的英文 message + 错误码 + 参数**。
+ *
+ * `line` 与 `message` 是原有的两个字段，`code`/`params` 是后加的——加法，不是替换：
+ * 不认识码的消费者（日志、还没接线的宿主）照旧显示 `message` 一句英文人话，认识码的
+ * 显示端（ui 的 translateError）按码换成另一种语言。构造请一律走 errors.ts 的
+ * `parseError()`，它保证这三者不会各说各话。
+ *
+ * `code` 之所以可选，是留给"从进程外收来的一条 ParseError"——那是 JSON.parse 的产物，
+ * 类型系统一个字都保证不了；读取端容错，不是给自己人留后门。
+ */
 export interface ParseError {
   line: number
   message: string
+  code?: SpecErrorCode
+  params?: SpecErrorParams
 }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; errors: ParseError[] }

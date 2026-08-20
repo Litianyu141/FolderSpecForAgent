@@ -55,9 +55,26 @@ describe('readWorkspaceFile', () => {
     expect(r.kind).toBe('unreadable')
   })
 
+  it('我们自己判定的那两格带上错误码，显示端才翻得动', async () => {
+    // reason 是渲染好的英文（中间栏「无法读取：」后面直接显示的就是它），
+    // code 让 ui 能按码换成中文。少了码，中文界面上这一句永远是英文——而界面
+    // 看着完全正常，没有任何症状能让人发现。
+    const r = await readWorkspaceFile(root, 'sub')
+    if (r.kind !== 'unreadable') throw new Error('应当是 unreadable')
+    expect(r.code).toBe('file.isDirectory')
+    expect(r.reason).toBe('This is a directory, not a file.')
+  })
+
   it('不存在的路径返回 unreadable 而非抛错', async () => {
     const r = await readWorkspaceFile(root, 'nope.txt')
     expect(r.kind).toBe('unreadable')
+  })
+
+  it('来自 fs 的失败没有码——errno 原文是用户唯一能拿去搜索的线索，不翻译', async () => {
+    const r = await readWorkspaceFile(root, 'nope.txt')
+    if (r.kind !== 'unreadable') throw new Error('应当是 unreadable')
+    expect(r.code).toBeUndefined()
+    expect(r.reason).toContain('ENOENT')
   })
 
   it('拒绝越界路径且不读到工作区外的内容', async () => {

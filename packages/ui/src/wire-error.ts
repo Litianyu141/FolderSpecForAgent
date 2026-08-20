@@ -1,3 +1,4 @@
+import { UiError } from './i18n.js'
 import type { WireError } from '@folderspec/core/api'
 
 /**
@@ -25,12 +26,16 @@ export class BridgeError extends Error {
 }
 
 /**
- * 宿主说"失败了"却没说为什么时的兜底。刻意留中文原文、不进 i18n 字典：
- * 它发生在 bridge 层，那里拿不到当前语言（bridge 在 React 之外被创建，见 main.tsx），
- * 而且这一格只可能由宿主自己的缺陷触发——与它同类的还有 ws-bridge.ts 的
- * CONNECTION_LOST_MESSAGE。两条都记在本轮报告的"未覆盖"一节里。
+ * 宿主说"失败了"却没说为什么时的兜底。
+ *
+ * 第二轮这里是一句硬编码的中文，理由是"bridge 层拿不到当前语言"。**那个理由站不住**：
+ * bridge 不需要知道语言，它抛一个带**字典键**的 UiError 就行，翻译照旧推迟到显示那一刻
+ * （translateError）。第三轮据此改掉——与它同类的 ws-bridge.ts 连接断开那条一并改了。
+ *
+ * 这条不进 ERROR_ZH：那张表是"core 的错误码 → 中文"，而这一条根本没有 core 的码，
+ * 它是 UI 自己的文案，归 zh/en 那张对称的字典管。
  */
-const UNKNOWN_ERROR_MESSAGE = '未知错误：宿主回了一次失败，但没有给出原因'
+const unknownError = (): Error => new UiError('error.unknown')
 
 /**
  * 把宿主回过来的 `error` 字段还原成一个 Error。**读取端容错**：这里是进程边界，
@@ -58,5 +63,5 @@ export function errorFromWire(raw: unknown): Error {
       )
     }
   }
-  return new BridgeError(UNKNOWN_ERROR_MESSAGE)
+  return unknownError()
 }

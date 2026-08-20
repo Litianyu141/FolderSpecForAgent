@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, act, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { App } from './App.js'
 import { FakeBridge } from './test-bridge.js'
-import type { Bridge, FileReadResult, Group, OpenResult, Severity, ViewMode, ViewNode } from '@folderspec/core/api'
+import type { Bridge, FileReadResult, Group, OpenResult, ParseError, Severity, ViewMode, ViewNode } from '@folderspec/core/api'
 
 const tree = (children: ViewNode[]): ViewNode =>
   ({ name: 'repo', path: '', isDir: true, origin: 'both', children })
@@ -4092,5 +4092,95 @@ describe('core 的报错跟着语言开关走', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent)
       .toBe('Copy failed: the browser denied clipboard access. Copy it manually: /tmp/repo/src'))
     await flushChain()
+  })
+})
+
+// ===========================================================================
+// 解析失败的只读横幅：每一条既要带**正确的行号**，也要按当前语言给出原因。
+//
+// 这一块守的是本项目的红线之一——"契约解析失败 → 只读模式 + 报行号，绝不静默重写
+// 用户的文件"。行号是"能定位"的那一半：把它揉进某一种语言的句子里，另一种语言的
+// 用户就失去了唯一的下一步动作。所以行号由界面自己渲染，原因才走 translateError。
+// ===========================================================================
+
+/** 一条 core 侧 parseError() 产出、经 JSON 过 bridge 之后的解析错误（纯数据，没有原型） */
+const wireParseError = (line: number, message: string, code: string, params: Record<string, string | number>) =>
+  JSON.parse(JSON.stringify({ line, message, code, params })) as ParseError
+
+describe('解析失败横幅：行号与原因', () => {
+  // 逐字取自 core 的 EN_MESSAGES（英文的唯一定义处），代入 params 之后的样子
+  const EN_INDENT = 'Indentation must be a multiple of 2 spaces, but this line has 3.'
+  const EN_TAG = 'Unknown tag [planned]. Only role/template/severity are allowed.'
+  const ZH_INDENT = '缩进必须是 2 的倍数，实际 3 个空格'
+  const ZH_TAG = '未知标签 [planned]，只允许 role/template/severity'
+
+  const twoErrors = () => bridgeWith({
+    parseErrors: [
+      wireParseError(42, EN_INDENT, 'parse.indentNotMultipleOfTwo', { indent: 3 }),
+      wireParseError(7, EN_TAG, 'parse.unknownTag', { tag: 'planned' }),
+    ],
+  })
+
+  it('中文界面：行号照旧，原因按码换成中文', async () => {
+    render(<App bridge={twoErrors()} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    const items = screen.getAllByRole('listitem').map(li => li.textContent)
+    expect(items).toEqual([`第 42 行：${ZH_INDENT}`, `第 7 行：${ZH_TAG}`])
+  })
+
+  it('英文界面：行号是同两个数字，原因是 core 给的那句英文', async () => {
+    render(<App bridge={twoErrors()} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    await waitFor(() => expect(screen.getByText('read-only mode')).toBeTruthy())
+
+    const items = screen.getAllByRole('listitem').map(li => li.textContent)
+    expect(items).toEqual([`Line 42: ${EN_INDENT}`, `Line 7: ${EN_TAG}`])
+    await flushChain()
+  })
+
+  it('行号在中英两种语言下是同一个数字——这条单独钉，它是"能定位"的那一半', async () => {
+    // 只比行号，不比措辞：把行号写进任意一种语言的文案模板里，这一条就会红。
+    render(<App bridge={twoErrors()} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+    const zhLines = screen.getAllByRole('listitem')
+      .map(li => /(\d+)/.exec(li.textContent ?? '')?.[1])
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    await waitFor(() => expect(screen.getByText('read-only mode')).toBeTruthy())
+    const enLines = screen.getAllByRole('listitem')
+      .map(li => /(\d+)/.exec(li.textContent ?? '')?.[1])
+
+    expect(zhLines).toEqual(['42', '7'])
+    expect(enLines).toEqual(zhLines)
+    await flushChain()
+  })
+
+  it('切语言之后横幅仍然是只读横幅，没有把"解析失败"当成"契约为空"', async () => {
+    // 只读铁律：解析失败必须保持只读、并且原文件一个字节都不许被写回。切语言是一次
+    // 纯界面操作，不得动摇这两条——所以这里同时钉住"保存按钮仍然禁用"和"没有发出
+    // 任何 spec/save"。
+    const bridge = twoErrors()
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    await waitFor(() => expect(screen.getByText('read-only mode')).toBeTruthy())
+
+    expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true)
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/save')).toBe(false)
+  })
+
+  it('没有码的解析错误（旧宿主、或读文件失败那一格）照旧原样显示，不是 [object Object]', async () => {
+    // 读取端容错：ParseError 是纯数据，`e instanceof Error` 永远不成立。少了这条
+    // 兜底，横幅上只剩一个行号加一句 "[object Object]"——原因整段丢失。
+    const bridge = bridgeWith({ parseErrors: [{ line: 5, message: 'something the host said' }] })
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    expect(screen.getAllByRole('listitem')[0].textContent).toBe('第 5 行：something the host said')
   })
 })

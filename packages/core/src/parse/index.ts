@@ -3,6 +3,7 @@ import { parseStructure } from './structure.js'
 import { parseTemplates } from './templates.js'
 import { parseRules } from './rules.js'
 import { parseGroups } from './groups.js'
+import { parseError } from '../errors.js'
 import type { ParseError, Result, Spec } from '../types.js'
 
 export { splitSections } from './sections.js'
@@ -22,7 +23,10 @@ export function parseSpec(markdown: string): Result<Spec> {
 
   const version = Number(s.frontMatter.folderspec)
   if (!Number.isInteger(version) || version !== SUPPORTED_VERSION) {
-    errors.push({ line: 2, message: `不支持的 folderspec 版本 "${s.frontMatter.folderspec ?? ''}"，本工具支持 ${SUPPORTED_VERSION}` })
+    errors.push(parseError(2, 'parse.unsupportedVersion', {
+      version: s.frontMatter.folderspec ?? '',
+      supported: SUPPORTED_VERSION,
+    }))
   }
 
   const nodes = parseStructure(s.structure)

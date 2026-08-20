@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createWebSocketBridge } from './ws-bridge.js'
+import { translateError } from './i18n.js'
 
 /**
  * ui 包不能依赖任何 Node 内建模块（它跑在浏览器里），所以这里的替身必须是纯浏览器形状的
@@ -258,7 +259,7 @@ describe('createWebSocketBridge', () => {
 
     socket.triggerClose()
 
-    await expect(withTimeout(promise)).rejects.toThrow('与本地服务的连接已断开')
+    await expect(withTimeout(promise)).rejects.toMatchObject({ uiKey: 'error.connectionLost' })
   })
 
   it('socket 出错时 ready 被拒绝，后续请求立即失败', async () => {
@@ -270,10 +271,10 @@ describe('createWebSocketBridge', () => {
 
     socket.triggerError()
 
-    await expect(withTimeout(inFlight)).rejects.toThrow('与本地服务的连接已断开')
+    await expect(withTimeout(inFlight)).rejects.toMatchObject({ uiKey: 'error.connectionLost' })
 
     // socket 已经死了：之后再发的请求必须立刻拒绝，而不是排队等一个不会再来的 open
-    await expect(withTimeout(bridge.request('spec/save', {}))).rejects.toThrow('与本地服务的连接已断开')
+    await expect(withTimeout(bridge.request('spec/save', {}))).rejects.toMatchObject({ uiKey: 'error.connectionLost' })
   })
 
   it('socket 正常打开后又关闭，之后新发起的请求依然会立即被拒绝', async () => {
@@ -288,6 +289,42 @@ describe('createWebSocketBridge', () => {
 
     socket.triggerClose()
 
-    await expect(withTimeout(bridge.request('spec/save', {}))).rejects.toThrow('与本地服务的连接已断开')
+    await expect(withTimeout(bridge.request('spec/save', {}))).rejects.toMatchObject({ uiKey: 'error.connectionLost' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 连接断开那条报错要能跟着语言开关走。bridge 在 React 之外创建，拿不到当前语言——
+// 它抛的是**字典键**，翻译推迟到显示那一刻。
+// ---------------------------------------------------------------------------
+
+describe('连接断开的报错跟随语言开关', () => {
+  it('抛出来的是一条既是 Error、又带 uiKey 的报错，两种语言各渲染一份', async () => {
+    const bridge = createWebSocketBridge('ws://x')
+    const socket = FakeWebSocket.instances[0]!
+    socket.triggerOpen()
+    const promise = bridge.request('spec/save', {})
+    await flush()
+    socket.triggerClose()
+
+    const err = await withTimeout(promise).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    // 存进 App 的 state 的正是这个对象；横幅每次渲染时才按当前语言翻译。
+    expect(translateError(err, 'zh')).toBe('与本地服务的连接已断开，请重新启动 folderspec')
+    expect(translateError(err, 'en'))
+      .toBe('The connection to the local service has been lost. Please restart folderspec.')
+  })
+
+  it('宿主回了 ok:false 却没给理由时的兜底同样跟随语言', async () => {
+    const bridge = createWebSocketBridge('ws://x')
+    const socket = FakeWebSocket.instances[0]!
+    socket.triggerOpen()
+    const promise = bridge.request('spec/save', {})
+    await flush()
+    socket.triggerMessage({ id: 1, ok: false })
+
+    const err = await withTimeout(promise).catch((e: unknown) => e)
+    expect(translateError(err, 'zh')).toBe('未知错误：宿主回了一次失败，但没有给出原因')
+    expect(translateError(err, 'en')).toBe('Unknown error: the host reported a failure but gave no reason.')
   })
 })

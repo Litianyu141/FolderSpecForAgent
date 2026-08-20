@@ -1,4 +1,5 @@
 import { parseDocument } from 'yaml'
+import { parseError } from '../errors.js'
 import { isSeverity } from '../types.js'
 import { isPlainObject, lineAtOffset, topLevelItemOffsets } from './yaml-util.js'
 import type { Group, ParseError, Result, YamlBlock } from '../types.js'
@@ -12,17 +13,18 @@ export function parseGroups(block: YamlBlock | null): Result<Group[]> {
   if (doc.errors.length) {
     return {
       ok: false,
-      errors: doc.errors.map(e => ({
-        line: block.startLine + (e.linePos?.[0].line ?? 1) - 1,
-        message: `YAML 语法错误：${e.message}`,
-      })),
+      errors: doc.errors.map(e => parseError(
+        block.startLine + (e.linePos?.[0].line ?? 1) - 1,
+        'parse.yamlSyntax',
+        { message: e.message },
+      )),
     }
   }
 
   const raw: unknown = doc.toJS()
   if (raw === null || raw === undefined) return { ok: true, value: [] }
   if (!Array.isArray(raw)) {
-    return { ok: false, errors: [{ line: block.startLine, message: '分组区顶层必须是序列（每个分组一个 - 项）' }] }
+    return { ok: false, errors: [parseError(block.startLine, 'parse.groupsTopLevel')] }
   }
 
   const offsets = topLevelItemOffsets(doc)
@@ -31,55 +33,55 @@ export function parseGroups(block: YamlBlock | null): Result<Group[]> {
   const seen = new Set<string>()
 
   raw.forEach((item, idx) => {
-    const at = { line: lineAtOffset(block, offsets[idx]) }
+    const at = lineAtOffset(block, offsets[idx])
     if (!isPlainObject(item)) {
-      errors.push({ ...at, message: `第 ${idx + 1} 个分组必须是映射` })
+      errors.push(parseError(at, 'parse.groupNotMap', { index: idx + 1 }))
       return
     }
 
     const id = item.id
     if (typeof id !== 'string' || id === '') {
-      errors.push({ ...at, message: `第 ${idx + 1} 个分组缺少非空的 id` })
+      errors.push(parseError(at, 'parse.groupIdMissing', { index: idx + 1 }))
       return
     }
     if (seen.has(id)) {
-      errors.push({ ...at, message: `分组 id "${id}" 重复` })
+      errors.push(parseError(at, 'parse.groupIdDuplicate', { id }))
       return
     }
     seen.add(id)
 
     for (const key of Object.keys(item)) {
       if (!ALLOWED.has(key)) {
-        errors.push({ ...at, message: `分组 "${id}" 有未知字段 "${key}"，只允许 id/members/text/severity` })
+        errors.push(parseError(at, 'parse.groupUnknownField', { id, field: key }))
       }
     }
 
     let bad = false
     const members = item.members
     if (!Array.isArray(members) || members.length === 0 || members.some(m => typeof m !== 'string' || m === '')) {
-      errors.push({ ...at, message: `分组 "${id}" 的 members 必须是非空的字符串数组` })
+      errors.push(parseError(at, 'parse.groupMembersType', { id }))
       bad = true
     } else if ((members as string[]).some(m => m.split('/').includes('..'))) {
-      errors.push({ ...at, message: `分组 "${id}" 的 members 不得包含 ".." 路径段` })
+      errors.push(parseError(at, 'parse.groupMembersParentSegment', { id }))
       bad = true
     } else if ((members as string[]).some(m => m.startsWith('/') || /^[A-Za-z]:[\\/]/.test(m))) {
       // 绝对路径（含 Windows 盘符形式 C:\ / C:/）不满足"工作区相对路径"的约定；
       // 静默收下会导致 merge 反查永远匹配不上——界面上什么都不显示，也没有报错，
       // 这正是本项目明令禁止的"静默丢数据"，所以必须在解析边界就拦下。
-      errors.push({ ...at, message: `分组 "${id}" 的 members 不得是绝对路径，必须是工作区相对 posix 路径` })
+      errors.push(parseError(at, 'parse.groupMembersAbsolute', { id }))
       bad = true
     } else if ((members as string[]).some(m => m.includes('\\'))) {
-      errors.push({ ...at, message: `分组 "${id}" 的 members 不得包含反斜杠 "\\"，必须使用 "/" 分隔的 posix 路径` })
+      errors.push(parseError(at, 'parse.groupMembersBackslash', { id }))
       bad = true
     }
 
     if (typeof item.text !== 'string' || item.text === '') {
-      errors.push({ ...at, message: `分组 "${id}" 缺少非空的 text` })
+      errors.push(parseError(at, 'parse.groupTextMissing', { id }))
       bad = true
     }
 
     if (item.severity !== undefined && !isSeverity(item.severity)) {
-      errors.push({ ...at, message: `分组 "${id}" 的 severity 只能是 error/warning/advisory` })
+      errors.push(parseError(at, 'parse.groupSeverityInvalid', { id }))
       bad = true
     }
 

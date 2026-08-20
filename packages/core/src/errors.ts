@@ -31,9 +31,13 @@
  * 错了"。
  */
 
-// 唯一的一条 import，且是 `import type`：编译后一行都不剩，本文件仍然零运行期依赖
+// 只有两条 import，且都是 `import type`：编译后一行都不剩，本文件仍然零运行期依赖
 // （index.ts 里 `export { SpecError, … }` 因此不会给任何消费者引入别的模块）。
+// 与 types.ts 互相 import 类型是有意为之：ParseError 要用这里的 SpecErrorCode，
+// 这里的 parseError() 要产出一个 ParseError。两边都是类型导入，编译产物里不存在
+// 这条边，不构成运行期循环依赖。
 import type { WireError } from './api.js'
+import type { ParseError } from './types.js'
 
 /**
  * 全部英文文案。**这是英文的唯一定义处**（要点 2）。
@@ -145,6 +149,161 @@ export const EN_MESSAGES = {
   // ---- 写盘前的自校验 ----
   'serialize.selfCheckFailed':
     'The serialize → parse self-check failed, so the write was aborted to avoid corrupting the contract file: {details}',
+
+  // ============================================================
+  // 解析层（parse/*.ts）。这一批不是 throw 出来的：它们是 `ParseError` 里的一条纯数据，
+  // 带着行号成组出现在"契约解析失败 → 只读模式"的横幅上。
+  //
+  // **为什么和上面那批同住一张表**：显示端（ui 的 translateError）只认 code，不关心
+  // 这条错误是被 throw 出来的还是被收集出来的；英文只有一份这条要点（见文件头要点 2）
+  // 对两边同样成立。分成两张表只会让"新增的码有没有中文"要核对两次。
+  //
+  // **行号不在文案里**，它是 ParseError.line 这个独立字段，由界面自己渲染成
+  // "第 N 行："/"Line N: "（ui 的 banner.parseErrorLine）。这一点必须保持：解析失败时
+  // 用户唯一能做的事就是照着行号去改文件，把行号揉进某一种语言的句子里，等于让另一种
+  // 语言的用户失去定位手段。
+  //
+  // 用户/磁盘给的原文（跑偏的那一行文本、YAML 库的原始报错、模板名、规则 id……）一律
+  // 走 params，绝不揉进模板：它们是数据，两种语言下都该原样显示。
+  // ============================================================
+
+  // ---- 分区（parse/sections.ts）----
+  'parse.frontMatterMissing':
+    'The file must begin with a YAML front-matter block opened by a line containing only "---".',
+  'parse.frontMatterLine':
+    'A front-matter line must read "key: value", but got "{text}".',
+  'parse.frontMatterUnclosed':
+    'The front-matter block is missing its closing "---".',
+  'parse.unknownSection':
+    'Unknown section heading "## {title}". Only Structure, Templates, Rules and Groups are allowed (their Chinese spellings are accepted as well).',
+  'parse.yamlFenceRequired':
+    'The Templates, Rules and Groups sections must each hold a ```yaml fenced code block.',
+  'parse.yamlBlockOnly':
+    'Only a ```yaml fenced code block is allowed inside this section, but got "{text}".',
+  'parse.yamlFenceUnclosed':
+    'The yaml code block is missing its closing ```.',
+  'parse.strayContent':
+    'Content found outside every section: move it into one of ## Structure / ## Templates / ## Rules / ## Groups, or delete it. Got "{text}".',
+  'parse.structureSectionMissing':
+    'The "## Structure" section is missing.',
+
+  // ---- 结构区（parse/structure.ts）----
+  'parse.bulletRequired':
+    'A structure line must look like "- `name`".',
+  'parse.indentNotMultipleOfTwo':
+    'Indentation must be a multiple of 2 spaces, but this line has {indent}.',
+  'parse.indentSkipsLevel':
+    'Indentation skips a level: the previous line is at depth {prev}, this one at depth {depth}.',
+  'parse.nameBackticksRequired':
+    'The node name must be wrapped in backticks, for example `src/`.',
+  'parse.nameEmpty':
+    'The node name is empty.',
+  'parse.tagValueMissing':
+    'The [{tag}:...] tag is missing its value.',
+  'parse.severityInvalid':
+    'severity must be one of error/warning/advisory, but got "{value}".',
+  'parse.unknownTag':
+    'Unknown tag [{tag}]. Only role/template/severity are allowed.',
+  'parse.annotationSeparator':
+    'A comment must be preceded by " — " (a space, an em dash, and a space).',
+  'parse.parentNotFound':
+    'No parent node could be found for this line.',
+  'parse.parentNotDir':
+    'The parent node `{name}` is not a directory, so it cannot have children.',
+  'parse.duplicateSibling':
+    'Duplicate sibling `{name}` (already declared above as `{other}`): two siblings with the same name are a duplicate declaration — delete one of them, or rename it.',
+
+  // ---- YAML 三区共用（parse/templates.ts、rules.ts、groups.ts）----
+  // {message} 是 yaml 库给的原始报错，本身就是英文；它是外来数据，不翻译。
+  'parse.yamlSyntax':
+    'YAML syntax error: {message}',
+
+  // ---- 模板区（parse/templates.ts）----
+  'parse.templatesTopLevel':
+    'The Templates section must be a mapping at the top level (template name → definition).',
+  'parse.templateDefNotMap':
+    'The definition of template "{name}" must be a mapping.',
+  'parse.templateUnknownField':
+    'Template "{name}" has an unknown field "{field}". Only description/root/children/exemplar are allowed.',
+  'parse.templateDescriptionType':
+    'The description of template "{name}" must be a string.',
+  'parse.templateRootNotMap':
+    'The root of template "{name}" must be a mapping.',
+  'parse.templateRootUnknownField':
+    'The root of template "{name}" has an unknown field "{field}". Only variable/naming are allowed.',
+  'parse.templateRootVariableType':
+    'The root.variable of template "{name}" must be a string.',
+  'parse.templateRootNamingType':
+    'The root.naming of template "{name}" must be a string.',
+  'parse.templateChildrenNotMap':
+    'The children of template "{name}" must be a mapping.',
+  'parse.templateChildNotMap':
+    'Child "{child}" of template "{name}" must be a mapping.',
+  'parse.templateChildUnknownField':
+    'Child "{child}" of template "{name}" has an unknown field "{field}". Only role/required are allowed.',
+  'parse.templateChildRequiredType':
+    'The required of child "{child}" of template "{name}" must be true or false.',
+  'parse.templateChildRoleType':
+    'The role of child "{child}" of template "{name}" must be a string.',
+  'parse.templateExemplarType':
+    'The exemplar of template "{name}" must be an array of strings.',
+
+  // ---- 规则区（parse/rules.ts）----
+  'parse.rulesTopLevel':
+    'The Rules section must be a sequence at the top level (one "- " item per rule).',
+  'parse.ruleNotMap':
+    'Rule #{index} must be a mapping.',
+  'parse.ruleIdMissing':
+    'Rule #{index} is missing a non-empty id.',
+  'parse.ruleIdDuplicate':
+    'The rule id "{id}" appears more than once.',
+  'parse.ruleUnknownField':
+    'Rule "{id}" has an unknown field "{field}". Only id/severity/scope/text are allowed.',
+  'parse.ruleSeverityInvalid':
+    'The severity of rule "{id}" must be one of error/warning/advisory.',
+  'parse.ruleScopeMissing':
+    'Rule "{id}" is missing a non-empty scope (a glob expression).',
+  'parse.ruleTextMissing':
+    'Rule "{id}" is missing a non-empty text.',
+
+  // ---- 分组区（parse/groups.ts）----
+  'parse.groupsTopLevel':
+    'The Groups section must be a sequence at the top level (one "- " item per group).',
+  'parse.groupNotMap':
+    'Group #{index} must be a mapping.',
+  'parse.groupIdMissing':
+    'Group #{index} is missing a non-empty id.',
+  'parse.groupIdDuplicate':
+    'The group id "{id}" appears more than once.',
+  'parse.groupUnknownField':
+    'Group "{id}" has an unknown field "{field}". Only id/members/text/severity are allowed.',
+  'parse.groupMembersType':
+    'The members of group "{id}" must be a non-empty array of strings.',
+  'parse.groupMembersParentSegment':
+    'The members of group "{id}" may not contain a ".." path segment.',
+  'parse.groupMembersAbsolute':
+    'The members of group "{id}" may not be absolute paths; they must be workspace-relative posix paths.',
+  'parse.groupMembersBackslash':
+    'The members of group "{id}" may not contain a backslash "\\"; they must be posix paths separated by "/".',
+  'parse.groupTextMissing':
+    'Group "{id}" is missing a non-empty text.',
+  'parse.groupSeverityInvalid':
+    'The severity of group "{id}" must be one of error/warning/advisory.',
+
+  // ---- 串联（parse/index.ts）----
+  'parse.unsupportedVersion':
+    'Unsupported folderspec version "{version}". This tool supports version {supported}.',
+
+  // ---- 契约文件读不出来（session.ts）。归在这一批是因为它走的是同一条出口：
+  //      它也是一条 ParseError，也进只读横幅。行号是 0（错的不是某一行，是整个文件）。
+  'spec.unreadable':
+    'The contract file {path} could not be read ({errno}): {detail}. This session is read-only so that existing content is not overwritten.',
+
+  // ---- 读文件（file-read.ts）：中间栏「无法读取：…」后面那半句 ----
+  'file.isDirectory':
+    'This is a directory, not a file.',
+  'file.notRegularFile':
+    'This is not a regular file.',
 } as const
 
 /**
@@ -218,4 +377,25 @@ export function isSpecError(e: unknown): e is SpecError {
 export function toWireError(e: unknown): WireError {
   if (isSpecError(e)) return { message: e.message, code: e.code, params: e.params }
   return { message: e instanceof Error ? e.message : String(e) }
+}
+
+/**
+ * 解析层用的那一半：一条带行号的 `ParseError`，`message` 同样是渲染好的英文。
+ *
+ * **为什么不是 `SpecError`**：解析错误不是抛出来的，它们是被**收集**的——一次解析要把
+ * 整个文件的问题一次报全（`Result<T>` 的 errors 数组），中途 throw 只会让用户改一条、
+ * 重载一次、再看到下一条。而且它要经 JSON 过 bridge 进 `OpenResult.parseErrors`，
+ * Error 实例过不去（原型没了，还会丢掉 line 这个自定义字段）。所以它是纯数据。
+ *
+ * **`line` 单独一个字段，绝不写进文案**：解析失败时用户唯一能做的事就是照着行号去改
+ * 文件——"解析失败 → 只读 + 报行号，绝不静默重写"是这个工具的红线，行号是"能定位"
+ * 的那一半。揉进英文句子里，中文界面就只能连着英文一起显示；界面自己渲染行号，两种
+ * 语言下拿到的才是同一个数字。
+ */
+export function parseError(
+  line: number,
+  code: SpecErrorCode,
+  params: SpecErrorParams = {},
+): ParseError {
+  return { line, message: renderEnglish(code, params), code, params }
 }

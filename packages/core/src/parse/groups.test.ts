@@ -38,7 +38,7 @@ describe('parseGroups', () => {
     const r = parseGroups(block('id: x'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('分组区顶层必须是序列')
+    expect(r.errors[0].code).toBe('parse.groupsTopLevel')
   })
 
   it('id 重复时报第二次出现的行号', () => {
@@ -48,7 +48,7 @@ describe('parseGroups', () => {
     ].join('\n')))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('分组 id "dup" 重复')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.groupIdDuplicate', params: { id: 'dup' } })
     expect(r.errors[0].line).toBe(31)
   })
 
@@ -56,21 +56,21 @@ describe('parseGroups', () => {
     const r = parseGroups(block('- { id: g, members: [], text: t }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('members 必须是非空的字符串数组')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.groupMembersType', params: { id: 'g' } })
   })
 
   it('members 含 .. 时报错', () => {
     const r = parseGroups(block('- { id: g, members: ["../x.ts"], text: t }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('不得包含 ".." 路径段')
+    expect(r.errors[0].code).toBe('parse.groupMembersParentSegment')
   })
 
   it('members 是以 / 开头的绝对路径时报错', () => {
     const r = parseGroups(block('- { id: g, members: ["/etc/passwd"], text: t }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('不得是绝对路径')
+    expect(r.errors[0].code).toBe('parse.groupMembersAbsolute')
     expect(r.errors[0].line).toBe(30)
   })
 
@@ -78,7 +78,7 @@ describe('parseGroups', () => {
     const r = parseGroups(block("- { id: g, members: ['C:\\Users\\x'], text: t }"))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('不得是绝对路径')
+    expect(r.errors[0].code).toBe('parse.groupMembersAbsolute')
     expect(r.errors[0].line).toBe(30)
   })
 
@@ -86,7 +86,7 @@ describe('parseGroups', () => {
     const r = parseGroups(block("- { id: g, members: ['src\\core\\a.ts'], text: t }"))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('反斜杠')
+    expect(r.errors[0].code).toBe('parse.groupMembersBackslash')
     expect(r.errors[0].line).toBe(30)
   })
 
@@ -103,14 +103,14 @@ describe('parseGroups', () => {
     const r = parseGroups(block('- { id: g, members: [a.ts], text: t, colour: red }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('有未知字段 "colour"')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.groupUnknownField', params: { id: 'g', field: 'colour' } })
   })
 
   it('非法 severity 被拒绝', () => {
     const r = parseGroups(block('- { id: g, members: [a.ts], text: t, severity: fatal }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('severity 只能是 error/warning/advisory')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.groupSeverityInvalid', params: { id: 'g' } })
   })
 
   it('多行块式分组的错误行号指向该分组起始行', () => {

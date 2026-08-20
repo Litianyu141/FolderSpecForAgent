@@ -33,7 +33,7 @@ describe('parseRules', () => {
     const r = parseRules(block('id: x'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('规则区顶层必须是序列')
+    expect(r.errors[0].code).toBe('parse.rulesTopLevel')
   })
 
   it('id 重复时报错', () => {
@@ -43,7 +43,7 @@ describe('parseRules', () => {
     ].join('\n')))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('规则 id "dup" 重复')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.ruleIdDuplicate', params: { id: 'dup' } })
   })
 
   it('缺少必填字段时逐条报错', () => {
@@ -59,15 +59,14 @@ describe('parseRules', () => {
     const r = parseRules(block('- { id: x, severity: fatal, scope: "**", text: t }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('severity 只能是 error/warning/advisory')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.ruleSeverityInvalid', params: { id: 'x' } })
   })
 
   it('规则未知字段报错', () => {
     const r = parseRules(block('- { id: x, sevrity: error, scope: "**", text: t }'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    const msgs = r.errors.map(e => e.message).join(' | ')
-    expect(msgs).toContain('有未知字段 "sevrity"')
+    expect(r.errors.some(e => e.code === 'parse.ruleUnknownField' && e.params?.field === 'sevrity')).toBe(true)
   })
 
   it('多行块式规则的错误行号指向该规则起始行', () => {

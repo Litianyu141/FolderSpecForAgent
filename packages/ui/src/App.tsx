@@ -1228,8 +1228,13 @@ export function App({ bridge, initialRoot }: AppProps) {
             <div className="fs-banner" role="alert">
               {t('banner.parseErrorPrefix')}<strong>{t('banner.parseErrorReadOnly')}</strong>{t('banner.parseErrorSuffix')}
               <ul>
+                {/* 行号由这里渲染（banner.parseErrorLine），原因走 translateError 按码翻译。
+                    两件事分开是刻意的：行号在两种语言下必须是同一个数字——解析失败时只读
+                    模式下用户唯一能做的事就是照着它去改文件。 */}
                 {parseErrors.map(e => (
-                  <li key={`${e.line}-${e.message}`}>{t('banner.parseErrorLine', { line: e.line })}{e.message}</li>
+                  <li key={`${e.line}-${e.message}`}>
+                    {t('banner.parseErrorLine', { line: e.line })}{translateError(e, lang)}
+                  </li>
                 ))}
               </ul>
             </div>

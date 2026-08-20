@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EN_MESSAGES, SpecError, isSpecError, renderEnglish } from './errors.js'
+import { EN_MESSAGES, SpecError, isSpecError, parseError, renderEnglish } from './errors.js'
 import type { SpecErrorCode } from './errors.js'
 
 const ALL_CODES = Object.keys(EN_MESSAGES) as SpecErrorCode[]
@@ -73,6 +73,57 @@ describe('文案本身的约束（这几条守的是 errors.ts 顶部的要点 1
   it('每个 code 都是点分命名空间，与 ui/src/i18n.ts 的键风格一致', () => {
     for (const code of ALL_CODES) {
       expect(code).toMatch(/^[a-z][a-zA-Z]*(\.[a-z][a-zA-Z]*)+$/)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseError：解析层用的那半边。解析错误不是 throw 出来的，它是 `ParseError` 里的
+// 一条纯数据（带行号，成组出现在只读横幅上），但它同样要按码翻译，所以英文来自
+// 同一张 EN_MESSAGES。
+// ---------------------------------------------------------------------------
+
+describe('parseError', () => {
+  it('带上行号、渲染好的英文 message，以及 code + params', () => {
+    const e = parseError(7, 'parse.indentNotMultipleOfTwo', { indent: 3 })
+    expect(e.line).toBe(7)
+    expect(e.code).toBe('parse.indentNotMultipleOfTwo')
+    expect(e.params).toEqual({ indent: 3 })
+    expect(e.message).toBe(renderEnglish('parse.indentNotMultipleOfTwo', { indent: 3 }))
+    expect(e.message).toContain('3')
+  })
+
+  it('params 省略时是空对象，不是 undefined——收端不必判空', () => {
+    expect(parseError(1, 'parse.frontMatterMissing').params).toEqual({})
+  })
+
+  it('**不是** Error 实例：它是要经 JSON 过 bridge 的纯数据', () => {
+    // 这一条钉住的是 UI 侧的一个坑：translateError 原本只认 `e instanceof Error`，
+    // 一个纯数据的 ParseError 会掉进 String(e)、在英文界面上显示成 "[object Object]"。
+    // 那正是"解析失败要能定位"这条铁律被架空的样子，所以这里先把形状钉死。
+    expect(parseError(1, 'parse.frontMatterMissing')).not.toBeInstanceOf(Error)
+  })
+})
+
+describe('解析层的码', () => {
+  const PARSE_CODES = ALL_CODES.filter(c => c.startsWith('parse.'))
+
+  it('58 处解析报错收敛成 56 个码，全在同一张 EN_MESSAGES 里——英文只有一份', () => {
+    // 58 与 56 的差：parse.yamlSyntax 一个码覆盖 templates/rules/groups 三处同样的
+    // "YAML 语法错误：…"。
+    //
+    // 这是一次**清点**，不是设计约束：将来真要新增一个解析码，改掉这个数字就是了。
+    // 留着它是因为改这个数字的那一刻，正好是顺手确认"ui 的 ERROR_ZH 也跟上了"的时刻
+    // ——而漏翻一条的运行期表现是"这一句永远是英文"，界面上没有任何症状。
+    expect(PARSE_CODES.length).toBe(56)
+  })
+
+  it('每一条解析错误的英文里都不含行号——行号是 ParseError.line，由界面自己渲染', () => {
+    // 揉进文案就意味着它只在一种语言下正确。而"解析失败 → 只读 + 报行号"是本工具的
+    // 红线，行号是"能定位"的那一半。
+    for (const code of PARSE_CODES) {
+      expect(EN_MESSAGES[code], code).not.toMatch(/\{line\}/)
+      expect(EN_MESSAGES[code], code).not.toMatch(/\bline \d/i)
     }
   })
 })

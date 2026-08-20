@@ -1,6 +1,6 @@
 import type { FileReadResult, ViewNode } from '@folderspec/core/api'
 import { highlightToHtml, languageFor } from './highlight.js'
-import { useT } from './i18n.js'
+import { translateError, useLang, useT } from './i18n.js'
 
 export interface ContentPaneProps {
   node: ViewNode | null
@@ -10,6 +10,7 @@ export interface ContentPaneProps {
 
 export function ContentPane({ node, content, loading }: ContentPaneProps) {
   const t = useT()
+  const lang = useLang()
 
   if (!node) return <div className="fs-content-empty">{t('contentPane.empty')}</div>
 
@@ -38,8 +39,14 @@ export function ContentPane({ node, content, loading }: ContentPaneProps) {
           {t('contentPane.tooLarge', { size: (content.size / 1024 / 1024).toFixed(2) })}
         </p>
       )}
+      {/* reason 是 core 渲染好的英文；带码的那两格（是目录 / 不是普通文件）由
+          translateError 按当前语言换一份，来自 fs 的失败没有码、原样显示（那是 node
+          给的原文，errno 是用户唯一能拿去搜索的线索）。 */}
       {content.kind === 'unreadable' && (
-        <p className="fs-content-note">{t('contentPane.unreadablePrefix')}{content.reason}</p>
+        <p className="fs-content-note">
+          {t('contentPane.unreadablePrefix')}
+          {translateError({ message: content.reason, code: content.code, params: content.params }, lang)}
+        </p>
       )}
       {content.kind === 'text' && <CodeView text={content.text} fileName={node.name} />}
     </div>

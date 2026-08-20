@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { zh, en, translate, translateError, ERROR_ZH } from './i18n.js'
+// **测试专用的运行期 import，源码里绝不许出现。** `@folderspec/core` 是 ui 的
+// devDependency（不是 dependency），打进浏览器产物的只有 src/，而 src/ 对 core 一律
+// `import type`。走 `/errors` 这条子路径而不是包根：dist/errors.js 编译后没有任何
+// import 语句，拿它做覆盖率核对不会把 node:fs、yaml 这些东西拖进 jsdom 里。
+// 代价是这份测试从此需要先 `pnpm -C packages/core build`（与 packages/cli 同款前提）。
+import { EN_MESSAGES } from '@folderspec/core/errors'
+import { zh, en, translate, translateError, ERROR_ZH, UiError } from './i18n.js'
 
 describe('i18n 字典', () => {
   it('zh 与 en 键集完全一致——遍历比较，不是抽查几个键', () => {
@@ -122,5 +128,93 @@ describe('translateError 也管我们自己生成的那条界面报错', () => {
     expect(translateError(msg, 'zh')).toBe('复制失败：浏览器拒绝了剪贴板写入。请手动复制：/tmp/repo/src')
     expect(translateError(msg, 'en'))
       .toBe('Copy failed: the browser denied clipboard access. Copy it manually: /tmp/repo/src')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 覆盖率：core 的每一个码都必须有中文。
+//
+// 这条脚本式用例遍历 EN_MESSAGES 的全部键，两个方向各查一次——"少一条"意味着某个
+// 报错在中文界面上永远是英文（界面看着完全正常，没有任何症状能让人发现）；"多一条"
+// 意味着 core 那侧删了或改名了一个码，而这边留下一条永远查不到的死条目。
+// ---------------------------------------------------------------------------
+
+describe('ERROR_ZH 对 core 错误码的覆盖率', () => {
+  const CORE_CODES = Object.keys(EN_MESSAGES).sort()
+  const ZH_CODES = Object.keys(ERROR_ZH).sort()
+
+  it('一个不缺：core 的每个码都有中文', () => {
+    const missing = CORE_CODES.filter(c => !ZH_CODES.includes(c))
+    expect(missing).toEqual([])
+  })
+
+  it('一个不多：ERROR_ZH 里没有 core 已经不认识的死条目', () => {
+    const extra = ZH_CODES.filter(c => !CORE_CODES.includes(c))
+    expect(extra).toEqual([])
+  })
+
+  it('两边的码集完全相同（换个角度复核一遍，避免上面两条同时被同一个巧合骗过）', () => {
+    expect(ZH_CODES).toEqual(CORE_CODES)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 解析错误：它是一条**纯数据**（{ line, message, code, params }），不是 Error 实例。
+// 这一节钉的是"英文界面下解析错误不能变成 [object Object]"——那等于把"解析失败要能
+// 定位"这条铁律拆掉一半。
+// ---------------------------------------------------------------------------
+
+/** 夹具：一条 ParseError 跨过 bridge 之后在 UI 侧的样子（纯数据，没有原型）。 */
+const parseErr = (line: number, message: string, code?: string, params?: Record<string, string | number>) =>
+  JSON.parse(JSON.stringify({ line, message, code, params })) as unknown
+
+describe('translateError 认得纯数据形状的 ParseError', () => {
+  const EN = 'Indentation must be a multiple of 2 spaces, but this line has 3.'
+
+  it('中文界面：按码查到中文模板，params 代回占位符', () => {
+    const out = translateError(parseErr(7, EN, 'parse.indentNotMultipleOfTwo', { indent: 3 }), 'zh')
+    expect(out).toBe('缩进必须是 2 的倍数，实际 3 个空格')
+  })
+
+  it('英文界面：用 core 渲染好的 message，**不是** "[object Object]"', () => {
+    const out = translateError(parseErr(7, EN, 'parse.indentNotMultipleOfTwo', { indent: 3 }), 'en')
+    expect(out).toBe(EN)
+    expect(out).not.toContain('[object Object]')
+  })
+
+  it('没有码的那一条（例如宿主给的旧格式）照旧原样显示 message', () => {
+    expect(translateError(parseErr(3, 'line 3 went wrong'), 'zh')).toBe('line 3 went wrong')
+  })
+
+  it('行号不在文案里——两种语言下都由界面自己渲染，谁也不会把它翻丢', () => {
+    for (const lang of ['zh', 'en'] as const) {
+      const out = translateError(parseErr(7, EN, 'parse.indentNotMultipleOfTwo', { indent: 3 }), lang)
+      expect(out).not.toContain('7')
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// UiError：UI 自己抛的报错（bridge 层那两条）。bridge 不知道也不需要知道当前语言，
+// 它抛一个带**字典键**的错误，翻译照旧推迟到显示那一刻。
+// ---------------------------------------------------------------------------
+
+describe('UiError', () => {
+  it('是一个 Error：既有的 reject / catch / e.message 链路一个字都不用改', () => {
+    const e = new UiError('error.connectionLost')
+    expect(e).toBeInstanceOf(Error)
+    expect(e.name).toBe('UiError')
+  })
+
+  it('message 是英文——与 core 的取舍一致：不翻译的消费者（日志）也得读得懂', () => {
+    expect(new UiError('error.connectionLost').message).toBe(translate('en', 'error.connectionLost'))
+    expect(new UiError('error.connectionLost').message).not.toMatch(/[\u4e00-\u9fff]/)
+  })
+
+  it('translateError 按当前语言渲染它，两个方向都对', () => {
+    const e = new UiError('error.connectionLost')
+    expect(translateError(e, 'zh')).toBe(translate('zh', 'error.connectionLost'))
+    expect(translateError(e, 'en')).toBe(translate('en', 'error.connectionLost'))
+    expect(translateError(e, 'zh')).not.toBe(translateError(e, 'en'))
   })
 })

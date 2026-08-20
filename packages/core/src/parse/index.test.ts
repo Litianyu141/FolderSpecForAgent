@@ -44,7 +44,7 @@ describe('parseSpec', () => {
     const r = parseSpec(DOC.replace('folderspec: 1', 'folderspec: 2'))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.errors[0].message).toContain('不支持的 folderspec 版本')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.unsupportedVersion', params: { version: '2', supported: 1 } })
   })
 
   it('把各区块的错误合并上报并按行号排序', () => {
@@ -123,7 +123,7 @@ describe('parseSpec 拒绝同名兄弟节点', () => {
     if (r.ok) return
     expect(r.errors).toHaveLength(1)
     expect(r.errors[0].line).toBe(11)
-    expect(r.errors[0].message).toContain('重名')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.duplicateSibling', params: { name: 'src/', other: 'src/' } })
   })
 
   it('同名的"文件 + 目录"也算重复声明', () => {
@@ -136,7 +136,7 @@ describe('parseSpec 拒绝同名兄弟节点', () => {
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.errors[0].line).toBe(10)
-    expect(r.errors[0].message).toContain('重名')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.duplicateSibling', params: { name: 'src', other: 'src/' } })
   })
 
   it('嵌套层里的同名兄弟同样被拒绝，而不是只查根层', () => {
@@ -148,7 +148,7 @@ describe('parseSpec 拒绝同名兄弟节点', () => {
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.errors[0].line).toBe(11)
-    expect(r.errors[0].message).toContain('重名')
+    expect(r.errors[0]).toMatchObject({ code: 'parse.duplicateSibling', params: { name: 'core/', other: 'core/' } })
   })
 
   it('不同父节点下的同名节点是合法的，不能误伤', () => {

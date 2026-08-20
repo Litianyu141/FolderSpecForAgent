@@ -95,6 +95,12 @@ describe('Session.open', () => {
       expect(r.parseErrors).not.toBeNull()
       expect(r.parseErrors!.map(e => e.message).join('')).toContain('EACCES')
       expect(r.parseErrors!.map(e => e.message).join('')).toContain(specPath)
+      // 它和解析失败那一批走同一条出口（只读横幅），所以也得带上码与参数，
+      // 否则英文界面下这一条会是唯一一句翻不动的
+      expect(r.parseErrors![0]).toMatchObject({
+        code: 'spec.unreadable',
+        params: { path: specPath, errno: 'EACCES' },
+      })
       // 文件确实在那儿，只是读不出来——不能报告成"没有契约文件"
       expect(r.hasSpec).toBe(true)
 
