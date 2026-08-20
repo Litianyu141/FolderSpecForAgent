@@ -61,11 +61,20 @@ code --install-extension folderspec-vscode-0.6.0.vsix
 
 ### VSCode 扩展怎么用
 
-装好之后，**打开任意 `.folderspec.md` 文件**就会进入 FolderSpec 的可视化编辑器，而不是
-纯文本视图。想看原始文本时用"打开方式 → 文本编辑器"。
+两个入口，看契约文件存不存在。
 
-命令面板里还有一条 `FolderSpec：打开结构契约`：当前工作区没有 `.folderspec.md` 时它会问你
-要不要创建一个，然后直接打开。
+**从零开始——走命令面板：**
+
+1. 按 `Ctrl+Shift+P`（macOS 是 `⌘⇧P`）调出顶部命令搜索栏
+2. 输入 **FolderSpec**，选中 `FolderSpec：打开结构契约`
+3. 当前工作区还没有 `.folderspec.md` 时会弹框问你要不要创建，点「创建」，
+   可视化编辑器随即在新文件上打开
+
+**打开已经存在的那份：**
+
+直接打开 `.folderspec.md` 就行——FolderSpec 已注册为它的默认编辑器，会代替纯文本视图。
+想显式选择就右键该文件 → **打开方式（Open With…）** → **FolderSpec 结构契约**。
+想看回原始文本也是这个菜单，选**文本编辑器**。
 
 保存走的是 VSCode 的 `WorkspaceEdit`，所以脏标记、`Ctrl+S`、撤销栈都正常工作。
 

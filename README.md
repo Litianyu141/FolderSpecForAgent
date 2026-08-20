@@ -69,13 +69,22 @@ file. Reload the window (`Developer: Reload Window`) afterwards.
 
 ### Using the VSCode extension
 
-Once it is installed, **opening any `.folderspec.md` file** brings up the FolderSpec
-visual editor instead of the plain-text view. Use "Open With → Text Editor" when you
-want the raw text.
+There are two ways in, depending on whether the contract exists yet.
 
-The command palette carries one entry, `FolderSpec：打开结构契约` ("Open structure
-contract" — the extension's command titles are not localized yet). If the current
-workspace has no `.folderspec.md`, it offers to create one and then opens it.
+**Starting from scratch — via the command palette:**
+
+1. Press `Ctrl+Shift+P` (`⌘⇧P` on macOS) to open the command palette
+2. Type **FolderSpec** and pick `FolderSpec：打开结构契约`
+   (the extension's command titles are not localized yet — "Open structure contract")
+3. If the workspace has no `.folderspec.md` yet, a dialog asks whether to create one.
+   Confirm, and the visual editor opens on the new file.
+
+**Opening one that already exists:**
+
+Just open the `.folderspec.md` file — FolderSpec is registered as its default editor,
+so it comes up instead of the plain-text view. To choose explicitly, right-click the
+file → **Open With…** → **FolderSpec 结构契约**. The same menu is how you get back to
+the raw text: pick **Text Editor** there.
 
 Saving goes through VSCode's `WorkspaceEdit`, so the dirty marker, `Ctrl+S`, and the
 editor's own undo stack all behave the way you expect.
