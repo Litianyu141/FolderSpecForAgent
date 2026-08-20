@@ -49,7 +49,10 @@ describe('buildWebviewHtml', () => {
   it('新增的表面色 token 也映射到 VSCode 主题变量', () => {
     const html = build()
     expect(html).toContain('--fs-sidebar-bg: var(--vscode-sideBar-background')
-    expect(html).toContain('--fs-editor-bg: var(--vscode-editor-background')
+    // --fs-editor-bg 那一条已删除：它与 --fs-bg 指同一个 VSCode 变量、同一个兜底值，
+    // 是中间栏那层纯冗余背景的唯一消费者（见 THEME_BRIDGE 里留下的说明与 layout.css
+    // 的 .fs-pane-content）。断言一个不该再存在的映射会把删除本身钉死，故一并移除。
+    expect(html).not.toContain('--fs-editor-bg')
     expect(html).toContain('--fs-panel-border: var(--vscode-panel-border')
     expect(html).toContain('--fs-row-hover-bg: var(--vscode-list-hoverBackground')
     expect(html).toContain('--fs-indent-guide: var(--vscode-tree-indentGuidesStroke')

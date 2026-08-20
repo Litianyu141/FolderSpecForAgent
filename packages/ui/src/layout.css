@@ -17,9 +17,14 @@
   display: flex; flex-direction: column; min-height: 0; overflow: hidden;
   background: var(--fs-sidebar-bg); border-right: 1px solid var(--fs-panel-border);
 }
+/* 刻意**不**给这一栏自己的背景，让它透出 .fs-shell 的 --fs-bg。
+ * 它原来画的是一个单独的 --fs-editor-bg，而那个 token 和 --fs-bg 在两个宿主里
+ * 取的都是同一个值（CLI 都是 #ffffff，VSCode 都映射到 --vscode-editor-background），
+ * 也就是说这一层背景从来没有表达过任何"这一栏与 app 不同色"的意图，只提供了一处
+ * 将来可能分叉出色块的接缝。用户报的那块灰底根因不在这里（见下面 .fs-code-text
+ * 那段），但既然这层是纯冗余，一并去掉，--fs-editor-bg 也随之作废。 */
 .fs-pane-content {
   flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto;
-  background: var(--fs-editor-bg);
 }
 .fs-pane-panel {
   flex: 0 0 320px; min-width: 220px;
@@ -126,7 +131,32 @@
  * 截断行号。改成 ch 后所有行共享同一个基于当前字号算出的宽度，行号与内容仍然对齐
  * （对齐靠的是"每行同宽"，不是某个绝对像素值，见大字号下的验证）。 */
 .fs-line-no { flex: 0 0 calc(4ch + 12px); text-align: right; padding-right: 12px; color: var(--fs-line-number); user-select: none; }
-.fs-code-text { flex: 1 1 auto; }
+/* 用户报的"查看文件内容时文字老是有一块灰底"就出在这一行，根因不在本项目的任何一条
+ * background 上，而在 **VSCode webview 自带的默认样式**：真实安装的 VSCode 1.134.0
+ * 里，out/vs/workbench/contrib/webview/browser/pre/index.html 第 101 行构造了一个
+ * <style id="_defaultStyles">，第 875 行把它 prepend 进 webview 文档的 <head>，其中有
+ *
+ *     @layer vscode-default { code { background-color: var(--vscode-textPreformat-background);
+ *                                   color: var(--vscode-textPreformat-foreground);
+ *                                   font-family: var(--monaco-monospace-font);
+ *                                   padding: 1px 3px; border-radius: 4px; } }
+ *
+ * 那条是给 Markdown 里行内 `code` 片段准备的。而中间栏的**每一行代码正文都是一个
+ * <code>**（ContentPane 的逐行高亮，见那里的注释：行号必须与内容严格对齐，所以只能
+ * 逐行渲染），每个 <code> 又是 flex: 1 1 auto、撑满整行宽——几十行叠起来就是一整块
+ * 灰色矩形盖在行号右边，正是用户说的"整块"。实测（Dark Modern + 真实 _defaultStyles）：
+ * bg = rgb(60,60,60)、fg 被改成 textPreformat 的 rgb(215,186,125)、radius = 4px。
+ * CLI 宿主没有这份默认样式，所以只在 VSCode 里能看见——这也是为什么此前在 CLI 下
+ * 量每一层都是透明的，却重现不出用户的截图。
+ *
+ * 修法是本文件唯一能修的地方：把这四个属性逐条认领回来。@layer 的规则永远输给未分层
+ * 的作者样式，但**只对我们真的声明了的属性生效**——少写一条，那一条就还归 VSCode 管，
+ * 所以 background / color / font-family / padding / border-radius 一个都不能省。 */
+.fs-code-text {
+  flex: 1 1 auto;
+  background: transparent; color: inherit; font-family: inherit;
+  padding: 0; border-radius: 0;
+}
 
 /* Prism 语法高亮上色。highlight.ts 生成 class="token keyword" 这类标记，但一直没有
  * CSS 认领它们——所有 token 都继承父级颜色，"高亮"名不副实。跑探测脚本在 highlight.ts

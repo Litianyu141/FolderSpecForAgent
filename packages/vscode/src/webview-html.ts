@@ -26,7 +26,10 @@ const THEME_BRIDGE = `
   --fs-border: var(--vscode-panel-border, #d4d4d4);
   --fs-selected-bg: var(--vscode-list-activeSelectionBackground, #e4ecf7);
   --fs-sidebar-bg: var(--vscode-sideBar-background, #f3f3f3);
-  --fs-editor-bg: var(--vscode-editor-background, #ffffff);
+  /* 这里曾经还有一个专供中间栏用的编辑器背景 token（名字见 webview-html.test.ts
+   * 里那条 not.toContain 断言）。它和上面的 --fs-bg 指的是同一个 VSCode 变量、
+   * 同一个兜底值，也就是说那一栏的独立背景从未表达过任何差异，只留下一处会分叉出
+   * 色块的接缝，已随 layout.css 里 .fs-pane-content 的 background 一起删除。 */
   --fs-panel-border: var(--vscode-panel-border, #e0e0e0);
   --fs-row-hover-bg: var(--vscode-list-hoverBackground, #e8e8e8);
   --fs-indent-guide: var(--vscode-tree-indentGuidesStroke, #d0d0d0);
