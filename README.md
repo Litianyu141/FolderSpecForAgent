@@ -1,277 +1,334 @@
 # FolderSpec
 
-一个仓库的结构意图——哪个目录负责什么、新东西该放哪儿——通常只存在于维护者脑子里。
-人类接手陌生仓库时只能一个个目录点开看；AI Agent 新建文件时没有任何结构约束，久而久之
-仓库越来越乱。
+[中文](README.zh-CN.md)
 
-FolderSpec 让你用可视化的方式把这份意图声明出来，产出一个 `.folderspec.md` 文件：既能被人读，
-也能被 Agent 遵守。**它是只读工具**——除了这一个文件，它不写磁盘上的任何东西，不执行
-`mv` / `mkdir` / `rm`。真正改动仓库的是 Agent，FolderSpec 只负责把"应该长成什么样"说清楚。
+A repository's structural intent — which directory is responsible for what, where new
+things belong — usually lives nowhere but in the maintainer's head. Someone new to the
+codebase has to click through directories one at a time to reconstruct it; an AI agent
+creating files has no structural constraint at all, and the repository drifts.
 
----
-
-## 看它怎么用
-
-### 给目录写注释
-
-单击任意文件或目录，右栏写注释、语义角色、约束强度。写过的节点在树上直接带出注释文字。
-
-![给目录写注释](docs/media/demo-annotate.gif)
-
-### 虚拟重排结构
-
-右键声明一个尚不存在的目录，把东西拖进去——**磁盘一个字节都没动**。
-切到「原始结构」视图即可对照：那才是磁盘的真实样子，你改的只是契约。
-
-![虚拟重排结构](docs/media/demo-restructure.gif)
-
-### 产出契约
-
-`Shift` / `Ctrl` 多选一批节点，给它们写一条共享注释。保存后 `.folderspec.md` 就落在仓库根上——
-**没有单独的"导出"步骤**，存储格式就是输出格式，那个文件本身就是给 Agent 读的产物。
-
-![产出契约](docs/media/demo-output.gif)
+FolderSpec lets you declare that intent visually and emit a `.folderspec.md` file that
+humans can read and agents can follow. **The tool is read-only**: apart from that one
+file it writes nothing to disk, and it never runs `mv` / `mkdir` / `rm`. Changing the
+repository is the agent's job. FolderSpec's job is to say clearly what the repository
+should look like.
 
 ---
 
-## 安装与运行
+## See it in action
 
-### VSCode 扩展（推荐，也是分发给别人的方式）
+### Annotate a directory
 
-从 [Releases](https://github.com/Litianyu141/FolderSpecForAgent/releases) 下载
-`folderspec-vscode-<版本>.vsix`，然后任选一种装法：
+Click any file or directory and use the right-hand pane to write an annotation, a
+semantic role, and a constraint severity. Annotated nodes carry their text inline in
+the tree.
+
+![Annotating a directory](docs/media/demo-annotate.gif)
+
+### Rearrange the structure, virtually
+
+Right-click to declare a directory that does not exist yet, then drag things into it —
+**nothing moves on disk**. Switch to the "Actual structure" view to compare the two:
+that view is the disk as it really is, and what you just edited is the contract.
+
+![Rearranging the structure](docs/media/demo-restructure.gif)
+
+### Produce the contract
+
+Select a batch of nodes with `Shift` / `Ctrl` and give them one shared annotation.
+Saving drops `.folderspec.md` at the repository root — **there is no separate "export"
+step**. The storage format is the output format, and that file is itself the artifact
+the agent reads.
+
+![Producing the contract](docs/media/demo-output.gif)
+
+---
+
+## Install and run
+
+### VSCode extension (recommended, and the way to hand it to someone else)
+
+Download `folderspec-vscode-<version>.vsix` from
+[Releases](https://github.com/Litianyu141/FolderSpecForAgent/releases) and install it
+one of two ways:
 
 ```bash
-code --install-extension folderspec-vscode-0.5.0.vsix
+code --install-extension folderspec-vscode-0.6.0.vsix
 ```
 
-或者在 VSCode 里：`Ctrl+Shift+P` → **Extensions: Install from VSIX…** → 选那个文件。
-装完重载窗口（`Developer: Reload Window`）即可。
+Or, from inside VSCode: `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the
+file. Reload the window (`Developer: Reload Window`) afterwards.
 
-> 尚未上架 VS Code 应用市场，所以搜不到，只能用 `.vsix` 安装；也因此**不会自动更新**，
-> 换版本要重新下载安装一次。
+> It is not on the VS Code Marketplace yet, so searching for it turns up nothing —
+> `.vsix` is the only route. That also means **no automatic updates**: moving to a new
+> version means downloading and installing again.
 
-### 命令行
+### Command line
 
-**CLI 还没有发布到 npm**，`npx folderspec` 目前跑不通。要用的话从源码构建：
+**The CLI is not published to npm yet**, so `npx folderspec` does not work today. Build
+it from source instead:
 
 ```bash
 git clone https://github.com/Litianyu141/FolderSpecForAgent.git
 cd FolderSpecForAgent
 pnpm install && pnpm build
-node packages/cli/dist/main.js            # 在当前目录打开
-node packages/cli/dist/main.js ./some/dir # 在指定目录打开
+node packages/cli/dist/main.js            # open the current directory
+node packages/cli/dist/main.js ./some/dir # open a specific directory
 ```
 
-它会起一个只监听 `127.0.0.1` 的本地服务，并尽量用 Chrome / Edge / Chromium 的
-`--app` 模式开一个无边框窗口。只装了 Firefox 之类不支持 `--app` 的系统上，会退回成在默认
-浏览器里开一个普通标签页，并在终端里打印地址。
+It starts a local server bound to `127.0.0.1` and tries to open a chromeless window
+through Chrome / Edge / Chromium's `--app` mode. On a machine that only has something
+like Firefox, which has no `--app` mode, it falls back to an ordinary tab in the default
+browser and prints the address to the terminal.
 
-| 参数 | 说明 |
+| Argument | Meaning |
 |---|---|
-| `[目录]` | 工作区路径，默认为当前目录 |
-| `--port <n>` | 指定端口，默认随机取一个可用端口 |
-| `--no-open` | 只起服务，不自动开窗口 |
-| `--help` | 显示帮助 |
+| `[dir]` | Workspace path; defaults to the current directory |
+| `--port <n>` | Port to listen on; defaults to a random free port |
+| `--no-open` | Start the server only, do not open a window |
+| `--help` | Print help |
 
-进程退出（Ctrl+C）时服务随之关闭。每次启动会生成一个一次性令牌注入到页面里，WebSocket
-连接必须带上它——浏览器不对 WebSocket 施加同源策略，没有这一层的话，你在 folderspec 运行
-期间打开的任何一个网页都能连上这个本地端口。
+The server shuts down with the process (Ctrl+C). Every start mints a one-shot token and
+injects it into the page, and the WebSocket connection must present it — browsers do not
+apply the same-origin policy to WebSockets, so without that check any page you happened
+to have open while folderspec was running could connect to the local port.
 
-### VSCode 扩展怎么用
+### Using the VSCode extension
 
-装好之后，**打开任意 `.folderspec.md` 文件**就会进入 FolderSpec 的可视化编辑器，而不是
-纯文本视图。想看原始文本时用"打开方式 → 文本编辑器"。
+Once it is installed, **opening any `.folderspec.md` file** brings up the FolderSpec
+visual editor instead of the plain-text view. Use "Open With → Text Editor" when you
+want the raw text.
 
-命令面板里还有一条 `FolderSpec：打开结构契约`：当前工作区没有 `.folderspec.md` 时它会问你
-要不要创建一个，然后直接打开。
+The command palette carries one entry, `FolderSpec：打开结构契约` ("Open structure
+contract" — the extension's command titles are not localized yet). If the current
+workspace has no `.folderspec.md`, it offers to create one and then opens it.
 
-保存走的是 VSCode 的 `WorkspaceEdit`，所以脏标记、`Ctrl+S`、撤销栈都正常工作。
+Saving goes through VSCode's `WorkspaceEdit`, so the dirty marker, `Ctrl+S`, and the
+editor's own undo stack all behave the way you expect.
 
-### 让 Agent 读到它
+### Letting your agent read it
 
-存储格式就是输出格式，没有单独的"导出"步骤。在 `CLAUDE.md` / `AGENTS.md` 里加一行引用即可：
+The storage format is the output format; there is no export step. Add one line of
+reference to `CLAUDE.md` / `AGENTS.md`:
 
 ```markdown
 @.folderspec.md
 ```
 
-Agent 每次都会自动读到这份契约，零额外操作。
+From then on the agent picks the contract up automatically, with nothing extra to do.
 
 ---
 
-## 交互
+## The interface
 
-**三栏布局**：左边是仓库树，中间是选中文件的只读预览（带行号、逐行语法高亮），右边是常驻的
-注释 / 分组面板。
+**Three panes**: the repository tree on the left, a read-only preview of the selected
+file in the middle (line numbers, line-by-line syntax highlighting), and a persistent
+annotation / group pane on the right.
 
-单击一个节点：树上高亮它，中间栏展示它的内容（目录则展示子项统计），右侧面板出现这一个
-节点的注释编辑器，可以写注释、role、template 和 severity。
+Click a node and it is highlighted in the tree, its contents appear in the middle pane
+(child counts, for a directory), and the right pane becomes that node's annotation
+editor, where you can set the annotation, `role`, `template`, and `severity`.
 
-**Shift / Ctrl（macOS 上是 ⌘）点选可以扩选多个节点**：Shift 是从上一个锚点连续选取一个区间，
-Ctrl/⌘ 是逐个增减。选中 ≥2 项时，右侧面板切换成**分组编辑**：给这一批写一条共享注释，落进
-`.folderspec.md` 的 `## 分组` 区（字段与示例见下）。
+**Shift / Ctrl (⌘ on macOS) click extends the selection**: Shift takes the contiguous
+range from the previous anchor, Ctrl/⌘ adds or removes one node at a time. With two or
+more nodes selected, the right pane switches to **group editing**: one shared annotation
+for the whole batch, stored in the `## Groups` section of `.folderspec.md` (fields and
+examples below).
 
-**批量注释与单节点注释互不覆盖**：分组共享的是 `Group.text`，挂在分组本身，不会改动每个成员
-各自的 `SpecNode.annotation`；反过来单独给某个成员写注释，也不会动它所属分组的共享文本。一个
-节点可以同时拥有自己的注释、又属于一个或多个分组——树上用节点名后的圆点标出它所属的每个分组，
-点击圆点即可跳转到该分组、把选中集切换成它的全部成员。
+**Group annotations and per-node annotations never overwrite each other.** What a group
+shares is `Group.text`, which hangs off the group itself and leaves each member's own
+`SpecNode.annotation` untouched; annotating a single member likewise leaves its group's
+shared text alone. A node can have its own annotation and belong to one or more groups
+at the same time — the tree marks each group it belongs to with a dot after the node
+name, and clicking a dot jumps to that group and replaces the selection with all of its
+members.
 
-拖拽节点表示"它应该在那儿"——**这不会移动磁盘上的任何文件**，只是改变契约里声明的位置，剩下
-的交给 Agent 去做。
+Dragging a node declares "this is where it belongs" — **it moves no file on disk**. It
+changes the position the contract declares, and the rest is up to the agent.
 
-**右键菜单**给出四组只作用于契约的操作，名字里的「仅契约」是认真的——它们都不碰磁盘：
+**The context menu** offers four sets of operations that act on the contract only. The
+"contract only" in their names is meant literally — none of them touch the disk:
 
-- **新建目录 / 新建文件（仅契约）**：声明"这里应该有个 X"。右键点在目录上就建在它下面，
-  点在空白处（或用顶栏的「新建」）就建在工作区根下；点在文件上则建在它的父目录下。
-  典型用途是给 Agent 铺一棵目录模板——`templates/cases/fixtures/` 这样的结构可以整棵先声明
-  出来，磁盘上一个目录都还不存在。名字必须在创建时输入（契约里没有"先建后改名"这条路）。
-- **重命名（仅契约）**：改的是契约里那句"它应该叫什么"，磁盘上的文件名纹丝不动。
-  子树与分组成员的路径会跟着一起重写。
-- **取消声明**：把一个节点从契约里去掉。对磁盘上真实存在的节点而言，它**依旧留在树上**，
-  只是不再带任何标注；只有 spec-only 节点（磁盘上没有的）才会整行消失。
-  若它的子树里还有带注释的后代，会**拒绝**并要求你先逐个处理——一次点击丢掉多条已写下的
-  声明，正是这个工具最该防的事。
-- **复制 / 粘贴（仅契约）**：把一棵标注好的子树在别处再声明一份，典型用途是
-  `templates/case-skeleton/` 粘到 `src/cases/` 下。落点与「新建」同一条规则（右键目录 →
-  粘进它下面，右键文件 → 粘进它的父目录，右键空白 → 工作区根）。三件事值得先知道：
-  - **复制的是契约子树，不是磁盘子树。** 右键一个从没被标注过的目录再粘贴，得到的是一条
-    空声明（"那儿也该有个这样的东西"），**里面的东西不会跟着来**——它们本来就不在契约里。
-    契约是稀疏覆盖层，不是仓库镜像；实时结构由磁盘扫描提供。这不是缺陷。
-  - **撞名自动加后缀**：`demo` → `demo-copy` → `demo-copy-2`，文件的后缀加在扩展名之前
-    （`a.ts` → `a-copy.ts`）。契约侧兄弟、磁盘侧兄弟都会让开，所以副本永远不会和别的东西
-    合成一行、把注释揉到一起。
-  - **副本不进任何分组。** 想让它入组，选中它再加。
-  - 「复制」本身是纯读，只读态（解析失败 /「原始结构」视图）下照样能用；「粘贴」是写，
-    只读态下禁用。
+- **New directory / New file (contract only)**: declare that "there should be an X
+  here". Right-click a directory and the new node goes inside it; right-click empty
+  space (or use **New** in the toolbar) and it goes under the workspace root;
+  right-click a file and it goes into that file's parent. The typical use is laying out
+  a directory template for the agent — a whole `templates/cases/fixtures/` skeleton can
+  be declared up front while not one of those directories exists on disk yet. The name
+  is required at creation time; the contract has no "create first, rename later" path.
+- **Rename (contract only)**: this edits the contract's claim about what the node should
+  be called. The filename on disk does not change. Paths in the subtree and in group
+  membership lists are rewritten to match.
+- **Undeclare**: removes a node from the contract. A node that really exists on disk
+  **stays in the tree** and simply carries no annotation any more; only spec-only nodes
+  (the ones with nothing behind them on disk) disappear entirely. If the subtree still
+  contains annotated descendants, the operation is **refused** and you are asked to deal
+  with them one by one — losing several hand-written declarations to a single click is
+  exactly what this tool should be guarding against.
+- **Copy / Paste (contract only)**: declare a second copy of an annotated subtree
+  somewhere else — pasting `templates/case-skeleton/` under `src/cases/`, say. The
+  destination follows the same rule as **New** (right-click a directory to paste inside
+  it, a file to paste into its parent, empty space for the workspace root). Three things
+  are worth knowing first:
+  - **What gets copied is the contract subtree, not the disk subtree.** Copy a directory
+    that was never annotated and paste it, and what you get is one empty declaration
+    ("there should be something like this over there too") — **its contents do not come
+    along**, because they were never in the contract to begin with. The contract is a
+    sparse overlay, not a mirror of the repository; live structure comes from scanning
+    the disk. This is not a defect.
+  - **Name collisions get a suffix automatically**: `demo` → `demo-copy` →
+    `demo-copy-2`, and for files the suffix goes before the extension (`a.ts` →
+    `a-copy.ts`). Both contract-side and disk-side siblings are avoided, so a copy can
+    never merge into an existing line and mix up two sets of annotations.
+  - **Copies join no group.** Select the copy and add it if you want it in one.
+  - **Copy** itself is a pure read and stays available in read-only mode (a parse
+    failure, or the "Actual structure" view); **Paste** is a write and is disabled there.
 
-**撤销 / 重做**覆盖每一笔编辑（注释、拖拽、新建、重命名、粘贴、取消声明、分组、切换语言）。
-它只作用于内存里的契约，**一个字节都不写磁盘**——所以它防的不是"操作把仓库弄坏了"，
-而是"我拖错地方了"。
+**Undo / redo** covers every edit: annotations, drags, creations, renames, pastes,
+undeclarations, group edits, language switches. It operates on the in-memory contract
+and **writes not one byte to disk** — so what it protects against is not "the operation
+broke my repository" but "I dropped that in the wrong place".
 
-**「原始结构 / 我的结构」切换**：前者只按磁盘扫描结果显示、忽略契约里的结构性调整，
-用来对照自己到底改了什么。原始结构视图下所有编辑入口都是禁用的。
+**The "Actual structure / My structure" toggle**: the former renders only what the disk
+scan found and ignores structural changes from the contract, which is how you check what
+you actually changed. Every editing entry point is disabled in the actual-structure view.
 
-**双语（中 / 英）**：右上角的开关同时切换操作界面的文案与契约里我们生成的样板文字
-（标题行、导言、四个章节标题），并把 `lang` 写进 front-matter。
-**你写的内容一个字都不动**——节点注释、分组说明、规则文字、模板描述、语义角色、路径，
-全部保留原语言。只有逐字等于切换前那个语言默认值的标题/导言才会跟着换，你改过的一律不碰。
+**Bilingual (Chinese / English)**: the switch in the top-right corner changes both the
+interface strings and the boilerplate we generate inside the contract (title line,
+preamble, the four section headings), and writes `lang` into the front matter.
+**Nothing you wrote is touched** — node annotations, group text, rule text, template
+descriptions, semantic roles, and paths all stay in the language you wrote them in. Only
+a title or preamble that is still character-for-character the previous language's
+default follows the switch; anything you edited is left alone.
 
-树上带 git 状态着色（忽略 / 未跟踪 / 已修改等）。**目录取整棵子树的聚合状态**——
-里面有改动，目录名就跟着变色，和 VSCode 资源管理器一致；优先级是
-`冲突 > 删除 > 修改 > 新增 > 未跟踪`，被忽略不参与聚合。
-首屏只扫两层，展开时才按需扫子目录，所以开窗时间与仓库规模基本无关。
+The tree is colored by git status (ignored / untracked / modified and so on).
+**Directories take the aggregate status of their whole subtree** — a change anywhere
+inside recolors the directory name, the same as VSCode's explorer. Precedence is
+`conflict > deleted > modified > added > untracked`, and ignored files do not
+participate in the aggregate. Only two levels are scanned for the first paint, and
+subdirectories are scanned on demand as you expand them, so the time to open a window is
+essentially independent of repository size.
 
-在 VSCode 里，界面配色、字体、语法高亮的取色全部跟随当前主题（通过 webview 暴露的
-`--vscode-*` 变量映射）；CLI 宿主拿不到这些变量，用的是一套自洽的浅色兜底值。
+Inside VSCode, the interface colors, fonts, and syntax highlighting palette all follow
+the active theme (through the `--vscode-*` variables the webview exposes). The CLI host
+has no access to those variables and uses a self-consistent light fallback instead.
 
 ---
 
-## `.folderspec.md` 的格式
+## The `.folderspec.md` format
 
-一个文件，分三区，各用各的强项：结构树用 Markdown 嵌套列表（LLM 见得最多、token 最省、
-GitHub 直接渲染），模板和规则用内嵌 YAML 块（它们是结构化定义，塞进树里会别扭）。
+One file, three sections, each using the notation it is best at: the structure tree is a
+nested Markdown list (the shape LLMs have seen most, the cheapest in tokens, and GitHub
+renders it directly), while templates and rules are embedded YAML blocks (they are
+structured definitions and would be awkward crammed into a tree).
 
-### 骨架
+### Skeleton
 
 ````markdown
 ---
 folderspec: 1
 root: .
 ownership: human
+lang: en
 ---
 
-# 仓库结构契约
+# Repository Structure Contract
 
-> 本文件声明本仓库的**结构意图**，是长期不变量，不是一次性操作指令。
-> Agent 应读取本文件、对照实际仓库、自行决定如何变更磁盘。
-> Agent 不应自行修改本文件；若认为规则不合理，请向人类提出修改建议。
+> This file declares the **structural intent** of this repository. It states long-lived invariants, not one-off operations.
+> Agents should read this file, compare it against the actual repository, and decide for themselves how to change the disk.
+> Agents should not modify this file themselves; if a rule seems wrong, raise it with a human.
 
-## 结构
+## Structure
 ...
 
-## 模板
+## Templates
 ...
 
-## 规则
+## Rules
 ...
 
-## 分组
+## Groups
 ...
 ````
 
-front-matter 里 `folderspec` 必须是 `1`。`## 结构` 区必须存在，`## 模板`、`## 规则`、`## 分组`
-都可以省略。区块标题也接受英文别名 `## Structure` / `## Templates` / `## Rules` / `## Groups`。
+`folderspec` in the front matter must be `1`. The `## Structure` section is required;
+`## Templates`, `## Rules`, and `## Groups` may all be omitted. `lang: en` is what the
+tool writes for an English contract and may be omitted, in which case the contract is
+Chinese. Section headings are also accepted in Chinese — `## 结构` / `## 模板` /
+`## 规则` / `## 分组` — which is what a Chinese contract contains.
 
-### 结构区的行语法
+### Line syntax in the structure section
 
-一行 = 一个节点：
+One line = one node:
 
 ```
-<缩进><"- "><`名称`>[ <`[标签]`>]*[ " — " <注释文本>]
+<indent><"- "><`name`>[ <`[tag]`>]*[ " — " <annotation text>]
 ```
 
-| 元素 | 规则 |
+| Element | Rule |
 |---|---|
-| 缩进 | 2 个空格 = 1 层。必须是 2 的倍数，且不得跳级 |
-| 名称 | **反引号包裹**。末尾带 `/` 表示目录，否则是文件 |
-| 占位符 | 名称里的 `{xxx}` 是模板变量，例如 `` `{case-name}/` `` |
-| 标签 | 反引号包裹的 `` `[key:value]` ``，可以有多个，之间用空格分隔 |
-| 注释 | ` — `（**空格 + U+2014 长破折号 + 空格**）之后的全部内容。首次出现的分隔符生效 |
+| Indent | 2 spaces = 1 level. Must be a multiple of 2, and must not skip a level |
+| Name | **Wrapped in backticks**. A trailing `/` means directory, otherwise file |
+| Placeholder | `{xxx}` inside a name is a template variable, e.g. `` `{case-name}/` `` |
+| Tag | A backtick-wrapped `` `[key:value]` ``; several are allowed, separated by spaces |
+| Annotation | Everything after ` — ` (**space + U+2014 EM DASH + space**). The first occurrence is the separator |
 
-三个已定义的标签：
+Three tags are defined:
 
-| 标签 | 含义 |
+| Tag | Meaning |
 |---|---|
-| `` `[role:<name>]` `` | 语义角色，让 Agent 理解"这是什么"而非仅"叫什么" |
-| `` `[template:<name>]` `` | 该节点适用模板区中定义的同名模板 |
-| `` `[severity:error\|warning\|advisory]` `` | 该节点注释的约束强度，缺省为 `advisory`（纯知识） |
+| `` `[role:<name>]` `` | Semantic role, so the agent knows what a node *is* rather than only what it is called |
+| `` `[template:<name>]` `` | This node follows the same-named template from the templates section |
+| `` `[severity:error\|warning\|advisory]` `` | How binding this node's annotation is; defaults to `advisory` (knowledge only) |
 
-例子：
+For example:
 
 ```markdown
-## 结构
+## Structure
 
-- `src/` `[role:source-root]` — 核心源码
-  - `core/` `[role:core-engine]` `[severity:error]` — 核心业务逻辑，禁止依赖 UI
-  - `ui/` `[role:frontend]` — 所有界面代码
-  - `cases/` `[role:case-root]` — 每个独立案例一个目录
-    - `{case-name}/` `[template:case]` — 案例目录
-- `tests/` `[role:test-root]` — 自动化测试
+- `src/` `[role:source-root]` — core source
+  - `core/` `[role:core-engine]` `[severity:error]` — core business logic; must not depend on the UI
+  - `ui/` `[role:frontend]` — all interface code
+  - `cases/` `[role:case-root]` — one directory per self-contained case
+    - `{case-name}/` `[template:case]` — a case directory
+- `tests/` `[role:test-root]` — automated tests
 - `docs/`
-  - `specs/` — 设计文档放这里
+  - `specs/` — design documents go here
 ```
 
-这是一层**稀疏覆盖层**：只需要写被标注过的节点及其父级链条，不是整个仓库的镜像。完整结构
-由实时扫描提供，不用也不该持久化。
+This is a **sparse overlay**: it only needs the nodes someone annotated plus the chain of
+parents above them, not a mirror of the whole repository. The full structure comes from
+scanning the disk live — it does not need to be persisted, and should not be.
 
-同一层里不允许出现两个同名节点——那是重复声明，解析器会直接报错并给出行号。
+Two nodes with the same name at the same level are not allowed — that is a duplicate
+declaration, and the parser rejects it with a line number.
 
-### 模板区
+### Templates section
 
-模板和规则在 MVP 里**只能手写 YAML**（可视化编辑器是二期功能），所以这里给出完整的字段说明。
+Templates and rules can **only be hand-written as YAML** in the MVP (a visual editor is
+a second-phase feature), so the fields are documented in full here.
 
-顶层是一个映射：模板名 → 定义。
+The top level is a mapping: template name → definition.
 
-| 字段 | 类型 | 必填 | 说明 |
+| Field | Type | Required | Meaning |
 |---|---|---|---|
-| `description` | 字符串 | 否 | 这个模板是什么 |
-| `root` | 映射 | 否 | 只允许 `variable` / `naming` 两个键，都是字符串 |
-| `root.variable` | 字符串 | 否 | 目录名里的变量名，对应结构区的 `{case-name}` |
-| `root.naming` | 字符串 | 否 | 命名风格约定，例如 `kebab-case`（MVP 只记录，不校验） |
-| `children` | 映射 | 否 | 子项名 → 子项定义。**键末尾带 `/` 表示目录** |
-| `children.<名>.required` | 布尔 | **是** | 只能是 `true` 或 `false`，缺了会报错 |
-| `children.<名>.role` | 字符串 | 否 | 该子项的语义角色 |
-| `exemplar` | 字符串数组 | 否 | 指向仓库里的真实参考实现，让 Agent 自己去读 |
+| `description` | string | no | What this template is |
+| `root` | mapping | no | Only `variable` and `naming` are allowed, both strings |
+| `root.variable` | string | no | Variable name inside the directory name, matching `{case-name}` in the structure section |
+| `root.naming` | string | no | Naming convention, e.g. `kebab-case` (recorded but not enforced in the MVP) |
+| `children` | mapping | no | Child name → child definition. **A trailing `/` in the key means directory** |
+| `children.<name>.required` | boolean | **yes** | `true` or `false` only; omitting it is an error |
+| `children.<name>.role` | string | no | Semantic role of that child |
+| `exemplar` | array of strings | no | Points at real reference implementations in the repository for the agent to read |
 
-除上表以外的字段一律报错，不会被静默忽略。
+Any field not in the table above is an error rather than being silently ignored.
 
 ````markdown
-## 模板
+## Templates
 
 ```yaml
 case:
-  description: 一个能独立运行和验证的案例
+  description: A case that can be run and verified on its own
   root:
     variable: case-name
     naming: kebab-case
@@ -295,62 +352,64 @@ case:
 ```
 ````
 
-`exemplar` 是这里性价比最高的字段：它不把代码塞进 prompt，只给 Agent 一个指针，让它自己去读
-真实实现、学那个仓库的习惯。
+`exemplar` earns its keep more than any other field here: instead of stuffing code into
+the prompt, it hands the agent a pointer and lets it read the real implementation and
+pick up that repository's habits itself.
 
-### 规则区
+### Rules section
 
-顶层是一个序列，每条规则一个 `-` 项。
+The top level is a sequence, one `-` item per rule.
 
-| 字段 | 类型 | 必填 | 说明 |
+| Field | Type | Required | Meaning |
 |---|---|---|---|
-| `id` | 非空字符串 | **是** | 全文唯一，重复会报错 |
-| `severity` | `error` / `warning` / `advisory` | **是** | 这条规则的强制程度 |
-| `scope` | 非空字符串 | **是** | glob 表达式，划定规则适用范围 |
-| `text` | 非空字符串 | **是** | 写给人和 Agent 看的规则正文 |
+| `id` | non-empty string | **yes** | Unique across the file; duplicates are an error |
+| `severity` | `error` / `warning` / `advisory` | **yes** | How binding the rule is |
+| `scope` | non-empty string | **yes** | A glob expression delimiting where the rule applies |
+| `text` | non-empty string | **yes** | The rule itself, written for humans and agents |
 
-同样，除上表以外的字段一律报错。
+Again, any field outside the table is an error.
 
 ````markdown
-## 规则
+## Rules
 
 ```yaml
 - id: case-location
   severity: error
   scope: "**"
-  text: 所有新案例必须作为独立目录创建在 src/cases 下
+  text: Every new case must be created as its own directory under src/cases
 
 - id: no-ui-in-core
   severity: error
   scope: "src/core/**"
-  text: core 不得 import ui 层任何模块
+  text: core must not import anything from the ui layer
 
 - id: case-size
   severity: warning
   scope: "src/cases/*"
-  text: 单个 case 直接子文件不宜超过 10 个
+  text: A single case should not have more than 10 direct child files
 ```
 ````
 
-### 分组区
+### Groups section
 
-分组表示"这些节点应该被当成一批看待"——例如一组互相关联的配置文件、一批还没归位但已经知道
-该一起处理的旧文件。分组**不表达父子层级**，成员可以来自树上任意位置，也**不需要**先在结构
-区出现过。
+A group says "treat these nodes as one batch" — a set of related config files, say, or a
+pile of legacy files that have not been sorted out yet but clearly need to be handled
+together. Groups express **no parent/child hierarchy**; members can come from anywhere in
+the tree and **do not need** to appear in the structure section first.
 
-顶层是一个序列，每个分组一个 `-` 项。
+The top level is a sequence, one `-` item per group.
 
-| 字段 | 类型 | 必填 | 说明 |
+| Field | Type | Required | Meaning |
 |---|---|---|---|
-| `id` | 非空字符串 | **是** | 全文唯一，重复会报错。界面上留空会自动取名：取所有成员的最长公共父目录名，取不到就用 `group`，重名时追加 `-2`、`-3` |
-| `members` | 字符串数组 | **是** | 至少一个成员；每个都是**工作区相对的 posix 路径**（`/` 分隔）。不接受绝对路径、`..` 路径段、反斜杠 |
-| `text` | 非空字符串 | **是** | 这一批节点共享的注释。界面上把它清空等价于删除这个分组 |
-| `severity` | `error` / `warning` / `advisory` | 否 | 缺省表示"仅注释，不强制" |
+| `id` | non-empty string | **yes** | Unique across the file; duplicates are an error. Left blank in the UI it is named automatically: the longest common parent directory name of all members, or `group` if there is none, with `-2`, `-3` appended on collision |
+| `members` | array of strings | **yes** | At least one member; each is a **workspace-relative posix path** (`/` separated). Absolute paths, `..` segments, and backslashes are rejected |
+| `text` | non-empty string | **yes** | The annotation this batch shares. Clearing it in the UI deletes the group |
+| `severity` | `error` / `warning` / `advisory` | no | Absent means "annotation only, not binding" |
 
-除上表以外的字段一律报错，不会被静默忽略。
+Any field outside the table is an error rather than being silently ignored.
 
 ````markdown
-## 分组
+## Groups
 
 ```yaml
 - id: legacy-configs
@@ -358,122 +417,155 @@ case:
     - config/old-a.json
     - config/old-b.json
     - scripts/migrate-config.js
-  text: 三个旧配置文件加迁移脚本，等 config/schema.ts 落地后整体删除
+  text: Three legacy config files plus their migration script; delete all of them once config/schema.ts lands
   severity: advisory
 
 - id: db-migrations
   members:
     - src/db/migrations/0001_init.sql
     - src/db/migrations/0002_add_users.sql
-  text: 按文件名顺序执行，不得重排或改名已发布的迁移文件
+  text: Applied in filename order; published migrations must never be reordered or renamed
   severity: error
 ```
 ````
 
-在界面上：选中多个节点（Shift 连续区间 / Ctrl 逐个增减）后，右侧面板会切换成分组编辑；分组名
-留空则自动取名，注释是必填项——清空它等于删除整个分组。树上属于分组的节点，名字后面会带一个
-圆点，点击即可把选中集切换成该分组的全部成员。
+In the UI: select several nodes (Shift for a contiguous range, Ctrl to add or remove one
+at a time) and the right pane switches to group editing. A blank group name is filled in
+automatically; the annotation is required, and clearing it deletes the whole group. Nodes
+that belong to a group get a dot after their name in the tree, and clicking the dot
+replaces the selection with all of that group's members.
 
-**编辑中成员集会锁定**：只要分组面板里有还没提交的编辑，这一批的成员就暂时不能增减——成员上的
-`×` 置灰，树上的 Ctrl/Shift 改选与分组圆点也不再改动这一批。原因是"写给谁"这件事必须在你打字
-期间保持不变：成员集一变，面板编辑的可能就是另一个分组了，那句话会落到它头上、把它原有的注释
-覆盖掉。点输入框以外任意处即提交（提交落地后自动解锁）——**包括树上的节点**：那一下会先让输入框
-失焦、把这次编辑提交出去，然后才把选中集换成你点的那个。**本工具没有"放弃编辑"的入口**，写入语义
-自始至终是"失焦即提交"。
+**The member set locks while you are editing.** As long as the group pane holds an
+uncommitted edit, members cannot be added or removed: the `×` next to each member is
+greyed out, and Ctrl/Shift selection changes and group dots in the tree stop affecting
+the batch. The reason is that *who you are writing for* has to stay fixed while you type:
+if the member set changed, the pane might now be editing a different group, and your
+sentence would land on it and overwrite its existing annotation. Clicking anywhere
+outside the input commits (and the lock releases once the commit lands) — **including on
+a node in the tree**: that click first blurs the input and commits the edit, and only
+then changes the selection to the node you clicked. **The tool has no "discard edit"
+affordance**; the write semantics are "blur commits", start to finish.
 
-### 注释、规则、模板、范例的分工
+### Annotations, rules, templates, exemplars: who does what
 
-| 概念 | 语义 | 对 Agent 的意义 |
+| Concept | Semantics | What it means to an agent |
 |---|---|---|
-| **Annotation**（注释） | "这个目录负责处理数据库迁移" | 知识，帮助理解，不强制 |
-| **Rule**（规则） | "任何 migration 必须放这里" | 约束，必须遵守 |
-| **Template**（模板） | "case 目录应包含这些子项" | 新建时的结构骨架 |
-| **Exemplar**（范例） | "参考 `src/cases/basic-login`" | 指针，让 Agent 自己去读真实实现 |
-| **Group**（分组） | "这几个节点是一批，一起看" | 知识，帮助理解；设置了 `severity` 时按对应强度处理 |
+| **Annotation** | "This directory handles database migrations" | Knowledge; aids understanding, not binding |
+| **Rule** | "Every migration must live here" | A constraint; must be obeyed |
+| **Template** | "A case directory should contain these children" | The structural skeleton to use when creating one |
+| **Exemplar** | "See `src/cases/basic-login`" | A pointer; the agent reads the real implementation itself |
+| **Group** | "These nodes are one batch, read them together" | Knowledge; treated at the stated strength when `severity` is set |
 
-### 声明式，不是命令式
+### Declarative, not imperative
 
-契约描述的是**长期不变量**（"case 应该在 src/cases 下"），不是**一次性操作**（"把 examples/foo
-移到 src/cases/foo"）。操作记录一旦被执行就过期，契约从此携带一条谎言；不变量永不过期。
+The contract describes **long-lived invariants** ("cases belong under src/cases"), not
+**one-off operations** ("move examples/foo to src/cases/foo"). An operation goes stale the
+moment it is carried out, and from then on the contract carries a lie. Invariants never
+go stale.
 
-所以拖拽节点之后，文件里**不记录"从哪儿来"**。树上节点所在的位置就是它应该在的位置。
+That is why dragging a node records **no "where it came from"** in the file. Where a node
+sits in the tree *is* where it should be.
 
-### 关于「Agent 不得修改契约」
+### On "agents must not edit the contract"
 
-没有任何技术机制能阻止 Agent 写文件，所以这里不引入 `agent_permissions` 之类的伪权限字段
-（那只是自我安慰）。实际手段是两条：front-matter 里的 `ownership: human` 加正文里那句人类
-可读的声明（LLM 会照做，这是有效的），以及这个文件进 git——任何契约变更都会出现在 diff 里，
-走正常 code review。
-
----
-
-## MVP 已知限制
-
-这些是真实存在的限制，写在这里而不是假装它们不存在。
-
-1. **嵌套 `.gitignore` 的覆盖范围**：扫描时逐目录组合 ignore 规则，但只覆盖到当前已扫描的
-   深度。更深处的 `.gitignore` 要等该目录被展开时才生效。绝大多数场景无感，但不等价于 git
-   的完整语义。
-2. **位置差异不可跨会话检测**：重新加载后，工具无法知道契约里的 `src/cases/foo` 和磁盘上的
-   `examples/foo` 是同一个东西——它只能看到"契约声明的路径在磁盘上不存在"和"磁盘上有个未
-   标注的目录"。这是遵循声明式原则的代价。**它不影响主用途**：Agent 拿到"`src/cases/{case-name}/`
-   应存在"加上"所有新案例必须在 src/cases 下"，自己扫一遍仓库就能判断该不该搬，而且它比工具
-   更清楚搬动会牵连哪些 import、构建配置和测试。
-3. **模板与规则只能手写 YAML**：没有可视化编辑器（见上面的完整字段说明）。
-4. **没有确定性校验**：MVP 只产出契约，不检查仓库是否符合契约。没有 `folderspec validate`。
-5. **不编译到 AGENTS.md / .cursor/rules**：靠在 `CLAUDE.md` / `AGENTS.md` 里写 `@.folderspec.md`
-   引用，没有编译产物。
-6. **不做增量刷新**：没有文件监听器。CLI 宿主**察觉不到**契约文件在外部被改动（比如被 Agent
-   改写），需要手动重新载入。VSCode 宿主因为文档由编辑器托管，能提示外部变更。
-7. **节点名不能含反引号或换行**：当前格式用反引号包裹节点名、一个节点占一整行，两者都无法
-   转义。碰到 ``we`ird`` 这样合法但无法表示的目录名，工具会在标注时就明确拒绝并点名该路径，
-   而不是写出一个读不回来的文件。完整转义是二期的事。
-8. **VSCode 端到端测试从未在 CI 之外真正跑过**：`@vscode/test-electron` 冒烟测试需要图形环境，
-   本地无 `DISPLAY` 时跑不了。
-9. **文件图标是自带的，不跟随 VSCode 的 file icon theme**：VSCode 不把用户当前生效的图标主题
-   暴露给 webview，所以树上的图标与原生资源管理器里看到的可能不一致。这不是实现瑕疵。
-10. **中间栏的语法高亮是逐行进行的**：为了让行号绝对可靠（跨行高亮会导致换行被高亮器吞掉，
-    行号与实际行错位），代价是跨行的字符串字面量、块注释染色不完美——比如一段跨三行的
-    `/* ... */` 注释，中间那行看不出自己身处注释内。这是刻意的取舍，不是待修的 bug。
-11. **分组成员若既不在结构区、又不在磁盘上，树上不会出现对应的行**（因此看不到它的分组色点）。
-    这种情况只在"一个从未被单独注释过的文件被加进分组、随后从磁盘删除"时出现。**该成员不会
-    丢失**——它仍在 `.folderspec.md` 的分组区里，也仍会列在分组面板的成员列表中；只是树上没有
-    可挂载的节点。树只渲染结构区声明过的节点与磁盘上真实存在的节点，为分组成员额外合成节点会
-    破坏"稀疏覆盖层"这条不变量。
+No technical mechanism can stop an agent from writing a file, so there is no
+`agent_permissions`-style pseudo-permission field here (that would only be reassuring to
+ourselves). Two things do the actual work: `ownership: human` in the front matter
+together with the human-readable statement in the body (LLMs comply with it, and it is
+effective), and the fact that the file is in git — any change to the contract shows up in
+a diff and goes through normal code review.
 
 ---
 
-## 开发
+## Known limitations in the MVP
 
-前置：Node ≥ 20、pnpm。
+These are real limitations, written down here rather than pretended away.
+
+1. **How far nested `.gitignore` files reach**: the scanner composes ignore rules
+   directory by directory, but only as deep as it has scanned so far. A `.gitignore`
+   further down does not take effect until its directory is expanded. You will not notice
+   in the vast majority of cases, but this is not equivalent to git's full semantics.
+2. **Position differences cannot be detected across sessions**: after a reload, the tool
+   has no way to know that `src/cases/foo` in the contract and `examples/foo` on disk are
+   the same thing — all it sees is "a declared path that does not exist on disk" and "an
+   unannotated directory on disk". That is what staying declarative costs. **It does not
+   affect the main use case**: give an agent "`src/cases/{case-name}/` should exist" plus
+   "every new case must live under src/cases" and it can scan the repository and work out
+   for itself whether something should move — and it knows better than the tool which
+   imports, build configs, and tests a move would drag along.
+3. **Templates and rules are hand-written YAML only**: there is no visual editor (the
+   fields are documented in full above).
+4. **No deterministic validation**: the MVP produces the contract, it does not check the
+   repository against it. There is no `folderspec validate`.
+5. **No compilation to AGENTS.md / .cursor/rules**: it relies on an `@.folderspec.md`
+   reference in `CLAUDE.md` / `AGENTS.md`; there is no compiled output.
+6. **No incremental refresh**: there is no file watcher. The CLI host **cannot tell** when
+   the contract file is changed from outside (by an agent rewriting it, for instance) and
+   has to be reloaded by hand. The VSCode host can report external changes, because the
+   document is owned by the editor.
+7. **Node names cannot contain backticks or newlines**: the current format wraps names in
+   backticks and gives each node a whole line, and neither can be escaped. Faced with a
+   legal but unrepresentable directory name like ``we`ird``, the tool refuses at annotation
+   time and names the path, rather than writing a file it cannot read back. Full escaping
+   is a second-phase concern.
+8. **The VSCode end-to-end test has never really run outside CI**: the
+   `@vscode/test-electron` smoke test needs a graphical environment and cannot run
+   locally without a `DISPLAY`.
+9. **File icons are our own and do not follow your VSCode file icon theme**: VSCode does
+   not expose the user's active icon theme to webviews, so icons in the tree may differ
+   from the ones in the native explorer. This is not an implementation flaw.
+10. **Syntax highlighting in the middle pane works line by line**: this keeps line numbers
+    absolutely reliable (multi-line highlighting lets the highlighter swallow newlines,
+    which shifts line numbers out of step with the real ones). The cost is imperfect
+    coloring of multi-line string literals and block comments — in a `/* ... */` comment
+    spanning three lines, the middle line does not know it is inside a comment. It is a
+    deliberate trade-off, not a bug waiting to be fixed.
+11. **A group member that is neither in the structure section nor on disk gets no row in
+    the tree** (and therefore shows no group dot). This only happens when a file that was
+    never annotated on its own is added to a group and then deleted from disk. **The member
+    is not lost**: it is still in the groups section of `.folderspec.md` and still listed in
+    the group pane; there is simply no node in the tree to hang it on. The tree renders
+    nodes declared in the structure section and nodes that really exist on disk, and
+    synthesizing extra nodes for group members would break the sparse-overlay invariant.
+
+---
+
+## Development
+
+Requirements: Node ≥ 20 and pnpm.
 
 ```bash
 pnpm install
-pnpm typecheck      # 会先构建 core，其余包依赖它的 .d.ts
+pnpm typecheck      # builds core first; the other packages depend on its .d.ts
 pnpm -r test
 pnpm -r build
 ```
 
-四个包：
+Four packages:
 
-| 包 | 职责 |
+| Package | Responsibility |
 |---|---|
-| `@folderspec/core` | 纯逻辑：解析、序列化、扫描、git 状态、merge，以及宿主无关的 `Session` |
-| `@folderspec/ui` | React SPA，只通过 `Bridge` 抽象和宿主对话，对宿主一无所知 |
-| `folderspec` | CLI 宿主：HTTP + WebSocket + 无边框浏览器窗口 |
-| `folderspec-vscode` | VSCode 宿主：`CustomTextEditorProvider` |
+| `@folderspec/core` | Pure logic: parsing, serialization, scanning, git status, merge, and the host-agnostic `Session` |
+| `@folderspec/ui` | React SPA; talks to its host only through the `Bridge` abstraction and knows nothing about which host it is |
+| `folderspec` | CLI host: HTTP + WebSocket + a chromeless browser window |
+| `folderspec-vscode` | VSCode host: `CustomTextEditorProvider` |
 
-**`@folderspec/core` 必须先构建**，其他包的 typecheck 才能通过（`pnpm typecheck` 已经包含这一步）。
+**`@folderspec/core` has to be built first** for the other packages to typecheck
+(`pnpm typecheck` already does this).
 
-VSCode 的端到端冒烟测试单独跑，需要图形环境：
+The VSCode end-to-end smoke test runs separately and needs a graphical environment:
 
 ```bash
 pnpm -C packages/vscode test:e2e
 ```
 
-### 两条不变量
+### Two invariants
 
-- **每一次写盘之前都先自校验**：`serialize → parse` 走一遍，读不回来就中止写入。这道闸门在
-  `Session.raw()` 上，所以直接落盘的 CLI 和走 `WorkspaceEdit` 的 VSCode 都受它保护。
-- **绝不用空契约覆盖用户的文件**：契约文件解析失败、或者存在但读不出来（权限、被别的进程
-  占用……），会话一律进入只读模式并显示原因，而不是当成"没有文件"从头开始。
+- **Every write to disk is self-checked first**: `serialize → parse` runs as a round trip,
+  and the write is aborted if the result cannot be read back. That gate lives in
+  `Session.raw()`, so both the CLI, which writes directly, and VSCode, which goes through
+  `WorkspaceEdit`, are covered by it.
+- **A user's file is never overwritten with an empty contract**: if the contract fails to
+  parse, or exists but cannot be read (permissions, another process holding it, …), the
+  session goes read-only and shows why, instead of treating the situation as "no file
+  here" and starting from scratch.
