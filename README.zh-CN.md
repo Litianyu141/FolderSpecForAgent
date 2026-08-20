@@ -2,6 +2,11 @@
 
 [English](README.md)
 
+[![CI](https://github.com/Litianyu141/FolderSpecForAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/Litianyu141/FolderSpecForAgent/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Litianyu141/FolderSpecForAgent?label=release)](https://github.com/Litianyu141/FolderSpecForAgent/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![VS Code](https://img.shields.io/badge/VS%20Code-extension-007ACC?logo=visualstudiocode&logoColor=white)](https://github.com/Litianyu141/FolderSpecForAgent/releases/latest)
+
 一个仓库的结构意图——哪个目录负责什么、新东西该放哪儿——通常只存在于维护者脑子里。
 人类接手陌生仓库时只能一个个目录点开看；AI Agent 新建文件时没有任何结构约束，久而久之
 仓库越来越乱。
