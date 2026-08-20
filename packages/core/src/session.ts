@@ -5,11 +5,11 @@ import { serializeSpec } from './serialize.js'
 import { scan, DEFAULT_DEPTH } from './scan.js'
 import { gitStatus } from './git.js'
 import { merge } from './merge.js'
-import { createNode, emptySpec, findSpecNode, moveNode, removeNode, renameNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
+import { copyNode, createNode, emptySpec, findSpecNode, isSelfOrDescendant, moveNode, removeNode, renameNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
-import type { Api, ApiMethod, AnnotateParams, CreateNodeParams, EditResult, MoveParams, OpenResult, RenameParams, SaveResult, SetGroupParams, SetLangParams, SetViewModeParams, ViewModeResult } from './api.js'
+import type { Api, ApiMethod, AnnotateParams, CopyNodeParams, CreateNodeParams, EditResult, MoveParams, OpenResult, RenameParams, SaveResult, SetGroupParams, SetLangParams, SetViewModeParams, ViewModeResult } from './api.js'
 import type { ActualNode, GitStates, Group, Lang, ParseError, Spec, SpecNode, ViewMode, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
@@ -497,6 +497,152 @@ export class Session {
   }
 
   /**
+   * 把一个节点在契约里**再声明一份**——右键「复制」/「粘贴」的写入侧。
+   * 剪贴板本身不在这里：记的是"上次复制的是哪条路径"，纯粹的会话内 UI 状态，与
+   * hidden 同类（open() 时清空、永不落盘），归 UI 管；core 侧只有这一个无状态方法。
+   *
+   * 与 rename() 一样走"三道闸门 + 快照 + 纯函数 + commitEdit"这条既有收口，**一道
+   * 都不新写**（06c7167 把判据拆成 assertNotHidden / assertCreatableParent /
+   * assertDeclarableResult 正是为此）。与 rename() 有三处刻意的不同，各有出处：
+   *
+   * 1. **不碰 hidden。** 复制不移走源节点，没有旧位置需要隐藏——rename/move 那七条
+   *    配套动作里凡是围着 hidden 打转的，这里一条都不适用。对称地，
+   *    assertDeclarableResult 的 allowHidden 传 false（与 createNode 同侧）：结果
+   *    路径落在 hidden 上对 move/rename 是"把节点放回原处"这个合法动作，对复制没有
+   *    任何合法解释——那是一条谁也看不见的声明。
+   * 2. **撞名不拒绝，自动加后缀**（用户已裁定，控制器的顾虑记在报告里：契约里会出现
+   *    用户没亲自取过的名字，而 Agent 会照着它真去建目录）。副作用是好的那一侧：
+   *    名字唯一 ⇒ 粘贴永远走不到 moveNode 那条"合并到同名节点"的路，也就不可能覆盖
+   *    掉谁已经写下的注释。
+   * 3. **isDir 自己解析**（与 rename 同一条优先级：契约里有就听契约的，没有才问磁盘），
+   *    参数里不给——复制不改变一个节点是文件还是目录，这个值调用方只可能传错。
+   *
+   * "粘进自己的子树"这一档必须**提前**判，不能等纯函数 copyNode 去抛：下面
+   * uniqueCopyName 会先一步为"目标父级的子项尚未扫描"抛错，于是把 `src` 粘进未展开
+   * 的 `src/core` 时用户收到的是"请先展开该目录"，展开之后才发现真正的原因是根本
+   * 不该往那儿粘。判据本身仍然只有一份（spec-edit.ts 的 isSelfOrDescendant，
+   * moveNode 用的是同一个）。
+   */
+  copyNode(params: CopyNodeParams): EditResult & { path: string } {
+    this.assertWritable()
+    const { from, toParent } = params
+    assertRepresentablePath(from)
+    assertValidParentPath(toParent)
+
+    const fromSegs = from.split('/').filter(Boolean)
+    if (fromSegs.length === 0) throw new Error('不能复制根节点')
+
+    // 提前判，理由见方法头部；判据与 moveNode 共用 isSelfOrDescendant
+    if (isSelfOrDescendant(from, toParent)) {
+      throw new Error(
+        '不能把节点粘贴到它自己或它的子树下：那会让这个节点声明自己内部还有一份自己，' +
+        '再粘一次又翻一倍，而契约的消费者是会照着它真去建目录的 Agent',
+      )
+    }
+
+    // 源节点落在 hidden 上时拒绝（ancestorChain 逐级走完，祖先被拖走也一并覆盖）。
+    // 与 annotate / rename 同源：那条路径在树上根本不显示，用户以为自己复制的是眼前
+    // 那棵子树，实际契约里那个位置早已空了，粘出来会是一条莫名其妙的空声明。
+    this.assertNotHidden(from)
+    // 结果路径是一条**新增的声明**，"这个父级下面能不能安全地挂一条新声明"对
+    // createNode / move / rename / copy 是同一个问题，共用同一套判据。
+    this.assertCreatableParent(toParent)
+
+    // 契约里有这个节点就听契约的，没有才问磁盘（见方法头部关于 isDir 的推导）。
+    const inSpec = findSpecNode(this.spec.nodes, from)
+    let isDir: boolean
+    if (inSpec) isDir = inSpec.isDir
+    else {
+      const { node: onDisk, unscanned } = lookupActual(this.actual, from)
+      if (unscanned) {
+        throw new Error(`\`${from}\` 尚未扫描到，无法确认它是文件还是目录；请先展开它所在的目录再重试`)
+      }
+      if (!onDisk) throw new Error(`契约里和磁盘上都没有 \`${from}\`，没有可以复制的节点`)
+      isDir = onDisk.kind === 'dir'
+    }
+
+    const name = this.uniqueCopyName(toParent, fromSegs[fromSegs.length - 1], isDir)
+    // 后缀本身安全，但源名字可能已经贴边（契约里长得出叫 ".." 的节点——annotate 不做
+    // 逐段名字校验），加完后缀的结果必须自己也过这道关，与 createNode / rename 同一套。
+    assertValidNodeName(name)
+
+    // 按段拼接（而不是字符串直接相连）：与纯函数 copyNode 内部的 toSegments 归一化
+    // 保持一致，两边对同一次调用必须算出同一条路径，否则闸门审的是 A、写下去的是 B。
+    const to = [...toParent.split('/').filter(Boolean), name].join('/')
+    // 今天这道闸拦不下任何东西——uniqueCopyName 已经把磁盘上占着的名字和 hidden
+    // 占着的名字全让开了，磁盘类型冲突与 hidden 两项都无从触发。留着不是防御性代码，
+    // 是纪律：**每条写路径写下的结果路径都必须过同一道闸**，让它成立的理由不该是
+    // "另一个函数会先让开"——那正是 06c7167 之前那批缺陷的形状（同一条不变量两个
+    // 实现，改动其中一个，另一处悄悄失效）。
+    this.assertDeclarableResult(to, isDir, false)
+
+    const before = this.captureState()
+    const created = copyNode(this.spec, from, toParent, name, isDir)
+    this.spec = created.spec
+    this.commitEdit(before)
+    return { ...this.editResult(), path: created.path }
+  }
+
+  /**
+   * 副本落到 toParent 下面时该叫什么——撞名自动加后缀，像文件管理器那样。
+   *
+   * **序列是确定、可预期的**：`demo` → `demo-copy` → `demo-copy-2` → `demo-copy-3`。
+   * 第一档不带数字（`demo-copy` 而不是 `demo-copy-1`），从第二档起追加 `-2`、`-3`，
+   * 与 spec-edit.ts 里 uniqueId 给分组 id 去重的规则逐字同构——本仓库只该有一套
+   * "冲突了怎么让"的写法。不冲突时**原样保留名字**，不无条件加后缀：粘到别的父级下
+   * 本来就没有撞名这回事，凭空多一截 `-copy` 只是噪音。
+   *
+   * **文件的后缀加在扩展名之前**（`a.ts` → `a-copy.ts`，不是 `a.ts-copy`）：契约的
+   * 消费者是会照着建文件的 Agent，`a.ts-copy` 会被建成一个没有扩展名的东西。目录不
+   * 切扩展名（`my.dir` → `my.dir-copy`），点文件也不切（`.gitignore` 的那个点是名字
+   * 的一部分，切了会得到 `-copy.gitignore`）。
+   *
+   * **冲突要同时看三处**，少查一处就等于承诺了一件做不到的事：
+   *   1. 契约侧兄弟——同层同名是重复声明，解析器本来也会拒绝；
+   *   2. **磁盘侧兄弟**——`src/demo-copy` 完全可能已经躺在磁盘上了。漏掉这一半，
+   *      副本会与一个真实存在、内容毫不相干的目录合成同一行（origin 'both'），
+   *      被复制来的整套注释就此挂到了别人身上（53c3ef6 那一轮为 rename 立的纪律）；
+   *   3. **hidden**——本次会话里被拖走的旧位置。这一格契约侧与磁盘侧都查不出来
+   *      （契约里那个节点已经搬走、磁盘上那一行被 merge 整个跳过），而落在上面的
+   *      声明在树上永远不显示。让开一格就好，不必报错。
+   *
+   * 目标父级的**子项尚未扫描**时宁可报错，不猜。这里与 assertDeclarableResult 对
+   * unscanned 的放行取向刻意相反，站在 rename 那一侧：那边未知时最多把 isDir 这一位
+   * 写错，用户一展开就看到真相；这里未知时是"自动后缀"这个承诺本身失效——挑出来的
+   * 名字可能正压在一个磁盘上真实存在的东西上，而整套被复制的注释会跟着挂过去，
+   * 且**静默**。代价是右键一个还没展开过的目录粘贴时要先展开一次，报错原文写明了
+   * 这条出路。根治要让这条写路径能按需扫描，那是另一件事（见 assertDeclarableResult
+   * 末尾对同一件事的记载）。
+   */
+  private uniqueCopyName(toParent: string, sourceName: string, isDir: boolean): string {
+    const specSiblings = toParent === ''
+      ? this.spec.nodes
+      : findSpecNode(this.spec.nodes, toParent)?.children ?? []
+    const taken = new Set(specSiblings.map(n => n.name))
+
+    const { node: parentOnDisk, unscanned } = lookupActual(this.actual, toParent)
+    // unscanned 这一档今天够不着（assertCreatableParent 已经先一步拒绝了未扫描的
+    // 父级），但两处判据不该靠"另一处会先拦下"来成立；children === undefined 那一档
+    // 则是实打实可达的——右键一个从没展开过的目录就是它。
+    if (unscanned || (parentOnDisk !== null && parentOnDisk.children === undefined)) {
+      throw new Error(
+        `\`${toParent}\` 的子项尚未扫描，无法确认磁盘上有没有同名的东西；请先展开该目录再重试`,
+      )
+    }
+    for (const c of parentOnDisk?.children ?? []) taken.add(c.name)
+
+    const prefix = toParent === '' ? '' : `${toParent}/`
+    const free = (n: string): boolean => !taken.has(n) && !this.hidden.has(`${prefix}${n}`)
+
+    if (free(sourceName)) return sourceName
+    const { stem, ext } = splitCopyName(sourceName, isDir)
+    for (let i = 1; ; i++) {
+      const candidate = `${stem}-copy${i === 1 ? '' : `-${i}`}${ext}`
+      if (free(candidate)) return candidate
+    }
+  }
+
+  /**
    * hidden 记的是本次会话里被拖走节点的旧位置，merge 在 spec 视图下会把这条路径
    * **连同它下面的一切**整个跳过（不看磁盘、不看契约，见 merge.ts：命中 hidden 的
    * actual 节点直接 continue、fromSpec 直接返回 null）。在这样一条路径上写下声明，
@@ -928,6 +1074,8 @@ export class Session {
         return this.rename(params as RenameParams) as Api[K]['result']
       case 'spec/createNode':
         return this.createNode(params as CreateNodeParams) as Api[K]['result']
+      case 'spec/copyNode':
+        return this.copyNode(params as CopyNodeParams) as Api[K]['result']
       case 'spec/removeNode':
         return this.removeNode((params as { path: string }).path) as Api[K]['result']
       case 'spec/save':
@@ -1059,6 +1207,22 @@ function ancestorChain(path: string): string[] {
  *  推导见那里。 */
 function parentPathOf(path: string): string {
   return path.split('/').filter(s => s !== '').slice(0, -1).join('/')
+}
+
+/**
+ * 把一个名字拆成"加后缀的那一半"和"必须留在后面的扩展名"。供 uniqueCopyName 用，
+ * 完整推导（为什么目录不切、点文件不切）见那里。
+ *
+ * 判据是 `lastIndexOf('.') > 0`，不是 `> -1`：下标 0 的那个点属于 `.gitignore`
+ * 这种"整体就是名字"的点文件，切了会得到 `-copy.gitignore`——后缀跑到最前面，
+ * 名字面目全非。多重扩展名（`a.d.ts`）只切最后一段，得到 `a.d-copy.ts`：与文件
+ * 管理器一致，也不需要一份"哪些是复合扩展名"的清单（那种清单永远不全）。
+ */
+function splitCopyName(name: string, isDir: boolean): { stem: string; ext: string } {
+  if (isDir) return { stem: name, ext: '' }
+  const i = name.lastIndexOf('.')
+  if (i <= 0) return { stem: name, ext: '' }
+  return { stem: name.slice(0, i), ext: name.slice(i) }
 }
 
 /** 一棵 spec 子树里出现过的全部节点名（含根自己）。供 releaseHiddenFor 用，判据的

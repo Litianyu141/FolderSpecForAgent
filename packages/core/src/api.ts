@@ -88,6 +88,19 @@ export interface RenameParams {
   newName: string
 }
 
+/**
+ * 没有 isDir——与 RenameParams 同一条理由：复制不改变一个节点是文件还是目录，这个值
+ * 调用方只可能传错，于是由 Session 自己解析（契约里有就听契约的，没有才问磁盘）。
+ * 也没有 newName：落点名字由 core 算（撞名自动加后缀），UI 不该自己拼一个再让 core
+ * 校验——两边一旦分叉，闸门审的是 A、写下去的是 B。
+ */
+export interface CopyNodeParams {
+  /** 被复制节点当前的完整路径（"剪贴板"里记的那一条） */
+  from: string
+  /** 粘到哪个父目录下；'' 表示工作区根。语义与 CreateNodeParams.parentPath 完全一致 */
+  toParent: string
+}
+
 export interface CreateNodeParams {
   /** 挂在哪个父目录下；'' 表示挂在根下。父级链条在契约里若还不存在会按需补齐（同 spec/annotate）。 */
   parentPath: string
@@ -200,6 +213,34 @@ export interface Api {
    * 自己拼 parentPath + name 会踩"根路径是 ''"的不一致。
    */
   'spec/rename': { params: RenameParams; result: EditResult & { path: string } }
+  /**
+   * 把一个节点在契约里**再声明一份**——右键「复制」/「粘贴」。"我声明那儿也该有一个
+   * 这样的东西"，不是"去把文件拷过去"（真正动磁盘的是随后读契约的 Agent，见
+   * CLAUDE.md 铁律 1）。磁盘上不会多出任何目录或文件，副本以 spec-only（虚线）出现。
+   *
+   * **复制的是契约子树，不是磁盘子树。** 源节点在契约里没有条目时（右键一个磁盘上
+   * 真实存在、却从没被标注过的目录），粘出来的是一条不带任何内容的空声明——绝不去
+   * 遍历磁盘把它的真实子结构灌进契约，那会直接破掉"稀疏覆盖层"（CLAUDE.md 不变量 3：
+   * 契约只含被人工标注过的节点及其父级链条，不是仓库镜像）。完整推导见 spec-edit.ts
+   * 的 copyNode()。
+   *
+   * **撞名自动加后缀**，不拒绝、也不合并：`demo` → `demo-copy` → `demo-copy-2`，
+   * 文件的后缀加在扩展名之前（`a.ts` → `a-copy.ts`）。冲突同时看契约侧兄弟、磁盘侧
+   * 兄弟与本次会话的 hidden 三处（见 Session.uniqueCopyName）。因为名字保证唯一，
+   * 粘贴永远不会走 move 那条"合并到同名节点"的路，也就不可能覆盖掉谁已经写下的内容。
+   *
+   * **副本不继承分组归属**：分组是"这几条具体路径共享一条约束"的断言，复制一下就把
+   * 范围静默扩一圈是调用方没要求过的副作用（用户已裁定）。
+   *
+   * **不碰 hidden**：复制不移走源节点，没有旧位置需要隐藏——这是与 spec/move 的关键
+   * 区别。契约里同样**不记录"这份是从哪儿复制来的"**：那是一次性操作记录，一被执行
+   * 就过期（铁律 2）。
+   *
+   * 结果里的 path 是副本**实际**落到的完整路径（可能带了自动后缀），供 UI 选中它——
+   * 与 spec/createNode、spec/rename 同理，自己拼 toParent + 名字既踩"根路径是 ''"的
+   * 不一致，也根本猜不到后缀。
+   */
+  'spec/copyNode': { params: CopyNodeParams; result: EditResult & { path: string } }
   /**
    * 从契约里撤销一个节点的声明——"不再声明这里应该有它"，不是删除磁盘上的文件/目录
    * （真正动磁盘的是随后读契约的 Agent，见 CLAUDE.md 铁律 1）。对磁盘上真实存在的

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, removeNode, renameNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
+import { copyNode, createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, isSelfOrDescendant, moveNode, removeNode, renameNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
 import type { Spec, SpecNode } from './types.js'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
@@ -915,5 +915,124 @@ describe('renameNode 与分组成员', () => {
     s = setGroup(s, null, ['src/core-utils/a.ts'], { text: '工具' }).spec
     s = renameNode(s, 'src/core', 'kernel', true)
     expect(s.groups[0].members).toEqual(['src/core-utils/a.ts'])
+  })
+})
+
+describe('isSelfOrDescendant（"把节点塞进它自己下面" ——move 与 copy 共用的那条判据）', () => {
+  it('目标父级就是它自己', () => {
+    expect(isSelfOrDescendant('src', 'src')).toBe(true)
+  })
+
+  it('目标父级在它的子树里', () => {
+    expect(isSelfOrDescendant('src', 'src/cases/deep')).toBe(true)
+  })
+
+  it('同名前缀的兄弟不算——判据比的是带尾斜杠的路径，不是裸前缀', () => {
+    // 裸前缀会把 srcx 误判成 src 的子树，于是一次完全合法的粘贴被拒绝
+    expect(isSelfOrDescendant('src', 'srcx')).toBe(false)
+  })
+
+  it('目标父级是它的祖先（把节点粘/移到上一层）不算', () => {
+    expect(isSelfOrDescendant('src/core', 'src')).toBe(false)
+  })
+
+  it('根节点（空路径）不构成任何人的子树——那一档由各调用方自己的"不能复制/移动根节点"负责', () => {
+    expect(isSelfOrDescendant('', 'src')).toBe(false)
+  })
+})
+
+describe('copyNode（把一个契约子树在别处再声明一份）', () => {
+  const withDemo = (): Spec => {
+    let s = emptySpec()
+    s = setAnnotation(s, 'templates/demo', true, { annotation: '模板', role: 'skeleton' })
+    s = setAnnotation(s, 'templates/demo/input.json', false, { annotation: '输入', severity: 'error' })
+    return s
+  }
+
+  it('整棵契约子树连同四个内容字段一起复制过去，源节点原样不动', () => {
+    const { spec: s, path } = copyNode(withDemo(), 'templates/demo', 'src/cases', 'demo', true)
+    expect(path).toBe('src/cases/demo')
+    expect(find(s.nodes, 'src/cases/demo')?.annotation).toBe('模板')
+    expect(find(s.nodes, 'src/cases/demo')?.role).toBe('skeleton')
+    expect(find(s.nodes, 'src/cases/demo/input.json')?.annotation).toBe('输入')
+    expect(find(s.nodes, 'src/cases/demo/input.json')?.severity).toBe('error')
+    expect(find(s.nodes, 'templates/demo')?.annotation).toBe('模板')
+  })
+
+  it('父级链条按需补齐（稀疏覆盖层不要求调用方先手动把每一级建出来）', () => {
+    const { spec: s } = copyNode(withDemo(), 'templates/demo', 'a/b/c', 'demo', true)
+    expect(find(s.nodes, 'a')?.isDir).toBe(true)
+    expect(find(s.nodes, 'a/b/c/demo')?.annotation).toBe('模板')
+  })
+
+  it('toParent 为空字符串时落在根下', () => {
+    const { spec: s, path } = copyNode(withDemo(), 'templates/demo', '', 'demo', true)
+    expect(path).toBe('demo')
+    expect(find(s.nodes, 'demo')?.annotation).toBe('模板')
+  })
+
+  it('不修改传入的 spec（返回新对象）', () => {
+    const before = withDemo()
+    copyNode(before, 'templates/demo', '', 'demo', true)
+    expect(find(before.nodes, 'demo')).toBeNull()
+  })
+
+  it('红线（稀疏覆盖层）：源在契约里没有条目时给出一条空声明，绝不凭空造出子结构', () => {
+    // 磁盘上那个目录里有什么，这个纯函数根本看不见——它连文件系统都不认识。
+    // 这条用例钉的是"看不见就不该编"：结果必须是一条干净的空声明。
+    const { spec: s, path } = copyNode(emptySpec(), 'vendor/lib', '', 'lib', true)
+    expect(path).toBe('lib')
+    expect(find(s.nodes, 'lib')).toEqual({ name: 'lib', isDir: true, children: [] })
+  })
+
+  it('源在契约里没有条目时，isDir 用调用方传进来的那个（那时才轮到它说话）', () => {
+    const { spec: s } = copyNode(emptySpec(), 'a.ts', '', 'a-copy.ts', false)
+    expect(find(s.nodes, 'a-copy.ts')?.isDir).toBe(false)
+  })
+
+  it('契约里有源节点时，isDir 听契约的，不被调用方的声明带偏', () => {
+    const base = setAnnotation(emptySpec(), 'a.ts', false, { annotation: '一个文件' })
+    const { spec: s } = copyNode(base, 'a.ts', 'dst', 'a.ts', true)
+    expect(find(s.nodes, 'dst/a.ts')?.isDir).toBe(false)
+  })
+
+  it('副本与源之间没有共享引用：改一处不会串到另一处', () => {
+    const { spec: s } = copyNode(withDemo(), 'templates/demo', '', 'demo', true)
+    const copy = find(s.nodes, 'demo') as SpecNode
+    copy.annotation = '改过的'
+    copy.children[0].annotation = '子节点也改过'
+    expect(find(s.nodes, 'templates/demo')?.annotation).toBe('模板')
+    expect(find(s.nodes, 'templates/demo/input.json')?.annotation).toBe('输入')
+  })
+
+  it('副本不进任何分组——刻意不调 rewriteGroupMembers，与 moveNode / renameNode 正好相反', () => {
+    let base = withDemo()
+    base = setGroup(base, null, ['templates/demo', 'templates/demo/input.json'], { text: '一体的两条' }).spec
+    const { spec: s } = copyNode(base, 'templates/demo', '', 'demo', true)
+    expect(s.groups[0].members).toEqual(['templates/demo', 'templates/demo/input.json'])
+  })
+
+  it('不能复制根节点', () => {
+    expect(() => copyNode(emptySpec(), '', 'src', 'x', true)).toThrow('根节点')
+  })
+
+  it('拒绝粘进它自己或它的子树下', () => {
+    expect(() => copyNode(withDemo(), 'templates', 'templates/demo', 'templates', true)).toThrow('子树')
+    expect(() => copyNode(withDemo(), 'templates', 'templates', 'templates', true)).toThrow('子树')
+  })
+
+  it('同层重名一律拒绝——判重不该依赖"调用方会先让开"', () => {
+    // Session.uniqueCopyName 今天保证了名字唯一，所以这一条在真实调用里走不到。
+    // 但同层同名兄弟是重复声明、解析器会拒绝，放行的后果要到 save() 的自校验才炸，
+    // 那时用户已经交互过一整轮、此后再也存不了盘（与 createNode 同一条判据）。
+    expect(() => copyNode(withDemo(), 'templates/demo', 'templates', 'demo', true))
+      .toThrow('同层同名兄弟是重复声明')
+  })
+
+  it('复制出来的东西 round-trip 得回来：serialize → parse 逐字还原', () => {
+    const { spec: s } = copyNode(withDemo(), 'templates/demo', 'src/cases', 'demo-copy', true)
+    const parsed = parseSpec(serializeSpec(s))
+    expect(parsed.ok).toBe(true)
+    expect((parsed as { ok: true; value: Spec }).value.nodes).toEqual(s.nodes)
   })
 })

@@ -145,8 +145,7 @@ export function moveNode(spec: Spec, from: string, toParent: string, isDir: bool
   if (fromSegs.length === 0) throw new Error('不能移动根节点')
   const toSegs = toSegments(toParent)
 
-  const fromPrefix = `${fromSegs.join('/')}/`
-  if (`${toSegs.join('/')}/`.startsWith(fromPrefix)) {
+  if (isSelfOrDescendant(from, toParent)) {
     throw new Error('不能把节点移动到它自己的子树下')
   }
 
@@ -178,6 +177,89 @@ export function moveNode(spec: Spec, from: string, toParent: string, isDir: bool
   rewriteGroupMembers(next.groups, fromSegs.join('/'), movedTo)
 
   return next
+}
+
+/**
+ * toParent 是不是 from 自己、或者 from 子树里的某一级——"把一个节点塞进它自己下面"
+ * 这条判据。moveNode、copyNode 与 Session.copyNode 共用同一个实现。
+ *
+ * 抽出来而不是各写一遍：同一条不变量有两个实现，两条写路径迟早给出相反的答案
+ * （e7a723f、06c7167 两次为这条原则付过代价）。Session.copyNode 之所以还要**提前**
+ * 再调一次，不是第二份判据，而是错误顺序问题——它得赶在"目标父级的子项尚未扫描"
+ * 那道检查之前说话，否则把 `src` 粘进未展开的 `src/core` 时，用户收到的会是一句
+ * "请先展开该目录"，照做之后才发现真正的原因是根本不该往那儿粘。
+ *
+ * 判据比较的是加了尾斜杠的两条路径，不是裸前缀：裸前缀会把 `srcx` 误判成 `src`
+ * 的子树。尾斜杠同时让 `toParent === from` 自然落进来（`src/`.startsWith(`src/`)）——
+ * 那也是要拒绝的一档。
+ */
+export function isSelfOrDescendant(from: string, toParent: string): boolean {
+  const fromSegs = toSegments(from)
+  if (fromSegs.length === 0) return false
+  return `${toSegments(toParent).join('/')}/`.startsWith(`${fromSegs.join('/')}/`)
+}
+
+/**
+ * 把一个节点在契约里**再声明一份**——右键「复制」/「粘贴」的纯函数一半。
+ * "我声明那儿也该有一个这样的东西"，不是"去把文件拷过去"（真正动磁盘的是随后读
+ * 契约的 Agent，见 CLAUDE.md 铁律 1）。除 `.folderspec.md` 外一个字节都不写。
+ *
+ * **被复制的只有"契约里有的那部分"，这不是残缺，是稀疏覆盖层（铁律 3）本身。**
+ * 源节点在 spec.nodes 里没有条目时（右键一个磁盘上真实存在、却从没被标注过的目录，
+ * `origin: 'actual-only'`），这里生成的是一条**不带任何内容的空声明**——绝不去遍历
+ * 磁盘把它的真实子结构物化进契约。契约只含被人工标注过的节点及其父级链条，**不是
+ * 仓库镜像**；一次复制往里灌进几百行磁盘结构，是这条不变量最典型的违反方式，而且
+ * 灌进去之后没有任何办法把"人写的"和"复制时顺手抄来的"区分开，此后每一次
+ * removeNode 的子树保护都会被这些抄来的节点绊住。
+ * 所以"复制文件夹却没复制里面的东西"**不是 bug，别修回去**：里面那些东西本来就
+ * 不在契约里，实时结构由磁盘扫描提供。
+ *
+ * **副本不进任何分组**——这里刻意不调 rewriteGroupMembers，与 moveNode / renameNode
+ * 正好相反。那两个是同一个节点换了位置，把成员路径同步过去是让同一个指代对象继续
+ * 有效；复制产生的是**另一个**节点，而分组是"这几条具体路径共享一条约束"的断言，
+ * 复制一下就把断言的范围静默扩一圈，是调用方没有要求过的副作用。想让副本入组，
+ * 选中它再加即可（用户已裁定）。
+ *
+ * newName 由调用方算好传进来（Session.uniqueCopyName 负责自动后缀），这里不自己取名：
+ * 撞名要同时看契约侧与磁盘侧兄弟，而磁盘是 Session 的地盘，纯函数看不见。
+ */
+export function copyNode(
+  spec: Spec, from: string, toParent: string, newName: string, isDir: boolean,
+): { spec: Spec; path: string } {
+  const fromSegs = toSegments(from)
+  if (fromSegs.length === 0) throw new Error('不能复制根节点')
+  const toSegs = toSegments(toParent)
+
+  if (isSelfOrDescendant(from, toParent)) {
+    throw new Error('不能把节点粘贴到它自己或它的子树下')
+  }
+
+  const next = structuredClone(spec)
+  const src = findSpecNode(next.nodes, from)
+  // structuredClone 不可省：src 是 next 这棵树里的节点，直接 push 进去会让同一个
+  // 对象同时挂在两处，改一处改两处（structuredClone 保留引用关系，之后再克隆整份
+  // Spec 也解不开）——而本工具唯一能造成的伤害正是弄丢人写的注释。
+  const copy: SpecNode = src === null
+    ? { name: newName, isDir, children: [] }   // 契约里没有条目 → 空声明，见上方注释
+    : structuredClone(src)
+  copy.name = newName
+
+  const siblings = toSegs.length === 0 ? next.nodes : ensure(next.nodes, toSegs, true).children
+  // 调用方（Session.uniqueCopyName）已经让开了同层重名，所以这里今天拦不下任何东西。
+  // 留着的理由与 createNode 那条完全相同：同层同名兄弟是重复声明，解析器会拒绝，而
+  // 一旦放行，merge（name→node 的 Map，后者覆盖前者）与 spec-edit 的其他函数
+  // （list.find 命中第一个）会对"哪一个才算数"给出相反答案，最后在 save() 的自校验
+  // 那一步才炸——那时用户已经交互过一整轮。判重不该依赖"另一个函数会先让开"。
+  if (siblings.some(n => n.name === newName)) {
+    throw new Error(
+      `${toSegs.length === 0 ? '根' : `\`${toSegs.join('/')}\``} 下已经有同名节点 \`${newName}\`：` +
+      '同层同名兄弟是重复声明，解析器会拒绝，请换个名字',
+    )
+  }
+
+  siblings.push(copy)
+  const path = toSegs.length === 0 ? newName : `${toSegs.join('/')}/${newName}`
+  return { spec: next, path }
 }
 
 /**

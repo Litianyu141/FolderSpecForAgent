@@ -2165,3 +2165,326 @@ describe('Session.removeNode 回收 rename 遗留的 hidden', () => {
     expect(find(u.tree, 'src/core')).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 本轮：spec/copyNode —— 右键「复制」/「粘贴」的 core 侧。语义是"把一个**契约子树**
+// 在别处再声明一份"，磁盘一个字节不动（铁律 1）。剪贴板本身是 UI 的会话内状态，
+// 不进 core：core 侧只有这一个无状态方法。
+// ---------------------------------------------------------------------------
+
+describe('Session.copyNode（把一个契约子树在别处再声明一份——磁盘一个字节不动）', () => {
+  it('深子树连同注释、角色、模板、严重级别完整复制，源节点原样不动', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核', role: 'core-engine', severity: 'error' })
+    s.annotate({ path: 'src/core/a.ts', isDir: false, annotation: '入口', template: 'case' })
+    s.annotate({ path: 'src/core/deep/b.ts', isDir: false, annotation: '深处' })
+
+    const r = s.copyNode({ from: 'src/core', toParent: '' })
+    expect(r.path).toBe('core')
+
+    const copy = find(r.tree, 'core')
+    expect(copy?.annotation).toBe('内核')
+    expect(copy?.role).toBe('core-engine')
+    expect(copy?.severity).toBe('error')
+    expect(find(r.tree, 'core/a.ts')?.annotation).toBe('入口')
+    expect(find(r.tree, 'core/a.ts')?.template).toBe('case')
+    // 深子树整棵跟着走，不只是第一层
+    expect(find(r.tree, 'core/deep/b.ts')?.annotation).toBe('深处')
+
+    // 源节点一个字都没被搬走
+    expect(find(r.tree, 'src/core')?.annotation).toBe('内核')
+    expect(find(r.tree, 'src/core/deep/b.ts')?.annotation).toBe('深处')
+  })
+
+  it('副本与源节点之间没有共享引用：给副本写注释，源节点纹丝不动', async () => {
+    // structuredClone 漏掉的话两处会指向同一个对象，改一处改两处——而本工具唯一能
+    // 造成的伤害正是弄丢人写的注释。
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core/a.ts', isDir: false, annotation: '原' })
+    s.copyNode({ from: 'src/core', toParent: '' })
+    const r = s.annotate({ path: 'core/a.ts', isDir: false, annotation: '改过的' })
+    expect(find(r.tree, 'core/a.ts')?.annotation).toBe('改过的')
+    expect(find(r.tree, 'src/core/a.ts')?.annotation).toBe('原')
+  })
+
+  it('副本以 spec-only 呈现（磁盘上并不存在这个东西），且置脏、进撤销栈', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核' })
+    const r = s.copyNode({ from: 'src/core', toParent: '' })
+    expect(find(r.tree, 'core')?.origin).toBe('spec-only')
+    expect(r.dirty).toBe(true)
+    expect(r.canUndo).toBe(true)
+  })
+
+  it('红线（稀疏覆盖层）：源在契约里没有条目时，粘出来的是一条空声明，绝不把磁盘子结构灌进契约', async () => {
+    const s = new Session(root); await s.open()
+    // 前置：src 磁盘上真的有子项，而且**已经扫描到了**——否则下面的断言恒真，
+    // 这条用例就只是在验证一个不可能发生的事。
+    const t0 = s.tree()
+    expect(find(t0, 'src')?.origin).toBe('actual-only')
+    expect(find(t0, 'src/core')).not.toBeNull()
+    expect(find(t0, 'src/deep')).not.toBeNull()
+
+    const r = s.copyNode({ from: 'src', toParent: '' })
+    expect(r.path).toBe('src-copy')
+    expect(find(r.tree, 'src-copy')?.origin).toBe('spec-only')
+    // 磁盘上的子结构一条都不许被物化进契约
+    expect(find(r.tree, 'src-copy/core')).toBeNull()
+    expect(find(r.tree, 'src-copy/deep')).toBeNull()
+
+    const parsed = parseSpec(s.raw())
+    expect(parsed.ok).toBe(true)
+    const node = (parsed as { ok: true; value: Spec }).value.nodes.find(n => n.name === 'src-copy')
+    expect(node).toBeDefined()
+    expect(node!.children).toEqual([])
+  })
+
+  it('只复制契约里有的那部分：源的某个后代被标注过，其余磁盘子项照样不进契约', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核' })
+    const r = s.copyNode({ from: 'src', toParent: '' })
+    // 标注过的那一支跟着走
+    expect(find(r.tree, 'src-copy/core')?.annotation).toBe('内核')
+    // 没标注过的兄弟（磁盘上真实存在、也已经扫描到）不跟着走
+    expect(find(s.tree(), 'src/deep')).not.toBeNull()
+    expect(find(r.tree, 'src-copy/deep')).toBeNull()
+  })
+
+  it('自动后缀：连粘三次得到 demo-copy / demo-copy-2 / demo-copy-3', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: 'src', name: 'demo', isDir: true })
+    expect(s.copyNode({ from: 'src/demo', toParent: 'src' }).path).toBe('src/demo-copy')
+    expect(s.copyNode({ from: 'src/demo', toParent: 'src' }).path).toBe('src/demo-copy-2')
+    expect(s.copyNode({ from: 'src/demo', toParent: 'src' }).path).toBe('src/demo-copy-3')
+  })
+
+  it('不冲突就不加后缀：粘到别的父级下时名字原样保留', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: 'src', name: 'demo', isDir: true })
+    expect(s.copyNode({ from: 'src/demo', toParent: '' }).path).toBe('demo')
+  })
+
+  it('文件的后缀加在扩展名之前：a.ts → a-copy.ts', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: 'src', name: 'a.ts', isDir: false })
+    expect(s.copyNode({ from: 'src/a.ts', toParent: 'src' }).path).toBe('src/a-copy.ts')
+    expect(s.copyNode({ from: 'src/a.ts', toParent: 'src' }).path).toBe('src/a-copy-2.ts')
+  })
+
+  it('点文件（.gitignore）整体是名字，不当扩展名切', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: 'src', name: '.gitignore', isDir: false })
+    expect(s.copyNode({ from: 'src/.gitignore', toParent: 'src' }).path).toBe('src/.gitignore-copy')
+  })
+
+  it('目录名里的点不是扩展名：my.dir → my.dir-copy', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: 'src', name: 'my.dir', isDir: true })
+    expect(s.copyNode({ from: 'src/my.dir', toParent: 'src' }).path).toBe('src/my.dir-copy')
+  })
+
+  it('冲突检测同时看磁盘侧兄弟：磁盘上已经有 demo-copy 时让到 demo-copy-2', async () => {
+    await fs.mkdir(nodePath.join(root, 'src/demo'))
+    await fs.mkdir(nodePath.join(root, 'src/demo-copy'))
+    const s = new Session(root); await s.open()
+    // 前置：磁盘侧那两个目录确实已经被扫描到了，否则下面的断言恒真
+    expect(find(s.tree(), 'src/demo-copy')?.origin).toBe('actual-only')
+    expect(s.copyNode({ from: 'src/demo', toParent: 'src' }).path).toBe('src/demo-copy-2')
+  })
+
+  it('冲突检测也要让开本次会话里被拖走的旧位置——那条路径上的声明在树上根本不显示', async () => {
+    const s = new Session(root); await s.open()
+    // ghost 只存在于契约里，磁盘上没有；把它拖到根下之后，src/ghost 这个名字在
+    // **契约侧与磁盘侧都是空的**，只有 hidden 占着它。这正是"只查契约 + 磁盘两侧"
+    // 漏掉的那一格。
+    s.createNode({ parentPath: 'src', name: 'ghost', isDir: true })
+    s.move({ from: 'src/ghost', toParent: '', isDir: true })
+    expect(find(s.tree(), 'src/ghost')).toBeNull()
+
+    const r = s.copyNode({ from: 'ghost', toParent: 'src' })
+    expect(r.path).toBe('src/ghost-copy')
+    expect(find(r.tree, 'src/ghost-copy')).not.toBeNull()
+  })
+
+  it('生成出来的名字自己也要过 assertValidNodeName', async () => {
+    const s = new Session(root); await s.open()
+    // annotate 不做逐段名字校验（那是它自己的既有口径），因此契约里能长出一个叫 ".." 的节点
+    s.annotate({ path: '..', isDir: true, annotation: 'x' })
+    expect(() => s.copyNode({ from: '..', toParent: 'src' })).toThrow('名字不能是 ".."')
+  })
+
+  it('副本不继承分组归属——分组是"这几条具体路径共享一条约束"，复制不该悄悄把范围扩一圈', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core/a.ts', isDir: false, annotation: '入口' })
+    const g = s.setGroup({ id: null, members: ['src/core', 'src/core/a.ts'], text: '一体的两条' })
+    // 前置：源节点与它的后代**真的**属于某个分组，否则断言恒真
+    expect(find(s.tree(), 'src/core')?.groups).toEqual([g.id])
+    expect(find(s.tree(), 'src/core/a.ts')?.groups).toEqual([g.id])
+
+    const r = s.copyNode({ from: 'src/core', toParent: '' })
+    expect(find(r.tree, 'core')?.groups).toBeUndefined()
+    expect(find(r.tree, 'core/a.ts')?.groups).toBeUndefined()
+    // 分组成员一个字都没变
+    expect(r.groups.find(x => x.id === g.id)?.members).toEqual(['src/core', 'src/core/a.ts'])
+    // 源节点照旧在组里
+    expect(find(r.tree, 'src/core')?.groups).toEqual([g.id])
+  })
+
+  it('拒绝粘进它自己的子树下——与 moveNode 同一条判据', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: 'src', toParent: 'src/core' })).toThrow('子树')
+  })
+
+  it('拒绝粘进它自己下面', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: 'src', toParent: 'src' })).toThrow('子树')
+  })
+
+  it('不碰 hidden：复制不移走源节点，旧位置没有需要隐藏的东西', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核' })
+    const r = s.copyNode({ from: 'src/core', toParent: '' })
+    expect(find(r.tree, 'src/core')).not.toBeNull()
+    expect(find(r.tree, 'src/core')?.annotation).toBe('内核')
+  })
+
+  it('走 commitEdit：撤销后副本消失、dirty 归零，重做后回来', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核' })
+    await s.save()
+    expect(s.isDirty()).toBe(false)
+
+    s.copyNode({ from: 'src/core', toParent: '' })
+    expect(s.isDirty()).toBe(true)
+
+    const u = s.undo()
+    expect(find(u.tree, 'core')).toBeNull()
+    expect(u.dirty).toBe(false)
+    expect(find(u.tree, 'src/core')?.annotation).toBe('内核')
+
+    const re = s.redo()
+    expect(find(re.tree, 'core')?.annotation).toBe('内核')
+    expect(re.dirty).toBe(true)
+  })
+
+  it('只读模式（disk 视图）下 copyNode 抛错', async () => {
+    const s = new Session(root); await s.open()
+    s.setViewMode('disk')
+    expect(() => s.copyNode({ from: 'src/core', toParent: '' })).toThrow('原始结构')
+  })
+
+  it('只读模式（契约解析失败）下 copyNode 抛错', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: 'src/core', toParent: '' })).toThrow('只读模式')
+  })
+
+  it('handle("spec/copyNode") 分发正确', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核' })
+    const r = await s.handle('spec/copyNode', { from: 'src/core', toParent: '' })
+    expect(r.path).toBe('core')
+    expect(find(r.tree, 'core')?.annotation).toBe('内核')
+  })
+
+  it('复制之后 raw() 能成功序列化并自校验，落盘重开副本还在', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核' })
+    s.copyNode({ from: 'src/core', toParent: '' })
+    expect(parseSpec(s.raw()).ok).toBe(true)
+    await s.save()
+
+    const s2 = new Session(root)
+    const r2 = await s2.open()
+    expect(find(r2.tree, 'core')?.annotation).toBe('内核')
+    expect(find(r2.tree, 'core')?.origin).toBe('spec-only')
+  })
+
+  it('只写 .folderspec.md：磁盘上不会因为一次粘贴多出任何目录或文件', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核' })
+    s.copyNode({ from: 'src/core', toParent: '' })
+    await s.save()
+    expect((await fs.readdir(root)).sort()).toEqual([SPEC_FILENAME, 'README.md', 'src'].sort())
+    expect((await fs.readdir(nodePath.join(root, 'src'))).sort()).toEqual(['core', 'deep'].sort())
+  })
+})
+
+describe('Session.copyNode 接进既有的三道闸门（不新写一份判据）', () => {
+  it('toParent 在磁盘上是文件时拒绝——与 createNode / move / rename 共用 assertCreatableParent', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: 'src/core', toParent: 'README.md' }))
+      .toThrow('在磁盘上是一个文件')
+  })
+
+  it('toParent 落在本次会话刚被拖走的旧位置里时拒绝', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/deep', toParent: '', isDir: true })
+    expect(() => s.copyNode({ from: 'src/core', toParent: 'src/deep' })).toThrow('刚被拖走的旧位置')
+  })
+
+  it('源节点自己就是刚被拖走的旧位置时拒绝——那一行在树上根本不存在', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(() => s.copyNode({ from: 'src/core', toParent: 'src' })).toThrow('刚被拖走的旧位置')
+  })
+
+  it('toParent 含 ".." 段时拒绝——不能借这个参数位把声明写到仓库之外', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: 'src/core', toParent: '../etc' })).toThrow('".."')
+  })
+
+  it('源路径含反引号时拒绝（当前契约格式无法表示）', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: 'src/a`b', toParent: '' })).toThrow('反引号')
+  })
+
+  it('不能复制根节点', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: '', toParent: 'src' })).toThrow('根节点')
+  })
+
+  it('契约里和磁盘上都没有这条路径时拒绝——没有可以复制的节点', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: 'src/nope', toParent: '' })).toThrow('没有可以复制的节点')
+  })
+
+  it('源节点落在懒加载边界之下、契约里也没有它时拒绝，而不是猜它是文件还是目录', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.copyNode({ from: 'src/deep/deeper', toParent: '' })).toThrow('尚未扫描')
+  })
+
+  it('目标父级的子项尚未扫描时拒绝——磁盘侧撞名与否无从判断，绝不只查一半', async () => {
+    const s = new Session(root); await s.open()
+    // 前置：src/deep 确实处在懒加载边界上（children 尚未扫描）
+    expect(find(s.tree(), 'src/deep')?.children).toBeUndefined()
+    expect(() => s.copyNode({ from: 'src/core', toParent: 'src/deep' }))
+      .toThrow('尚未扫描')
+  })
+
+  it('对照：展开那一层之后，同一次粘贴照常放行', async () => {
+    const s = new Session(root); await s.open()
+    await s.expand('src/deep')
+    const r = s.copyNode({ from: 'src/core', toParent: 'src/deep' })
+    expect(r.path).toBe('src/deep/core')
+    expect(find(r.tree, 'src/deep/core')?.origin).toBe('spec-only')
+  })
+
+  it('拒绝之后不产生任何副作用：不置脏、不进撤销栈、契约一个字节都不变', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '内核' })
+    await s.save()
+    const before = s.raw()
+
+    expect(() => s.copyNode({ from: 'src', toParent: 'src/core' })).toThrow()
+    expect(() => s.copyNode({ from: 'src/core', toParent: 'README.md' })).toThrow()
+    expect(() => s.copyNode({ from: 'src/nope', toParent: '' })).toThrow()
+
+    expect(s.raw()).toBe(before)
+    expect(s.isDirty()).toBe(false)
+    // 三次失败一格撤销栈都没吃掉：唯一还能退的是那笔 annotate，退完就见底了
+    const u = s.undo()
+    expect(find(u.tree, 'src/core')?.annotation).toBeUndefined()
+    expect(u.canUndo).toBe(false)
+  })
+})
