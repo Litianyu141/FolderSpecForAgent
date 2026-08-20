@@ -17,10 +17,42 @@
   --fs-indent-guide: #d0d0d0;
   --fs-group-dot: #b180d7;
   --fs-line-number: #9a9a9a;
+
+  /* 中间栏文件预览的 Prism 语法高亮。CLI 宿主没有 VSCode 主题可映射，这十三个是
+   * 独立于宿主的默认色；VSCode 宿主里 webview-html.ts 的 THEME_BRIDGE 会把它们
+   * 逐个指到 symbolIcon.* / debugTokenExpression.* / descriptionForeground 等语义色上
+   * （这些 id 已在 vscode 源码与官方 theme-color 文档里核实存在，见 theme-report.md）。
+   * 按语法角色分桶而非逐个 Prism 别名区分：Prism 给同一元素叠多个别名类
+   * （如 <class="function-definition function">），只要桶里选中其中任一别名，
+   * CSS 就会命中——不必穷举每个别名。 */
+  --fs-token-keyword: #0000ff;
+  --fs-token-function: #795e26;
+  --fs-token-class-name: #267f99;
+  --fs-token-variable: #001080;
+  --fs-token-property: #b98f13;
+  --fs-token-operator: #383a42;
+  --fs-token-namespace: #af00db;
+  --fs-token-constant: #d16969;
+  --fs-token-string: #a31515;
+  --fs-token-number: #098658;
+  --fs-token-boolean: #0000ff;
+  --fs-token-comment: #008000;
+  --fs-token-punctuation: #9a9a9a;
+
+  /* 界面字体 vs. 代码等宽字体：VSCode 分别用 --vscode-font-* 与
+   * --vscode-editor-font-* 两套变量注入，语义不同（前者是工作台 UI 字体，
+   * 后者是编辑器等宽字体），不能共用一份映射。默认值就是这两行改动前的硬编码值。 */
+  --fs-font-family: system-ui, sans-serif;
+  --fs-font-size: 13px;
+  --fs-code-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-code-font-size: 12px;
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; font: 13px/1.5 system-ui, sans-serif; color: var(--fs-fg); background: var(--fs-bg); }
+/* font 简写换成 font-family/font-size 两行是本文件"只加 token、不改既有规则"
+ * 这条约定的一次必要例外——字体要跟随宿主主题，唯一入口就是这两个属性。
+ * line-height 维持原值，颜色规则一律不动。 */
+body { margin: 0; font-family: var(--fs-font-family); font-size: var(--fs-font-size); line-height: 1.5; color: var(--fs-fg); background: var(--fs-bg); }
 .fs-toolbar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--fs-border); }
 .fs-toolbar input { flex: 1 1 auto; min-width: 0; }
 .fs-row { display: flex; align-items: center; gap: 6px; height: 100%; padding-right: 8px; cursor: pointer; white-space: nowrap; }

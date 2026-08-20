@@ -101,7 +101,29 @@
 .fs-content-empty { padding: 24px; opacity: .6; }
 .fs-content-path { font-weight: 600; margin-bottom: 8px; }
 .fs-content-note { opacity: .75; }
-.fs-code { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 18px; }
+.fs-code { margin: 0; font-family: var(--fs-code-font-family); font-size: var(--fs-code-font-size); line-height: 18px; }
 .fs-code-line { display: flex; white-space: pre; }
 .fs-line-no { flex: 0 0 44px; text-align: right; padding-right: 12px; color: var(--fs-line-number); user-select: none; }
 .fs-code-text { flex: 1 1 auto; }
+
+/* Prism 语法高亮上色。highlight.ts 生成 class="token keyword" 这类标记，但一直没有
+ * CSS 认领它们——所有 token 都继承父级颜色，"高亮"名不副实。跑探测脚本在 highlight.ts
+ * 实际 import 的 12 种语法（ts/tsx/jsx/json/markdown/yaml/python/rust/go/bash/css/toml）
+ * 上产出真实 token 类名后按语法角色分桶，见 theme-report.md 的完整清单与理由。
+ * 每个选择器只列该桶里会以"独立类名"出现的 Prism 别名——复合类（如
+ * "function-definition function"）已经带着 function，不用重复列。 */
+.token.keyword, .token.atrule, .token.rule { color: var(--fs-token-keyword); }
+.token.function { color: var(--fs-token-function); }
+.token.class-name, .token.tag, .token.selector { color: var(--fs-token-class-name); }
+.token.variable { color: var(--fs-token-variable); }
+.token.property, .token.attr-name { color: var(--fs-token-property); }
+.token.operator { color: var(--fs-token-operator); }
+.token.namespace, .token.table { color: var(--fs-token-namespace); }
+.token.constant, .token.builtin { color: var(--fs-token-constant); }
+.token.string, .token.attr-value, .token.regex, .token.regex-delimiter,
+.token.regex-flags, .token.regex-source, .token.string-interpolation,
+.token.template-string, .token.url { color: var(--fs-token-string); }
+.token.number { color: var(--fs-token-number); }
+.token.boolean { color: var(--fs-token-boolean); }
+.token.comment, .token.shebang { color: var(--fs-token-comment); }
+.token.punctuation { color: var(--fs-token-punctuation); }

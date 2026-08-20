@@ -57,6 +57,34 @@ describe('buildWebviewHtml', () => {
     expect(html).toContain('--fs-line-number: var(--vscode-editorLineNumber-foreground')
   })
 
+  it('语法高亮 token 颜色映射到 VSCode 的语义色（symbolIcon.*/debugTokenExpression.*/descriptionForeground）', () => {
+    // 每条都在 raw.githubusercontent.com/microsoft/vscode-docs 的 theme-color.md
+    // 与 vscode 源码 src/vs/workbench/contrib/webview/browser/themeing.ts 里核实过
+    // 确实存在、会被注入进 webview，见 theme-report.md。
+    const html = build()
+    expect(html).toContain('--fs-token-keyword: var(--vscode-symbolIcon-keywordForeground')
+    expect(html).toContain('--fs-token-function: var(--vscode-symbolIcon-functionForeground')
+    expect(html).toContain('--fs-token-class-name: var(--vscode-symbolIcon-classForeground')
+    expect(html).toContain('--fs-token-variable: var(--vscode-symbolIcon-variableForeground')
+    expect(html).toContain('--fs-token-property: var(--vscode-symbolIcon-propertyForeground')
+    expect(html).toContain('--fs-token-operator: var(--vscode-symbolIcon-operatorForeground')
+    expect(html).toContain('--fs-token-namespace: var(--vscode-symbolIcon-namespaceForeground')
+    expect(html).toContain('--fs-token-constant: var(--vscode-symbolIcon-constantForeground')
+    expect(html).toContain('--fs-token-string: var(--vscode-debugTokenExpression-string')
+    expect(html).toContain('--fs-token-number: var(--vscode-debugTokenExpression-number')
+    expect(html).toContain('--fs-token-boolean: var(--vscode-debugTokenExpression-boolean')
+    expect(html).toContain('--fs-token-comment: var(--vscode-descriptionForeground')
+    expect(html).toContain('--fs-token-punctuation: var(--vscode-editorLineNumber-foreground')
+  })
+
+  it('界面字体与代码字体分别指向 VSCode 的两套字体变量（--vscode-font-* / --vscode-editor-font-*）', () => {
+    const html = build()
+    expect(html).toContain('--fs-font-family: var(--vscode-font-family')
+    expect(html).toContain('--fs-font-size: var(--vscode-font-size')
+    expect(html).toContain('--fs-code-font-family: var(--vscode-editor-font-family')
+    expect(html).toContain('--fs-code-font-size: var(--vscode-editor-font-size')
+  })
+
   it('注入真实的工作区根路径，且脚本带 nonce（CLI 宿主靠这个脚本让 UI 拿到真实 root，VSCode 之前漏了）', () => {
     const html = build()
     expect(html).toContain(`window.__folderspecRoot=${JSON.stringify(ROOT)}`)

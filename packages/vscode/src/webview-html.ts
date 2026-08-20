@@ -32,6 +32,36 @@ const THEME_BRIDGE = `
   --fs-indent-guide: var(--vscode-tree-indentGuidesStroke, #d0d0d0);
   --fs-group-dot: var(--vscode-charts-purple, #b180d7);
   --fs-line-number: var(--vscode-editorLineNumber-foreground, #9a9a9a);
+
+  /* Prism 语法高亮 token → VSCode 语义色。VSCode 不把完整的 TextMate 语法着色
+   * 暴露成 CSS 变量，只有这批语义化的变量能用来近似：symbolIcon.* 是大纲/面包屑
+   * 图标色（按符号种类区分，天然贴合"关键字/函数/类"这类角色分桶）、
+   * debugTokenExpression.* 是调试面板按值类型上色（字符串/数字/布尔），
+   * descriptionForeground 是弱化说明文字色（拿来近似注释）。这些 id 都在
+   * vscode 源码 themeing.ts 与官方 theme-color 文档里逐条核实过真实存在
+   * （见 theme-report.md），不是照抄一张未经验证的表。每条都带 --fs-* 同名的
+   * 默认色兜底——那批变量本身在极旧主题里也可能未定义。 */
+  --fs-token-keyword: var(--vscode-symbolIcon-keywordForeground, #0000ff);
+  --fs-token-function: var(--vscode-symbolIcon-functionForeground, #795e26);
+  --fs-token-class-name: var(--vscode-symbolIcon-classForeground, #267f99);
+  --fs-token-variable: var(--vscode-symbolIcon-variableForeground, #001080);
+  --fs-token-property: var(--vscode-symbolIcon-propertyForeground, #b98f13);
+  --fs-token-operator: var(--vscode-symbolIcon-operatorForeground, #383a42);
+  --fs-token-namespace: var(--vscode-symbolIcon-namespaceForeground, #af00db);
+  --fs-token-constant: var(--vscode-symbolIcon-constantForeground, #d16969);
+  --fs-token-string: var(--vscode-debugTokenExpression-string, #a31515);
+  --fs-token-number: var(--vscode-debugTokenExpression-number, #098658);
+  --fs-token-boolean: var(--vscode-debugTokenExpression-boolean, #0000ff);
+  --fs-token-comment: var(--vscode-descriptionForeground, #008000);
+  --fs-token-punctuation: var(--vscode-editorLineNumber-foreground, #9a9a9a);
+
+  /* 界面字体用工作台字体，代码预览用编辑器等宽字体——VSCode 源码
+   * (webview/browser/themeing.ts) 分别从 DEFAULT_FONT_FAMILY 常量与
+   * editor.fontFamily/fontSize 配置生成这两组变量，语义不同，不能共用。 */
+  --fs-font-family: var(--vscode-font-family, system-ui, sans-serif);
+  --fs-font-size: var(--vscode-font-size, 13px);
+  --fs-code-font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --fs-code-font-size: var(--vscode-editor-font-size, 12px);
 }
 `
 
