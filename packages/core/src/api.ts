@@ -36,6 +36,14 @@ export interface MoveParams {
   isDir: boolean
 }
 
+export interface CreateNodeParams {
+  /** 挂在哪个父目录下；'' 表示挂在根下。父级链条在契约里若还不存在会按需补齐（同 spec/annotate）。 */
+  parentPath: string
+  /** 单个路径段，不是路径——不能含 "/" */
+  name: string
+  isDir: boolean
+}
+
 export interface EditResult {
   tree: ViewNode
   dirty: boolean
@@ -100,6 +108,16 @@ export interface Api {
   'tree/expand': { params: { path: string }; result: { tree: ViewNode } }
   'spec/annotate': { params: AnnotateParams; result: EditResult }
   'spec/move': { params: MoveParams; result: EditResult }
+  /**
+   * 在契约里声明一个尚不存在的目录/文件——"这里应该有"，不是"去创建它"（真正建它的是
+   * 读契约的 Agent，见 CLAUDE.md 铁律 1）。不产生任何文件系统写入，新节点在 merge 里
+   * 自然呈现为 spec-only（虚线），与拖拽间接产生的空节点走的是同一条呈现路径。
+   *
+   * 结果里的 path 是新节点的完整路径，供 UI 选中它 / 直接进入重命名态——新建之后
+   * 用户几乎总是紧接着要么改名、要么补一句注释，没有这个字段 UI 得自己拼 parentPath
+   * 和 name，一旦两边拼接规则（'' 表示根）不一致就会选中错误的节点。
+   */
+  'spec/createNode': { params: CreateNodeParams; result: EditResult & { path: string } }
   'spec/save': { params: Record<string, never>; result: SaveResult }
   'spec/raw': { params: Record<string, never>; result: { markdown: string } }
   'spec/setGroup': { params: SetGroupParams; result: EditResult & { id: string } }

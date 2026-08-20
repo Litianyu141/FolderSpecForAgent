@@ -501,6 +501,135 @@ describe('Session 的分组与文件读取', () => {
   })
 })
 
+describe('Session.createNode（在契约里声明一个尚不存在的节点）', () => {
+  it('新建的节点写进树里，以 spec-only 呈现，且置脏；返回值带上新节点的路径', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.createNode({ parentPath: '', name: 'docs', isDir: true })
+    expect(r.path).toBe('docs')
+    expect(r.dirty).toBe(true)
+    expect(find(r.tree, 'docs')).toMatchObject({ origin: 'spec-only', isDir: true })
+  })
+
+  it('父级链条不存在时按需补齐——整条链在树上都呈现为 spec-only', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.createNode({ parentPath: 'brand/new', name: 'leaf.ts', isDir: false })
+    expect(r.path).toBe('brand/new/leaf.ts')
+    expect(find(r.tree, 'brand')?.origin).toBe('spec-only')
+    expect(find(r.tree, 'brand/new')?.origin).toBe('spec-only')
+    expect(find(r.tree, 'brand/new/leaf.ts')).toMatchObject({ origin: 'spec-only', isDir: false })
+  })
+
+  it('在磁盘上已存在的目录下新建节点：父目录仍是 both，新节点是 spec-only', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.createNode({ parentPath: 'src', name: 'cases', isDir: true })
+    expect(find(r.tree, 'src')?.origin).toBe('both')
+    expect(find(r.tree, 'src/cases')?.origin).toBe('spec-only')
+  })
+
+  it('拒绝空名', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: '', isDir: true })).toThrow('名字不能为空')
+  })
+
+  it('拒绝含 "/" 的名字——这个参数位是单个路径段，不是路径', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: 'a/b', isDir: true })).toThrow('"/"')
+  })
+
+  it('拒绝含反引号的名字', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: 'we`ird', isDir: true })).toThrow('反引号')
+  })
+
+  it('拒绝含换行的名字', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: 'a\nb', isDir: true })).toThrow('反引号或换行')
+  })
+
+  it('拒绝 "." 与 ".."：在文件系统里有特殊含义', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: '.', isDir: true })).toThrow()
+    expect(() => s.createNode({ parentPath: '', name: '..', isDir: true })).toThrow()
+  })
+
+  it('parentPath 含反引号时同样被拒绝', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: 'we`ird', name: 'x', isDir: true })).toThrow('反引号')
+  })
+
+  it('校验失败不产生副作用：不置脏、不进撤销栈', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: '', isDir: true })).toThrow()
+    expect(s.isDirty()).toBe(false)
+    expect(s.undo().canUndo).toBe(false)
+  })
+
+  it('拒绝同层重名', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: '', name: 'docs', isDir: true })
+    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow('docs')
+  })
+
+  it('重名被拒绝后不产生副作用：只需一次撤销就能回到创建前的状态', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: '', name: 'docs', isDir: true })
+    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow()
+    const r = s.undo()
+    expect(find(r.tree, 'docs')).toBeNull()
+    // 只有一次真正的编辑进了栈；如果被拒绝的那次也 commit 了，这里撤销一次之后
+    // canUndo 仍会是 true（栈里还有一条本不该存在的记录）
+    expect(r.canUndo).toBe(false)
+  })
+
+  it('只读模式（disk 视图）下 createNode 抛错', async () => {
+    const s = new Session(root); await s.open()
+    s.setViewMode('disk')
+    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow('原始结构')
+  })
+
+  it('handle("spec/createNode") 分发正确', async () => {
+    const s = new Session(root); await s.open()
+    const r = await s.handle('spec/createNode', { parentPath: '', name: 'docs', isDir: true })
+    expect((r as { path: string }).path).toBe('docs')
+    expect(find((r as { tree: ViewNode }).tree, 'docs')?.origin).toBe('spec-only')
+  })
+
+  it('进撤销栈：canUndo 变 true，撤销后新节点从树上消失、dirty 归零，重做后回来', async () => {
+    const s = new Session(root); await s.open()
+    expect(s.isDirty()).toBe(false)
+    const r = s.createNode({ parentPath: '', name: 'docs', isDir: true })
+    expect(r.canUndo).toBe(true)
+    expect(r.dirty).toBe(true)
+
+    const u = s.undo()
+    expect(find(u.tree, 'docs')).toBeNull()
+    expect(u.dirty).toBe(false)
+
+    const red = s.redo()
+    expect(find(red.tree, 'docs')?.origin).toBe('spec-only')
+    expect(red.dirty).toBe(true)
+  })
+
+  // 端到端护栏：新增节点之后 raw() 必须能成功——这条直接守着「别把会话弄成永远
+  // 存不了盘」（save() 与 spec/raw 共用同一道 serialize→parse 自校验闸门）。
+  it('createNode 之后 raw() 能成功序列化并自校验', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: 'src', name: '新目录', isDir: true })
+    expect(() => s.raw()).not.toThrow()
+    expect(s.raw()).toContain('新目录')
+  })
+
+  it('createNode 之后 save() 落盘，重新 open() 仍能看到这个节点', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: '', name: 'templates', isDir: true })
+    await s.save()
+
+    const s2 = new Session(root)
+    const r = await s2.open()
+    expect(find(r.tree, 'templates')?.origin).toBe('spec-only')
+  })
+})
+
 describe('Session 的视图模式（原始结构 / 我的结构）', () => {
   it('默认是 spec 视图：树按契约里的结构合成', async () => {
     const s = new Session(root)
@@ -601,6 +730,7 @@ describe('Session 的视图模式（原始结构 / 我的结构）', () => {
     expect(() => s.move({ from: 'README.md', toParent: 'src', isDir: false })).toThrow('原始结构')
     expect(() => s.setGroup({ id: null, members: ['src'], text: 't' })).toThrow('原始结构')
     expect(() => s.deleteGroup('whatever')).toThrow('原始结构')
+    expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow('原始结构')
     expect(() => s.raw()).toThrow('原始结构')
     await expect(s.save()).rejects.toThrow('原始结构')
   })

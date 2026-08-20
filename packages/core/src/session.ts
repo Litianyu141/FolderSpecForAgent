@@ -5,11 +5,11 @@ import { serializeSpec } from './serialize.js'
 import { scan, DEFAULT_DEPTH } from './scan.js'
 import { gitStatus } from './git.js'
 import { merge } from './merge.js'
-import { emptySpec, moveNode, setAnnotation, setGroup, deleteGroup } from './spec-edit.js'
+import { createNode, emptySpec, moveNode, setAnnotation, setGroup, deleteGroup } from './spec-edit.js'
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
-import type { Api, ApiMethod, AnnotateParams, EditResult, MoveParams, OpenResult, SaveResult, SetGroupParams, SetViewModeParams, ViewModeResult } from './api.js'
+import type { Api, ApiMethod, AnnotateParams, CreateNodeParams, EditResult, MoveParams, OpenResult, SaveResult, SetGroupParams, SetViewModeParams, ViewModeResult } from './api.js'
 import type { ActualNode, GitStates, Group, ParseError, Spec, ViewMode, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
@@ -54,6 +54,29 @@ const FORBIDDEN_IN_NODE_NAME = /[`\r\n]/
 function assertRepresentablePath(path: string): void {
   if (FORBIDDEN_IN_NODE_NAME.test(path)) {
     throw new Error(`路径 ${JSON.stringify(path)} 含有反引号或换行，当前契约格式无法表示；请重命名该文件或目录`)
+  }
+}
+
+/**
+ * createNode 的 name 是用户直接敲进输入框的单个路径段，不是像 annotate/move 那样
+ * 已经存在于磁盘、已经过操作系统那道关卡的文件名——不能假定它无害。除了上面
+ * assertRepresentablePath 已经挡住的反引号/换行，这里还要挡：
+ *   - 空字符串——一个空文本框提交，不该在契约里留一个没有名字的节点；
+ *   - 含 "/"——这个参数位约定是单个路径段，含 "/" 说明调用方把它和 parentPath
+ *     弄混了，放行的话会把用户以为的一层目录悄悄拆成好几层；
+ *   - "." / ".."——在文件系统里有特殊含义，允许的话 Agent 读到一个名叫 `..` 的
+ *     "应该存在的目录"会分不清这是笔误还是真要在上级目录动手。
+ */
+function assertValidNodeName(name: string): void {
+  if (name === '') throw new Error('名字不能为空')
+  if (name.includes('/')) {
+    throw new Error(`名字 ${JSON.stringify(name)} 不能包含 "/"：这里只接受单个路径段，不是路径`)
+  }
+  if (FORBIDDEN_IN_NODE_NAME.test(name)) {
+    throw new Error(`名字 ${JSON.stringify(name)} 含有反引号或换行，当前契约格式无法表示`)
+  }
+  if (name === '.' || name === '..') {
+    throw new Error(`名字不能是 "${name}"：在文件系统里有特殊含义`)
   }
 }
 
@@ -290,6 +313,24 @@ export class Session {
     return this.editResult()
   }
 
+  /**
+   * 在契约里声明一个尚不存在的节点。走与其他四个写方法（annotate/move/setGroup/
+   * deleteGroup）完全相同的收口（assertWritable → 快照 → 纯函数改 spec →
+   * commitEdit），因此也天然进撤销栈、天然被「原始结构」只读视图拦下、天然会被
+   * raw()/save() 的自校验闸门保护。
+   */
+  createNode(params: CreateNodeParams): EditResult & { path: string } {
+    this.assertWritable()
+    const { parentPath, name, isDir } = params
+    assertRepresentablePath(parentPath)
+    assertValidNodeName(name)
+    const before = this.captureState()
+    const created = createNode(this.spec, parentPath, name, isDir)
+    this.spec = created.spec
+    this.commitEdit(before)
+    return { ...this.editResult(), path: created.path }
+  }
+
   setGroup(params: SetGroupParams): EditResult & { id: string } {
     this.assertWritable()
     for (const m of params.members) assertRepresentablePath(m)
@@ -453,6 +494,8 @@ export class Session {
         return this.annotate(params as AnnotateParams) as Api[K]['result']
       case 'spec/move':
         return this.move(params as MoveParams) as Api[K]['result']
+      case 'spec/createNode':
+        return this.createNode(params as CreateNodeParams) as Api[K]['result']
       case 'spec/save':
         return (await this.save()) as Api[K]['result']
       case 'spec/raw':

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, setAnnotation, setGroup } from './spec-edit.js'
+import { createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, setAnnotation, setGroup } from './spec-edit.js'
 import type { Spec, SpecNode } from './types.js'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
@@ -352,6 +352,62 @@ describe('deleteGroup', () => {
   it('删除不存在的 id 是空操作', () => {
     const s = setGroup(emptySpec(), null, ['a/b.ts'], { text: 't' }).spec
     expect(deleteGroup(s, 'nope').groups).toHaveLength(1)
+  })
+})
+
+describe('createNode', () => {
+  it('在指定父级下声明一个尚不存在的节点，父级链条按需创建', () => {
+    const { spec: s, path } = createNode(emptySpec(), 'src/cases', 'input.json', false)
+    expect(path).toBe('src/cases/input.json')
+    expect(find(s.nodes, 'src')?.isDir).toBe(true)
+    expect(find(s.nodes, 'src/cases')?.isDir).toBe(true)
+    const leaf = find(s.nodes, 'src/cases/input.json')
+    expect(leaf?.isDir).toBe(false)
+    expect(leaf?.children).toEqual([])
+    // 刚声明的节点不带任何注释——这正是"待创建"的空白状态，不是注释被漏写
+    expect(leaf?.annotation).toBeUndefined()
+  })
+
+  it('parentPath 为空字符串时在根下新增节点', () => {
+    const { spec: s, path } = createNode(emptySpec(), '', 'docs', true)
+    expect(path).toBe('docs')
+    expect(find(s.nodes, 'docs')?.isDir).toBe(true)
+  })
+
+  it('不修改传入的 spec（返回新对象）', () => {
+    const before = emptySpec()
+    const { spec: after } = createNode(before, '', 'docs', true)
+    expect(before.nodes).toEqual([])
+    expect(after.nodes).toHaveLength(1)
+  })
+
+  it('拒绝同层重名：先声明的节点已占用这个名字', () => {
+    const { spec: s } = createNode(emptySpec(), '', 'src', true)
+    expect(() => createNode(s, '', 'src', true)).toThrow('src')
+  })
+
+  it('判重只看 name、不看 isDir——与解析器的判重键保持一致', () => {
+    // parse/structure.ts 对同层重名的判定不看 isDir：merge 用 name 做 key（后一个覆盖
+    // 前一个），spec-edit 用 list.find(name) 找第一个——如果 createNode 只在 isDir 也
+    // 相同时才报错，会放行一个 `foo` 文件与 `foo/` 目录做兄弟，round-trip 时被解析器拒绝，
+    // 用户此后再也存不了盘。
+    const { spec: s } = createNode(emptySpec(), '', 'foo', true)
+    expect(() => createNode(s, '', 'foo', false)).toThrow()
+  })
+
+  it('父级路径穿过已有的文件叶子节点时，把它升级成目录', () => {
+    const s = setAnnotation(emptySpec(), 'src', false, { annotation: '曾经是个文件' })
+    expect(find(s.nodes, 'src')?.isDir).toBe(false)
+    const { spec: after } = createNode(s, 'src', 'inner.ts', false)
+    expect(find(after.nodes, 'src')?.isDir).toBe(true)
+    expect(find(after.nodes, 'src/inner.ts')?.isDir).toBe(false)
+  })
+
+  it('新节点在已有同名兄弟旁边正常追加，不影响其他兄弟', () => {
+    let s = setAnnotation(emptySpec(), 'src/core', true, { annotation: '核心' })
+    const { spec: after } = createNode(s, 'src', 'utils', true)
+    expect(find(after.nodes, 'src/core')?.annotation).toBe('核心')
+    expect(find(after.nodes, 'src/utils')?.isDir).toBe(true)
   })
 })
 

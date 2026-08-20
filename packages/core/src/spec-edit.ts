@@ -44,6 +44,34 @@ export function setAnnotation(spec: Spec, path: string, isDir: boolean, patch: A
   return next
 }
 
+/**
+ * 在契约里声明一个尚不存在的节点——"这里应该有"，不是"去创建它"（spec §3.2 声明式）。
+ * 父级链条复用 setAnnotation 同一套 ensure() 逻辑按需补齐：契约是稀疏覆盖层，只含被
+ * 标注节点及其祖先链，不该为了声明一个深层节点就要求调用方先手动把每一级父目录都建出来。
+ *
+ * 同层重名在这里就地拒绝，不是留给 save() 的自校验去发现：解析器判重的键只有 name（见
+ * parse/structure.ts「同一层重名节点」的报错与其上方注释），如果放行创建，下游 merge
+ * （用 name→node 的 Map，后一个覆盖前一个）与 spec-edit 的其他函数（用 list.find 命中
+ * 第一个）会对"哪一个才算数"给出相反答案；serialize→parse 的自校验会在 save() 时才
+ * 中止写入，那时用户已经交互过一整轮，之后再也存不了盘——必须在创建的这一刻就堵死。
+ */
+export function createNode(spec: Spec, parentPath: string, name: string, isDir: boolean): { spec: Spec; path: string } {
+  const parentSegs = toSegments(parentPath)
+  const next = structuredClone(spec)
+  const siblings = parentSegs.length === 0 ? next.nodes : ensure(next.nodes, parentSegs, true).children
+
+  if (siblings.some(n => n.name === name)) {
+    throw new Error(
+      `${parentSegs.length === 0 ? '根' : `\`${parentSegs.join('/')}\``} 下已经有同名节点 \`${name}\`：` +
+      '同层同名兄弟是重复声明，解析器会拒绝，请换个名字',
+    )
+  }
+
+  siblings.push({ name, isDir, children: [] })
+  const path = parentSegs.length === 0 ? name : `${parentSegs.join('/')}/${name}`
+  return { spec: next, path }
+}
+
 export function moveNode(spec: Spec, from: string, toParent: string, isDir: boolean): Spec {
   const fromSegs = toSegments(from)
   if (fromSegs.length === 0) throw new Error('不能移动根节点')
