@@ -15,7 +15,7 @@ Skip this and you'll get `pnpm: command not found`.
 ## Common commands
 
 ```bash
-pnpm test                                    # full suite: core 143 + ui 70 + cli 21
+pnpm test                                    # full suite: core + ui + cli + vscode (~993 tests)
 pnpm build                                   # core(tsc) → ui(vite) → cli(tsc + copy ui output)
 pnpm typecheck                               # builds core first, then tsc --noEmit per package
 
