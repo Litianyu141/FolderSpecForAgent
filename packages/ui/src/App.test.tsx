@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { App } from './App.js'
 import { FakeBridge } from './test-bridge.js'
 import type { Bridge, FileReadResult, Group, OpenResult, Severity, ViewNode } from '@folderspec/core/api'
@@ -1596,26 +1597,118 @@ describe('App', () => {
     expect(removeBtn('README.md').disabled).toBe(true)
   })
 
-  it('草稿未提交时普通单击树上另一个节点：离开本轮，草稿丢弃且什么都没写', async () => {
-    // 锁不能把用户困住。普通单击本来就有"放弃多选"的语义，它必然把选中集收成 1 项，
-    // 分组面板随之卸载——这就是留出来的那条出路，不需要新按钮。
+  // 「发现 1」的第三次出现。前两次分别是"severity 没有本地 state"与"提交时读陈旧快照"，
+  // 这一次的载体是**落地即清草稿**：新建态下 current 恒为 null，submit 带的 text 是空串，
+  // 而 core 的 setGroup 对空 text 走早退（spec-edit.ts 的 `text === '' → return`）——
+  // 那是一次什么都没改的**空操作，却照样"落地成功"**，于是落地回调把草稿连同用户刚选的
+  // 强度一起清掉，下拉框视觉上弹回「（仅注释，不强制）」，随后建出的分组不带 severity。
+  //
+  // 触发条件是"新建态 + 两次字段编辑之间隔了一个宿主往返"——真实用户必然如此。
+  // 这条**必须走 App 级真实接线**：守它的两条组件级用例跑在 Harness 上，而 Harness 故意
+  // 不复刻 App 的"落地后清空草稿"，于是它们只证明了"合并逻辑对"，证明不了"合并有机会发生"。
+  it('新建态先选约束强度、等那次空操作落地、再写注释——强度必须还在', async () => {
+    const bridge = groupBridge([G1], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)                       // 三项，不等于 G1：新建态
+    const ta = await screen.findByLabelText('分组注释')
+    expect((ta as HTMLTextAreaElement).value).toBe('')
+
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'error' } })
+    // 停顿：真实用户在"选完强度"与"开始写注释"之间必然隔着一个宿主往返
+    await act(async () => { await new Promise(r => setTimeout(r, 250)) })
+
+    // 空 text 那一笔在 core 侧是空操作，根本不该发出去
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(0)
+    expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('error')
+
+    fireEvent.change(ta, { target: { value: '新分组' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(bridge.groupsNow().find(g => g.text === '新分组')).toBeTruthy())
+    expect(bridge.groupsNow().find(g => g.text === '新分组')!.severity).toBe('error')
+  })
+
+  // 上面那道"空操作就别发"的闸有一条必须放行的路：**清空某个既有分组的注释 = 删除它**
+  // （core 的同一条早退，只是这回 existing 存在）。判据因此取 `p.groupId ?? sub.id` 而不是
+  // 只看 `p.groupId`——本轮的 groupId 可能还是 null（新建态开的轮次），而面板此刻编辑的
+  // 却已经是一个既有分组：成员集缩到恰好等于它。把它一起挡掉的话，框里空了、契约里那段
+  // 注释还在，而且此后每次失焦都会被同一道闸挡住，显示与契约永久分家。
+  it('新建态里成员集缩成某个既有分组后清空它的注释：那个分组确实被删掉', async () => {
+    const bridge = groupBridge([{ id: 'g1', members: ['src', 'docs'], text: '两个一体' }], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)                       // 三项：新建态，没有草稿
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(removeBtn('README.md'))         // 缩成 ['src','docs'] —— 恰好等于 g1
+    await waitFor(() =>
+      expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('两个一体'))
+
+    const ta = screen.getByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(bridge.groupsNow()).toHaveLength(0))
+  })
+
+  // 同一条早退路径的另一半：新建态下用户先填了分组名。那一笔同样是空操作，
+  // 落地回调照样会把名字草稿清掉，输入框弹回空、随后建出的分组用的是自动取的名字。
+  it('新建态先填分组名、等那次空操作落地、再写注释——名字必须还在', async () => {
+    const bridge = groupBridge([G1], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    const nameInput = screen.getByLabelText('分组名')
+    fireEvent.change(nameInput, { target: { value: '这一批' } })
+    fireEvent.blur(nameInput)
+    await act(async () => { await new Promise(r => setTimeout(r, 250)) })
+
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(0)
+    expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('这一批')
+
+    fireEvent.change(ta, { target: { value: '新分组' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(bridge.groupsNow().find(g => g.text === '新分组')).toBeTruthy())
+    expect(bridge.groupsNow().find(g => g.text === '新分组')!.id).toBe('这一批')
+  })
+
+  // 锁不能把用户困住。普通单击本来就有"放弃多选"的语义，它必然把选中集收成 1 项，
+  // 分组面板随之卸载——这就是留出来的那条出路，不需要新按钮。
+  //
+  // **这一下的真实语义是"先提交、再离开"，不是"放弃"**：鼠标按下时输入框先失焦，
+  // onBlur 把草稿提交出去，之后才轮到 click 换选中集。所以必须用 userEvent（它真的搬焦点），
+  // 不能用 fireEvent.click —— 后者在 jsdom 里不搬焦点，会把一个产品里根本不存在的
+  // "点树上节点等于放弃"钉成不变量，而界面上那句提示曾经就是照着这个假象写的。
+  it('草稿未提交时普通单击树上另一个节点：先提交、再离开本轮', async () => {
+    const user = userEvent.setup()
     const bridge = groupBridge([G3], 20)
     const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
     await waitFor(() => screen.getByLabelText('工作区路径'))
 
     selectAllThree(container)
     const ta = await screen.findByLabelText('分组注释')
-    fireEvent.change(ta, { target: { value: '还没提交就走了' } })
+    await user.click(ta)                                   // 焦点真的落在输入框里
+    fireEvent.change(ta, { target: { value: '我打了一半就反悔了' } })
 
-    fireEvent.click(rowByName(container, 'docs/'))
-    expect(screen.queryByLabelText('分组注释')).toBeNull()
+    await user.click(rowByName(container, 'docs/'))        // mousedown → blur → click
+    expect(screen.queryByLabelText('分组注释')).toBeNull()  // 确实离开了本轮
 
-    // 再凑回同样这三项：框里必须是契约里的注释，不能还留着上一轮那半句
+    // 提交落在**正确的目标**上：就是这一轮在编辑的 g1，没有多出别的分组
+    await waitFor(() => expect(bridge.groupsNow()[0].text).toBe('我打了一半就反悔了'))
+    expect(bridge.groupsNow()).toHaveLength(1)
+    expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs', 'README.md'])
+
+    // 再凑回同样这三项：草稿没有跟过来（否则 × 会是锁着的），框里是契约里的那份
     fireEvent.click(rowByName(container, 'src/'), { ctrlKey: true })
     fireEvent.click(rowByName(container, 'README.md'), { ctrlKey: true })
     const back = await screen.findByLabelText('分组注释')
-    expect((back as HTMLTextAreaElement).value).toBe('一体的三个')
-    await act(async () => { await new Promise(r => setTimeout(r, 40)) })
-    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(0)
+    expect((back as HTMLTextAreaElement).value).toBe('我打了一半就反悔了')
+    expect(removeBtn('README.md').disabled).toBe(false)
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
   })
 })

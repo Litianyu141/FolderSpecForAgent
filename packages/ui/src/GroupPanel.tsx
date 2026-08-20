@@ -174,13 +174,17 @@ export function GroupPanel(
 
       <div className="fs-member-list-wrap">
         {/* 标题在锁定态下换说法：判据是"用户点了 × 没反应时，能一眼明白为什么"。
-            只把按钮置灰而标题照旧写着"点击 × 移出选中集"，等于界面自己在说谎。 */}
+            只把按钮置灰而标题照旧写着"点击 × 移出选中集"，等于界面自己在说谎。
+            下面那条提示同一条判据：它一度写着"点树上其他节点则放弃这次编辑"，而真实行为是
+            鼠标按下时输入框先失焦、onBlur 把草稿**提交**出去，之后才轮到 click 换选中集。
+            用户照那句话去"放弃"，得到的是把当前分组原有的注释覆盖掉——本项目唯一那条红线。
+            界面上没有放弃入口就得如实说没有，别让文案许诺一个不存在的动作。 */}
         <span className="fs-field-label" id={memberListHeadingId}>
           {locked ? '成员（编辑中已锁定）' : '成员（点击 × 移出选中集）'}
         </span>
         {locked && (
           <p className="fs-lock-hint">
-            编辑尚未提交，成员暂不可增减。点输入框以外任意处即提交；点树上其他节点则放弃这次编辑。
+            编辑尚未提交，成员暂不可增减。点输入框以外任意处即提交并解锁——包括树上的节点，本工具没有“放弃”入口。
           </p>
         )}
         <ul className="fs-member-list" role="group" aria-labelledby={memberListHeadingId}>

@@ -327,6 +327,18 @@ describe('GroupPanel', () => {
     expect(screen.getByText(/编辑尚未提交/)).toBeTruthy()
   })
 
+  // 提示条曾经写着"点树上其他节点则放弃这次编辑"，而真实行为是那一下先失焦、把草稿
+  // **提交**出去（App.test 的「先提交、再离开本轮」用 userEvent 实证）。用户照那句话去
+  // "放弃"，得到的是把当前分组原有的注释覆盖掉——与"按钮置灰而标题照旧"同一类问题，
+  // 只是换了个控件：界面不能许诺一个不存在的动作。
+  it('锁定态的提示说的是"离开即提交"，不许诺一个不存在的放弃入口', () => {
+    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} draft={{ text: '写了一半' }}
+      disabled={false} onDraftChange={vi.fn()} {...noop} />)
+    const hint = screen.getByText(/编辑尚未提交/).textContent ?? ''
+    expect(hint).toMatch(/即提交/)
+    expect(hint).not.toMatch(/放弃这次编辑/)
+  })
+
   it('用户一开始输入，× 就跟着锁上', () => {
     render(<Harness members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false} {...noop} />)
     expect((screen.getByLabelText('从选中集移除 src/a.ts') as HTMLButtonElement).disabled).toBe(false)

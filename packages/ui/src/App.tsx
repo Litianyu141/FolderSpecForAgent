@@ -406,13 +406,35 @@ export function App({ bridge, initialRoot }: AppProps) {
     takePending()
     // 成员取 pending 而不是 selection：收缩在途时 selection 还是收缩前的那一份，
     // 拿它去提交改名或约束强度，会把刚移除的成员又写回契约
-    runGroupWrite(p => ({
-      id: p.groupId ?? sub.id,
-      members: p.members,
-      name: sub.name,
-      text: sub.text,
-      severity: sub.severity,
-    }))
+    runGroupWrite(p => {
+      const target = p.groupId ?? sub.id
+      /**
+       * 还没有分组、注释又是空的：**这一笔别发**。
+       *
+       * core 的 setGroup 对空 text 走早退（spec-edit.ts 的
+       * `if (text === undefined || text === '') { ... return }`）——对一个尚不存在的分组
+       * 是一次什么都没改的空操作，**但它照样"落地成功"**。而"落地成功"在上面那条链里
+       * 是有副作用的：它会清掉草稿、并把 core 顺手推导出的 id 记进 pending。于是
+       *
+       *   新建态下先选约束强度（或先填分组名）→ 停顿一个宿主往返 → 空操作落地
+       *   → 草稿被清 → 下拉框弹回「（仅注释，不强制）」/ 名字框弹回空
+       *   → 用户随后写的注释建出的分组，丢掉了他明明选过的强度、填过的名字
+       *
+       * 这是「发现 1」的第三次出现（前两次见 GroupPanel.test.tsx 里那段长注释）。
+       * 收口放在这里而不是去改落地回调：判据与 core 的早退**同一条**——写出去也不会
+       * 有任何变化的一笔，本来就不该占用一次往返。别改成 `p.groupId === null`：
+       * 目标要取 `p.groupId ?? sub.id`，否则"把某个既有分组的注释清空 = 删除它"
+       * 这条真实语义会被一起挡掉。
+       */
+      if (target === null && sub.text.trim() === '') return null
+      return {
+        id: target,
+        members: p.members,
+        name: sub.name,
+        text: sub.text,
+        severity: sub.severity,
+      }
+    })
   }, [takePending, runGroupWrite])
 
   // groups 走 ref 而不是依赖数组：这个回调会传给 SpecTree 的 onGroupClick，而那是
