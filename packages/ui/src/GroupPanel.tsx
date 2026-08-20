@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import type { Group, Severity } from '@folderspec/core/api'
 import { SEVERITY_BADGE } from './colors.js'
 import { matchingGroups } from './selection.js'
@@ -52,6 +52,10 @@ const keyOf = (members: readonly string[]) => [...members].sort().join(' ')
 export function GroupPanel(
   { members, groups, round, disabled, onSubmit, onRemoveMember, onEditGroup }: GroupPanelProps,
 ) {
+  // 成员列表原先没有标题，用户反馈"不知道那几行是什么"。用 aria-labelledby 把标题与
+  // 列表本身关联（而不只是视觉上挨着），组件可能同屏出现多份（理论上），id 不能写死。
+  const memberListHeadingId = useId()
+
   const matches = matchingGroups(members, groups)
   // 上层指定的目标优先；它指向一个已经不存在的分组（比如注释被清空后 core 把它删了）
   // 时退回按成员集判定，不至于卡在一个空壳上
@@ -199,15 +203,18 @@ export function GroupPanel(
         </select>
       </label>
 
-      <ul className="fs-member-list">
-        {members.map(m => (
-          <li key={m}>
-            <span className="fs-member-path">{m}</span>
-            <button type="button" aria-label={`从选中集移除 ${m}`} disabled={disabled}
-              onClick={() => onRemoveMember(m)}>×</button>
-          </li>
-        ))}
-      </ul>
+      <div className="fs-member-list-wrap">
+        <span className="fs-field-label" id={memberListHeadingId}>成员（点击 × 移出选中集）</span>
+        <ul className="fs-member-list" role="group" aria-labelledby={memberListHeadingId}>
+          {members.map(m => (
+            <li key={m}>
+              <span className="fs-member-path">{m}</span>
+              <button type="button" aria-label={`从选中集移除 ${m}`} disabled={disabled}
+                onClick={() => onRemoveMember(m)}>×</button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   )
 }

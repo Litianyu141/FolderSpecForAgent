@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { GroupPanel } from './GroupPanel.js'
 import type { Group } from '@folderspec/core/api'
 
@@ -11,6 +11,16 @@ describe('GroupPanel', () => {
     render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={[]} disabled={false} {...noop} />)
     expect(screen.getByText(/已选中 2 项/)).toBeTruthy()
     expect(screen.getByText('src/a.ts')).toBeTruthy()
+  })
+
+  // 回归动机：成员列表原先直接浮在「约束强度」下拉框下面，没有任何标题，用户在真实界面里
+  // 反馈"不知道那几行是什么"。标题必须用 role=group 与列表本身关联（而不只是视觉上挨着），
+  // 这样屏幕阅读器和这条用例都能验证"标题确实说的是这份列表"，不是碰巧相邻的两段文字。
+  it('成员列表有标题，且与列表本身关联', () => {
+    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={[]} disabled={false} {...noop} />)
+    const group = screen.getByRole('group', { name: /成员/ })
+    expect(within(group).getByText('src/a.ts')).toBeTruthy()
+    expect(within(group).getByText('src/b.ts')).toBeTruthy()
   })
 
   it('选中集等于既有分组时回填名字与注释', () => {

@@ -51,8 +51,12 @@
 .fs-group-choices { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .fs-group-choices [aria-current="true"] { font-weight: 600; text-decoration: none; }
 
+/* 分组面板底部：成员列表的标题，与 .fs-owning-groups 下的 .fs-field-label 同形——
+   之前这份列表没有标题，直接浮在「约束强度」下拉框下面，用户反馈看不出那几行是什么 */
+.fs-member-list-wrap { margin-top: 4px; }
+
 /* 分组面板底部：当前选中集的成员列表，每项可单独移出选中集 */
-.fs-member-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.fs-member-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .fs-member-list li { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 0; }
 .fs-member-path { font-size: 12px; word-break: break-all; }
 .fs-member-list button { flex-shrink: 0; border: none; background: transparent; cursor: pointer; opacity: 0.6; }
