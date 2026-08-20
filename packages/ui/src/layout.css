@@ -97,13 +97,20 @@
 
 /* 中间栏：只读文件预览。逐行高亮而非整段高亮是有意的取舍——行号与内容必须严格对齐，
    整段高亮产出的 HTML 会跨行嵌套 token，按 \n 拆行时标签会断。 */
-.fs-content { padding: 8px 12px; font-size: 13px; }
+.fs-content { padding: 8px 12px; font-size: var(--fs-font-size); }
 .fs-content-empty { padding: 24px; opacity: .6; }
 .fs-content-path { font-weight: 600; margin-bottom: 8px; }
 .fs-content-note { opacity: .75; }
-.fs-code { margin: 0; font-family: var(--fs-code-font-family); font-size: var(--fs-code-font-size); line-height: 18px; }
+/* line-height 用无单位数（不是 18px）：字号已经跟着 --fs-code-font-size 走，行高
+ * 若还写死像素，用户把 editor.fontSize 调大（16~20px 很常见）就会出现行与行重叠——
+ * 1.5 是原来 18px/12px（改动前唯一支持过的字号）的准确比值，缩放后默认观感不变。 */
+.fs-code { margin: 0; font-family: var(--fs-code-font-family); font-size: var(--fs-code-font-size); line-height: 1.5; }
 .fs-code-line { display: flex; white-space: pre; }
-.fs-line-no { flex: 0 0 44px; text-align: right; padding-right: 12px; color: var(--fs-line-number); user-select: none; }
+/* 宽度是"数字区(ch，跟字号缩放) + 右侧留白(12px，视觉沟槽，固定更稳)"，不是写死的
+ * 44px——原来的 44px 只在 12px 等宽字体下够放 4 位数行号，字号跟主题变大后会拦腰
+ * 截断行号。改成 ch 后所有行共享同一个基于当前字号算出的宽度，行号与内容仍然对齐
+ * （对齐靠的是"每行同宽"，不是某个绝对像素值，见大字号下的验证）。 */
+.fs-line-no { flex: 0 0 calc(4ch + 12px); text-align: right; padding-right: 12px; color: var(--fs-line-number); user-select: none; }
 .fs-code-text { flex: 1 1 auto; }
 
 /* Prism 语法高亮上色。highlight.ts 生成 class="token keyword" 这类标记，但一直没有

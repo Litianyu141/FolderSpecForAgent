@@ -94,3 +94,27 @@ describe('字体跟随主题', () => {
     }
   })
 })
+
+describe('大字号下代码预览不会挤压/错位（I2）', () => {
+  // 字号跟着主题走之后（.fs-code 的 font-size 已经是 var(--fs-code-font-size)），
+  // 行高/中间栏文字大小/行号列宽如果还按当初为 12px 硬编码的像素数写死，用户把
+  // editor.fontSize 调大（16~20px 很常见）就会出现行与行重叠、或多位数行号被挤断——
+  // 而这块代码上方的注释专门写着"行号与内容必须严格对齐"，排版在这里是承重的。
+  it('.fs-code 的 line-height 是跟着字号缩放的无单位数，不是写死的像素', () => {
+    const m = layoutCss.match(/\.fs-code\s*\{[^}]*line-height:\s*([^;]+);/)
+    expect(m, '.fs-code 里找不到 line-height').not.toBeNull()
+    const value = m![1].trim()
+    expect(value, `line-height 是 "${value}"——像素/字号等绝对单位不会跟着 --fs-code-font-size 缩放`)
+      .not.toMatch(/px|em|rem|%/)
+  })
+
+  it('.fs-content（中间栏非代码文字）用 --fs-font-size，不再硬编码 13px', () => {
+    expect(layoutCss).toMatch(/\.fs-content\s*\{[^}]*font-size:\s*var\(--fs-font-size\)/)
+  })
+
+  it('.fs-line-no 的宽度按 ch（字符宽度）算，不是写死的像素——否则大字号下装不下多位数行号', () => {
+    const m = layoutCss.match(/\.fs-line-no\s*\{[^}]*flex:\s*0\s+0\s+([^;]+);/)
+    expect(m, '.fs-line-no 里找不到 flex').not.toBeNull()
+    expect(m![1]).toMatch(/ch/)
+  })
+})
