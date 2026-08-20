@@ -134,6 +134,10 @@ export interface Api {
    * 归在 `spec/` 而不是 `view/`：它改的是 Spec 本身（lang 字段与可能被替换的
    * title/preamble），要落盘、要经过 assertWritable()、要进撤销栈——与 view/setMode
    * 那种纯显示、不碰 Spec 的操作是两类不同的东西（对比 view/setMode 上的注释）。
+   *
+   * 传入的 lang 与当前相同时是真正的空操作：不置脏、不进撤销栈，`result.dirty`/
+   * `canUndo` 原样反映调用前的状态（见 Session.setLang）。语言开关多半是双态控件，
+   * 当前选中项常驻可点，UI 侧不需要在调用前自己判断"是不是已经是这个语言了"。
    */
   'spec/setLang': { params: SetLangParams; result: EditResult }
   'file/read': { params: { path: string }; result: FileReadResult }

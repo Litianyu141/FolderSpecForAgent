@@ -392,13 +392,22 @@ export class Session {
   }
 
   /**
-   * 切换样板文字（标题行、导言、四个章节标题）的语言。走与其他四个写方法完全相同的
+   * 切换样板文字（标题行、导言、四个章节标题）的语言。走与其他四个写方法基本相同的
    * 收口（assertWritable → 快照 → 纯函数改 spec → commitEdit），因此也天然进撤销栈、
    * 天然被「原始结构」只读视图拦下、天然会被 raw()/save() 的自校验闸门保护——见
    * spec-edit.ts 的 setLang() 关于"未改过才换"判据的完整推导。
+   *
+   * 唯一的例外：传入的 lang 与当前相同时提前返回，不调用 commitEdit。这里和其他
+   * 四个写方法（annotate/move/setGroup/deleteGroup 等）故意不一致——那几个"传相同
+   * 的值"本来就需要用户主动重新输入一遍，谁会误触不用管；语言开关是双态控件，当前
+   * 选中项通常常驻可点，点一下自己已经在的语言是很容易被误触的操作。而且这里判断
+   * 安全：lang === this.spec.lang 时 setLang() 是纯函数级别真正的恒等变换（内部
+   * from/to 落到同一份 LANG_DEFAULTS 条目，title/preamble 逐字不变），提前返回不会
+   * 漏做任何该做的事。
    */
   setLang(lang: Lang): EditResult {
     this.assertWritable()
+    if (lang === this.spec.lang) return this.editResult()
     const before = this.captureState()
     this.spec = setLang(this.spec, lang)
     this.commitEdit(before)

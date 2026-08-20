@@ -784,6 +784,42 @@ describe('Session.setLang（切换展示语言：样板文字未改过才跟着�
     expect(s2.raw()).toContain('lang: en')
     expect(s2.raw()).toContain('Repository Structure Contract')
   })
+
+  // 语言切换控件在大多数双态 UI 里当前选中项常驻可点（不像文本框，"再输一遍原值"
+  // 需要用户主动动作）——点一下自己已经在的语言是很容易被误触的操作，不该有可观测
+  // 副作用。setLang 是纯函数级别真正的恒等变换（lang === spec.lang 时 from/to 是
+  // 同一份 LANG_DEFAULTS 条目，title/preamble 逐字不变），Session 这一层必须把这份
+  // "什么都没变"如实传递下去，而不是照抄其他四个写方法"无条件 commitEdit"的套路——
+  // 那套路对它们成立是因为传相同的值本来就需要用户主动重新输入一遍，触发概率和
+  // 后果都不一样。
+  it('setLang 传入与当前相同的语言：不置脏、不进撤销栈（真正的空操作）', async () => {
+    const s = new Session(root); await s.open()
+    expect(s.isDirty()).toBe(false)
+    const before = s.raw()
+
+    const r = s.setLang('zh') // 新会话默认就是 zh
+    expect(r.dirty).toBe(false)
+    expect(r.canUndo).toBe(false)
+    expect(s.isDirty()).toBe(false)
+    expect(s.raw()).toBe(before)
+  })
+
+  it('先切到 en 再传 en：第二次调用是空操作，不再多吃一格撤销栈', async () => {
+    const s = new Session(root); await s.open()
+    s.setLang('en')
+    expect(s.undo).toBeDefined()
+
+    const afterFirst = s.raw()
+    const r = s.setLang('en') // 已经是 en，再传一次
+    expect(r.dirty).toBe(true) // 第一次切换的脏标记还在，这条断言确认第二次调用没有"清掉"它
+    expect(r.canUndo).toBe(true)
+    expect(s.raw()).toBe(afterFirst)
+
+    // 撤销栈只应该有第一次切换那一格：撤一次就应该回到 zh，而不是先撤出一个"en→en"空动作
+    const u = s.undo()
+    expect(u.dirty).toBe(false)
+    expect(s.raw()).not.toContain('lang: en')
+  })
 })
 
 describe('Session 的视图模式（原始结构 / 我的结构）', () => {
