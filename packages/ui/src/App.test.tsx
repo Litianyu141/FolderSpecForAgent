@@ -261,9 +261,31 @@ describe('App', () => {
   })
 
   it('只读模式下保存按钮禁用', async () => {
-    const bridge = bridgeWith({ parseErrors: [{ line: 1, message: 'x' }] })
-    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
-    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true))
+    // readOnly 有两条入口（App.tsx：`parseErrors !== null || viewMode === 'disk'`）。
+    // 这条用例原来走 parseErrors：而 parseErrors 只有 openRoot 会写，且它与
+    // setDirty(false) 在同一次 openRoot 调用里、之间没有任何 await——"parseErrors
+    // 非空"与"dirty 仍是 true"在这个 App 里因此永远不可能同时成立，用这条入口测不出
+    // `disabled` 那一半：删掉它，单靠 `!dirty` 这句断言照样为真。改走另一条入口
+    // viewMode === 'disk'——它不碰 dirty（switchViewMode 只改 tree/viewMode），
+    // 能在编辑之后真正切进只读态，让 `disabled` 那一半承重（与下面"原始结构"视图下
+    // 保存按钮被禁用那条用例走的是同一个可达状态，此处专门覆盖"只读模式下保存按钮
+    // 禁用"这条独立断言）。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: 'x' } })
+    fireEvent.blur(screen.getByLabelText('注释'))
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+
+    fireEvent.click(screen.getByText('原始结构'))
+    await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+    // dirty 此刻仍是 true；保存按钮被禁用必须是 viewMode === 'disk' 让 readOnly
+    // 成立起的作用，不是靠 !dirty 侥幸为真。
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('只读模式下面板控件被禁用', async () => {
