@@ -12,6 +12,21 @@ const ARGS = [
   '--ignored=matching',
 ]
 
+/**
+ * porcelain v2 对**被忽略的目录**输出带尾斜杠的路径（实测 git 2.43.0：`! node_modules/`、
+ * `! build/`），而 `ViewNode.path` 一律不带尾斜杠。不去掉这个斜杠，merge 的精确查表对
+ * 被忽略的目录就永远落空——被忽略的目录从来就没变过灰。
+ *
+ * `?` 分支当前拿不到带尾斜杠的路径（`--untracked-files=all` 会把未跟踪目录展开成逐个
+ * 文件），但一并归一化：实测把那个开关改成 `normal` 时 git 立刻输出 `? untracked_dir/`，
+ * 只在 `!` 分支处理等于把这条缺陷的复活条件藏进一个看似无关的参数里。
+ *
+ * 无条件去尾斜杠是安全的：POSIX 文件名不允许含 '/'，真实路径不可能以它结尾。
+ */
+function stripTrailingSlash(p: string): string {
+  return p.endsWith('/') ? p.slice(0, -1) : p
+}
+
 export async function gitStatus(root: string): Promise<GitStates> {
   const states: GitStates = new Map()
 
@@ -31,11 +46,11 @@ export async function gitStatus(root: string): Promise<GitStates> {
 
     const type = rec[0]
     if (type === '?') {
-      states.set(rec.slice(2), 'untracked')
+      states.set(stripTrailingSlash(rec.slice(2)), 'untracked')
       continue
     }
     if (type === '!') {
-      states.set(rec.slice(2), 'ignored')
+      states.set(stripTrailingSlash(rec.slice(2)), 'ignored')
       continue
     }
     if (type !== '1' && type !== '2' && type !== 'u') continue
