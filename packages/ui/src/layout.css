@@ -47,6 +47,10 @@
 /* 分组面板：多个成员集相同的分组时的提示条 */
 .fs-panel-note { margin: 0 0 12px; padding: 6px 8px; font-size: 12px; opacity: 0.8; background: var(--fs-row-hover-bg); border-radius: 3px; }
 
+/* 同一个提示条里：这几个同成员分组各一个可点入口，点谁就改编辑谁（§5.4.1） */
+.fs-group-choices { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.fs-group-choices [aria-current="true"] { font-weight: 600; text-decoration: none; }
+
 /* 分组面板底部：当前选中集的成员列表，每项可单独移出选中集 */
 .fs-member-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .fs-member-list li { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 0; }

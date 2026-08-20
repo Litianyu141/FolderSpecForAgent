@@ -4,7 +4,7 @@ import { GroupPanel } from './GroupPanel.js'
 import type { Group } from '@folderspec/core/api'
 
 const G: Group[] = [{ id: 'parse', members: ['src/a.ts', 'src/b.ts'], text: '解析层', severity: 'warning' }]
-const noop = { onSubmit: vi.fn(), onRemoveMember: vi.fn() }
+const noop = { onSubmit: vi.fn(), onRemoveMember: vi.fn(), onEditGroup: vi.fn() }
 
 describe('GroupPanel', () => {
   it('显示成员数量与成员列表', () => {
@@ -28,7 +28,7 @@ describe('GroupPanel', () => {
   it('注释失焦时提交，新建时 id 为 null', () => {
     const onSubmit = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/c.ts']} groups={G} disabled={false}
-      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} onEditGroup={vi.fn()} />)
     const ta = screen.getByLabelText('分组注释')
     fireEvent.change(ta, { target: { value: '新分组' } })
     fireEvent.blur(ta)
@@ -38,7 +38,7 @@ describe('GroupPanel', () => {
   it('编辑既有分组时提交带上其 id', () => {
     const onSubmit = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
-      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} onEditGroup={vi.fn()} />)
     const ta = screen.getByLabelText('分组注释')
     fireEvent.change(ta, { target: { value: '改过的' } })
     fireEvent.blur(ta)
@@ -48,7 +48,7 @@ describe('GroupPanel', () => {
   it('内容未变时不提交', () => {
     const onSubmit = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
-      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} onEditGroup={vi.fn()} />)
     fireEvent.blur(screen.getByLabelText('分组注释'))
     expect(onSubmit).not.toHaveBeenCalled()
   })
@@ -56,7 +56,7 @@ describe('GroupPanel', () => {
   it('点击成员上的移除按钮上报该成员路径', () => {
     const onRemoveMember = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={[]} disabled={false}
-      onSubmit={vi.fn()} onRemoveMember={onRemoveMember} />)
+      onSubmit={vi.fn()} onRemoveMember={onRemoveMember} onEditGroup={vi.fn()} />)
     fireEvent.click(screen.getByLabelText('从选中集移除 src/a.ts'))
     expect(onRemoveMember).toHaveBeenCalledWith('src/a.ts')
   })
@@ -142,7 +142,7 @@ describe('GroupPanel', () => {
   it('新建形态下先选约束强度再写注释，建组时带上那个强度', () => {
     const onSubmit = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/c.ts']} groups={G} disabled={false}
-      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} onEditGroup={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'error' } })
     const ta = screen.getByLabelText('分组注释')
@@ -167,7 +167,7 @@ describe('GroupPanel', () => {
   it('改约束强度立即提交，并带上当前分组的 id 与已有注释', () => {
     const onSubmit = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
-      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} onEditGroup={vi.fn()} />)
     fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'advisory' } })
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'parse', text: '解析层', severity: 'advisory' }))
@@ -176,7 +176,7 @@ describe('GroupPanel', () => {
   it('把约束强度改回"不强制"时提交 null，而不是空串', () => {
     const onSubmit = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
-      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} onEditGroup={vi.fn()} />)
     fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: '' } })
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ id: 'parse', severity: null }))
   })
@@ -194,7 +194,7 @@ describe('GroupPanel', () => {
   it('分组名未变时失焦不提交', () => {
     const onSubmit = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
-      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} onEditGroup={vi.fn()} />)
     fireEvent.blur(screen.getByLabelText('分组名'))
     expect(onSubmit).not.toHaveBeenCalled()
   })
@@ -202,10 +202,64 @@ describe('GroupPanel', () => {
   it('分组名改过之后失焦才提交', () => {
     const onSubmit = vi.fn()
     render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
-      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} onEditGroup={vi.fn()} />)
     const input = screen.getByLabelText('分组名')
     fireEvent.change(input, { target: { value: 'parser' } })
     fireEvent.blur(input)
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ id: 'parse', name: 'parser' }))
+  })
+
+  // ── 同成员分组的选择器（发现 2 / 设计文档 §5.4.1）────────────────────────
+  //
+  // §5.4.1：「若有多个分组的成员集完全相同，**面板顶部列出这几个供选择**，默认取文件中
+  // 靠前的那个」。此前只做了后半句：提示写着"有 N 个分组的成员完全相同"，current 恒取
+  // matches[0]，没有任何切换入口。§5.5 的色点也够不着——同成员的两个分组，点哪个色点得到
+  // 的选中集都一样。后果是这类分组里的第二个，用户只能靠"先清空第一个的注释把它删掉"
+  // 这种反直觉动作才碰得到。
+
+  const TWO: Group[] = [
+    { id: 'g1', members: ['x', 'y'], text: '第一个', severity: 'warning' },
+    { id: 'g2', members: ['y', 'x'], text: '第二个' },
+  ]
+
+  it('多个分组成员集相同时把它们逐个列出来', () => {
+    render(<GroupPanel members={['x', 'y']} groups={TWO} disabled={false} {...noop} />)
+    expect(screen.getByRole('button', { name: '改为编辑分组 g1' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '改为编辑分组 g2' })).toBeTruthy()
+  })
+
+  it('点击另一个同成员分组，把它的 id 上抛给上层', () => {
+    const onEditGroup = vi.fn()
+    render(<GroupPanel members={['x', 'y']} groups={TWO} disabled={false}
+      onSubmit={vi.fn()} onRemoveMember={vi.fn()} onEditGroup={onEditGroup} />)
+    fireEvent.click(screen.getByRole('button', { name: '改为编辑分组 g2' }))
+    expect(onEditGroup).toHaveBeenCalledWith('g2')
+  })
+
+  // 切换目标必须**同时**把三个字段换成新目标的内容。只上抛 id 而不换字段的话，用户看着
+  // g2 的标题、编辑的是 g1 遗留在框里的文字，一失焦就把 g1 的注释盖到 g2 上——本项目
+  // 唯一那条红线（弄丢人写的注释）。这里刻意不依赖 currentGroupId 回流：重置由点击这个
+  // 明确动作直接触发，而不是塞进按成员键重置的 effect —— 那个 effect 一旦跟着 current
+  // 变，宿主往返落地的回声就会冲掉用户正在输入还没失焦的内容（AnnotationPanel 那次事故）。
+  it('切到另一个同成员分组时，三个字段立刻换成它的内容', () => {
+    render(<GroupPanel members={['x', 'y']} groups={TWO} disabled={false} {...noop} />)
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('第一个')
+
+    fireEvent.click(screen.getByRole('button', { name: '改为编辑分组 g2' }))
+
+    expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('g2')
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('第二个')
+    expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('')
+  })
+
+  it('只有一个分组匹配时不列出选择器', () => {
+    render(<GroupPanel members={['src/b.ts', 'src/a.ts']} groups={G} disabled={false} {...noop} />)
+    expect(screen.queryByRole('button', { name: /^改为编辑分组/ })).toBeNull()
+  })
+
+  it('只读模式下分组选择器一并禁用', () => {
+    render(<GroupPanel members={['x', 'y']} groups={TWO} disabled={true} {...noop} />)
+    expect((screen.getByRole('button', { name: '改为编辑分组 g2' }) as HTMLButtonElement).disabled)
+      .toBe(true)
   })
 })

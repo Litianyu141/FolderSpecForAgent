@@ -26,6 +26,12 @@ export interface GroupPanelProps {
   disabled: boolean
   onSubmit(p: GroupSubmit): void
   onRemoveMember(path: string): void
+  /**
+   * `currentGroupId` 的反方向：用户从"同成员分组"选择器里挑了另一个，把它上抛给上层
+   * （设计文档 §5.4.1「面板顶部列出这几个供选择」）。面板不自己改编辑目标——理由同上：
+   * 目标由上层那一份 pending 独占，两处各记一份必然发散。
+   */
+  onEditGroup(id: string): void
 }
 
 /** 选中集的稳定键：排序后拼接。用它作为重置依赖，而不是 text/name —— 理由同
@@ -33,7 +39,7 @@ export interface GroupPanelProps {
 const keyOf = (members: readonly string[]) => [...members].sort().join(' ')
 
 export function GroupPanel(
-  { members, groups, currentGroupId, disabled, onSubmit, onRemoveMember }: GroupPanelProps,
+  { members, groups, currentGroupId, disabled, onSubmit, onRemoveMember, onEditGroup }: GroupPanelProps,
 ) {
   const matches = matchingGroups(members, groups)
   // 上层指定的目标优先；它指向一个已经不存在的分组（比如注释被清空后 core 把它删了）
@@ -73,15 +79,43 @@ export function GroupPanel(
     })
   }
 
+  /**
+   * 切到另一个同成员分组：三个字段必须**当场**换成新目标的内容。
+   *
+   * 只上抛 id 而不换字段的话，用户看着 g2 的标题、编辑的却是 g1 遗留在框里的文字，
+   * 一失焦就把 g1 的注释盖到 g2 上——本项目唯一那条红线。
+   *
+   * 重置刻意写在这个明确的点击动作里，而**不是**把 current 加进上面那个 effect 的依赖：
+   * 那样一来，宿主往返落地引起的 current 变化（改名后 id 会变）也会触发重置，把用户正在
+   * 输入、还没失焦的内容冲掉——AnnotationPanel 那次"回声冲掉输入"的同类事故。
+   */
+  const pick = (g: Group) => {
+    setName(g.id)
+    setText(g.text)
+    setSeverity(g.severity ?? '')
+    onEditGroup(g.id)
+  }
 
   return (
     <div className="fs-panel">
       <h2 className="fs-panel-path">已选中 {members.length} 项</h2>
 
       {matches.length > 1 && (
-        <p className="fs-panel-note">
+        <div className="fs-panel-note">
           有 {matches.length} 个分组的成员完全相同，当前编辑的是 {current?.id}
-        </p>
+          <ul className="fs-group-choices">
+            {matches.map(g => (
+              <li key={g.id}>
+                <button
+                  type="button" className="fs-group-link" disabled={disabled}
+                  aria-label={`改为编辑分组 ${g.id}`}
+                  aria-current={g.id === current?.id}
+                  onClick={() => pick(g)}
+                >{g.id}</button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <label className="fs-field">

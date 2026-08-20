@@ -1053,4 +1053,97 @@ describe('App', () => {
     // 第二轮写失败 → 显示退回这一轮开始时的那份，而不是第一轮的 [src, docs]
     await waitFor(() => expect(memberPathsOf(container)).toEqual(['docs', 'README.md']))
   })
+
+  // ── 同成员分组的选择器（设计文档 §5.4.1）─────────────────────────────────
+  //
+  // 「若有多个分组的成员集完全相同，面板顶部列出这几个供选择，默认取文件中靠前的那个」。
+  // 此前只做了后半句：提示写着"有 N 个分组的成员完全相同"，却没有任何切换入口。§5.5 的
+  // 色点也够不着——同成员的两个分组，点哪个色点得到的选中集都一样。于是这类分组里的
+  // 第二个，用户只能靠"先清空第一个的注释把它删掉"这种反直觉动作才碰得到。
+
+  it('同成员的两个分组：点选择器切到第二个，之后的写入落在它身上', async () => {
+    const SAME: Group = { id: 'g2', members: ['src', 'docs'], text: '第二个' }
+    const bridge = groupBridge([G1, SAME])
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])                       // src
+    fireEvent.click(rows[1], { ctrlKey: true })    // docs —— 与 g1、g2 的成员集都相同
+
+    const ta = await screen.findByLabelText('分组注释')
+    expect((ta as HTMLTextAreaElement).value).toBe('一体的两个目录')   // 默认取靠前那个
+
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g2'))
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('第二个')
+
+    fireEvent.change(ta, { target: { value: '只改第二个' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({
+      id: 'g2', text: '只改第二个',
+    }))
+    // 另一半：靠前那个必须纹丝不动。切换目标只上抛 id、不换字段的话，用户看着 g2 的标题
+    // 编辑的却是 g1 留在框里的文字，一失焦就把注释盖到对方头上——本项目唯一那条红线。
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('一体的两个目录')
+    expect(bridge.groupsNow().find(g => g.id === 'g2')!.text).toBe('只改第二个')
+  })
+
+  // 切换编辑目标必须**换编辑会话号**，不只是改 groupId。在途那笔写入是冲着旧分组去的，
+  // 它落地时会执行 `setPending({ ...now, groupId: id })`（那句本身是必要的：core 可能把
+  // 分组改了名）。少了会话号这道闸，那句就把编辑目标从用户刚选的 g2 无声拨回 g1，
+  // 之后写的注释全落在 g1 上并覆盖它原有的注释——面板标题写着 g2，契约里动的是 g1。
+  it('在途写入落地时用户已切到另一个同成员分组，编辑目标不被拨回去', async () => {
+    const SAME: Group = { id: 'g2', members: ['src', 'docs'], text: '第二个' }
+    const bridge = groupBridge([G1, SAME], 60)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])
+    fireEvent.click(rows[1], { ctrlKey: true })
+    const ta = await screen.findByLabelText('分组注释')
+
+    fireEvent.change(ta, { target: { value: '改 g1' } })
+    fireEvent.blur(ta)
+    await flushChain()      // 让请求真的发出去，停在"在途"那一帧
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g2'))
+
+    // 把在途那笔彻底跑完（桩延迟 60ms），让落地回调有机会去拨编辑目标
+    await act(async () => { await new Promise(r => setTimeout(r, 120)) })
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('改 g1')
+
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'error' } })
+
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({ id: 'g2' }))
+    await waitFor(() => expect(bridge.groupsNow().find(g => g.id === 'g2')!.severity).toBe('error'))
+    // 另一半：g1 不该跟着变强度
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.severity).toBeUndefined()
+  })
+
+  it('切到另一个同成员分组后再移除成员，收缩的是切过去的那个', async () => {
+    // 切换编辑目标必须换掉上层那份 pending.groupId，而不只是面板自己的显示。
+    // 只换显示的话，下一次写入仍打在 g1 上：界面显示 g2 收缩了，契约里动的是 g1。
+    const SAME: Group = { id: 'g2', members: ['src', 'docs'], text: '第二个' }
+    const bridge = groupBridge([G1, SAME])
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])
+    fireEvent.click(rows[1], { ctrlKey: true })
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g2'))
+    fireEvent.click(screen.getByLabelText('从选中集移除 docs'))
+
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({
+      id: 'g2', members: ['src'],
+    }))
+    await waitFor(() => expect(bridge.groupsNow().find(g => g.id === 'g2')!.members)
+      .toEqual(['src']))
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.members).toEqual(['src', 'docs'])
+  })
 })

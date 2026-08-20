@@ -361,6 +361,24 @@ export function App({ bridge, initialRoot }: AppProps) {
     setSelection({ selected: [...g.members], anchor: g.members[g.members.length - 1] ?? null })
   }, [setPending])
 
+  /**
+   * 用户从"同成员分组"选择器里挑了另一个（设计文档 §5.4.1）。
+   *
+   * 换编辑会话号，因为这是一次**重新决定编辑目标**：在途那笔写入是冲着旧分组去的，
+   * 它落地后那句 `setPending({ ...now, groupId: id })` 会把目标又拨回旧分组，随后写的
+   * 注释就盖到错的那个上。成员集不变——能出现在选择器里的本来就是同成员分组——所以沿用
+   * 当前这一份，别拿 selection 重算（收缩在途时它还是收缩前的那一份）。
+   */
+  const handleEditGroup = useCallback((id: string) => {
+    const p = pendingRef.current
+    setPending({
+      session: ++sessionRef.current,
+      members: p?.members ?? selection.selected,
+      anchor: p?.anchor ?? selection.anchor,
+      groupId: id,
+    })
+  }, [selection.selected, selection.anchor, setPending])
+
   const handleRemoveMember = useCallback((path: string) => {
     const p = takePending()
     if (!p.members.includes(path)) return
@@ -468,6 +486,7 @@ export function App({ bridge, initialRoot }: AppProps) {
               disabled={readOnly}
               onSubmit={handleGroupSubmit}
               onRemoveMember={handleRemoveMember}
+              onEditGroup={handleEditGroup}
             />
           ) : (
             <AnnotationPanel
