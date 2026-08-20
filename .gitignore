@@ -228,3 +228,8 @@ dist/
 # 本地副本另存于 ~/folderspec-private-backup/
 HUMAN/
 .claude/commands/
+
+# 本仓库自己的结构契约不入库：这里的内容是随手记的草稿，不是正式契约。
+# 注意这不是对该文件的一般性建议——`.folderspec.md` 进 git 恰恰是本工具的预期用法
+# （README 让 Agent 用 `@.folderspec.md` 引用它，不在仓库里 Agent 就读不到）。
+.folderspec.md
