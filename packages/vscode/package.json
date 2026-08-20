@@ -2,7 +2,7 @@
   "name": "folderspec-vscode",
   "displayName": "FolderSpec",
   "description": "可视化声明仓库结构意图，产出给 AI Agent 遵守的结构契约",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "folderspec",
   "engines": { "vscode": "^1.90.0" },
   "categories": ["Visualization", "Other"],
