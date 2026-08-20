@@ -1223,4 +1223,42 @@ describe('App', () => {
     // 下一次失焦就会再把它删一次
     expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('error')
   })
+
+  // 点选择器里**已经是当前编辑目标**的那一项时也自增会话号，会作废在途写入落地时的
+  // `setPending({ ...now, groupId: id })`——那句正是"改名后把 groupId 换成新 id"的地方。
+  // 于是 pending.groupId 停在一个已被改名掉的旧 id 上，此后的写入全打在幽灵分组上：
+  // 没有丢文字，但用户以为在编辑 parser，实际每次都在新建一个重复的 g2。
+  it('点选择器里已经在编辑的那一项，不会把在途改名的结果拨丢', async () => {
+    const SAME: Group = { id: 'g2', members: ['src', 'docs'], text: '第二个' }
+    const bridge = groupBridge([G1, SAME], 60)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])
+    fireEvent.click(rows[1], { ctrlKey: true })
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g2'))
+
+    const nameInput = screen.getByLabelText('分组名')
+    fireEvent.change(nameInput, { target: { value: 'parser' } })
+    fireEvent.blur(nameInput)
+    await flushChain()          // 改名那笔真的在途
+
+    // 选择器上这一项还标着 g2（groups 尚未回来），而它就是当前编辑目标
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g2'))
+
+    await waitFor(() => expect(bridge.groupsNow().some(g => g.id === 'parser')).toBe(true))
+
+    const ta = screen.getByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '改名之后写的注释' } })
+    fireEvent.blur(ta)
+
+    // 编辑目标必须跟着改名走；停在旧 id 上的话这一笔打的是一个不存在的 g2
+    await waitFor(() => expect(bridge.lastCall('spec/setGroup')).toMatchObject({ id: 'parser' }))
+    // lastCall 是**发出时**记的，桩还压着 60ms 才落地——契约那一半必须自己等
+    await waitFor(() => expect(bridge.groupsNow().find(g => g.id === 'parser')!.text)
+      .toBe('改名之后写的注释'))
+  })
 })

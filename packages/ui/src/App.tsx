@@ -374,6 +374,12 @@ export function App({ bridge, initialRoot }: AppProps) {
    */
   const handleEditGroup = useCallback((id: string) => {
     const p = pendingRef.current
+    // 点的就是当前编辑目标：什么都别做。照旧自增会话号的话，在途那笔写入落地时的
+    // `setPending({ ...now, groupId: id })` 会被闸掉，而那句正是"改名后把 groupId
+    // 换成新 id"的地方。目标于是停在一个已被改名掉的旧 id 上，此后每次写入都打在一个
+    // 不存在的分组上——core 会照着 name 新建一个重复分组，用户以为在编辑 parser，
+    // 实际在反复造 g2 的副本。
+    if (p !== null && p.groupId === id) return
     setPending({
       session: ++sessionRef.current,
       members: p?.members ?? selection.selected,
