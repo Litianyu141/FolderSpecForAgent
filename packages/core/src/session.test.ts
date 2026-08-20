@@ -943,14 +943,20 @@ describe('Session 的撤销/重做', () => {
 // packages/vscode/src/editor.ts 的 spec/save 分支）在写入成功后补记"磁盘现在是
 // 哪个版本"。它只改内存里的 savedRevision，效果等价于 save() 末尾那一行，
 // 但自己不碰文件系统——不然就是新开了一条写路径，违反只读铁律。
+//
+// markSaved 现在要求调用方传入 revision，而不是自己去读"此刻的 this.revision"：
+// 见 rawForSave() 与 markSaved() 上的注释——两者之间横跨的 await 期间完全可能
+// 插进来一笔新编辑，读"此刻"会把没写盘的那版误标成已保存。下面的用例统一用
+// rawForSave().revision 模拟宿主"刚生成要落盘的文本时"拿到的那个值。
 describe('Session.markSaved', () => {
-  it('把 savedRevision 追平当前 revision，dirty 归零，但不落盘', async () => {
+  it('把 savedRevision 追平调用方传入的 revision，dirty 归零，但不落盘', async () => {
     const specPath = nodePath.join(root, SPEC_FILENAME)
     const s = new Session(root); await s.open()
     s.annotate({ path: 'src', isDir: true, annotation: '只在内存里' })
     expect(s.isDirty()).toBe(true)
 
-    s.markSaved()
+    const { revision } = s.rawForSave()
+    s.markSaved(revision)
     expect(s.isDirty()).toBe(false)
     await expect(fs.access(specPath)).rejects.toThrow() // 从未创建过契约文件——它真的没写盘
   })
@@ -960,7 +966,7 @@ describe('Session.markSaved', () => {
   it('markSaved 之后再编辑再撤销，回到的正是标记过的那一份，dirty 归零', async () => {
     const s = new Session(root); await s.open()
     s.annotate({ path: 'src', isDir: true, annotation: '第一版' })
-    s.markSaved()
+    s.markSaved(s.rawForSave().revision)
     s.annotate({ path: 'src', isDir: true, annotation: '第二版' })
     expect(s.isDirty()).toBe(true)
 
@@ -969,21 +975,43 @@ describe('Session.markSaved', () => {
 
   it('未 open 时调用会报错，与其它方法共用同一道 assertOpened 闸门', () => {
     const s = new Session(root)
-    expect(() => s.markSaved()).toThrow('尚未打开')
+    expect(() => s.markSaved(0)).toThrow('尚未打开')
   })
 
-  // 刻意不挂 assertWritable()：调用它的前提是宿主刚用 raw() 生成的内容已经真实
-  // 写盘成功，而 raw() 内部已经做过 assertWritable() 检查——那一刻状态确实可写。
-  // VSCode 的写入路径中间隔着两个 await（WorkspaceEdit → document.save()），
-  // 如果这里再挂一次 assertWritable()，中途一旦切到「原始结构」视图，会把一次
-  // 已经真实写盘成功的保存上报成失败、savedRevision 却还是没追上去——比现在要
-  // 修的 bug 更糟。这里只做记账，不判断"现在能不能编辑"。
+  // 上面几条用例都是"拿到 revision 之后立刻调用 markSaved"，不落盘期间毫无编辑，
+  // this.revision 与传入的 revision 天然相等——就算 markSaved 内部悄悄改回读
+  // "此刻的 this.revision"，这几条一句都不会变红，等于什么都没守住。这里补上
+  // 真正的窄路径：rawForSave() 之后、markSaved() 之前插入一次新编辑，模拟宿主
+  // 落盘那几个 await（VSCode 是 WorkspaceEdit + document.save()，消息回调不排队）
+  // 期间又处理了一条把 revision 推进的消息。
+  it('rawForSave() 之后、markSaved() 之前如果又落地一笔编辑，dirty 仍为 true', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '第一版' })
+    const { revision } = s.rawForSave() // 宿主"刚生成要落盘的文本"那一刻拿到的值
+
+    s.annotate({ path: 'src', isDir: true, annotation: '第二版——落盘期间落地，从未写盘' })
+
+    s.markSaved(revision) // 宿主这时才确认"刚才那份文本"真的写盘成功了
+    expect(s.isDirty()).toBe(true) // 第二版从未落盘，脏标记不能熄灭
+  })
+
+  // 刻意不挂 assertWritable()：调用它的前提是宿主刚用 rawForSave() 生成的内容
+  // 已经真实写盘成功，而 rawForSave() 内部已经做过 assertWritable() 检查——那
+  // 一刻状态确实可写。VSCode 的写入路径中间隔着两个 await（WorkspaceEdit →
+  // document.save()），如果这里再挂一次 assertWritable()，中途一旦切到「原始
+  // 结构」视图，会把一次已经真实写盘成功的保存上报成失败、savedRevision 却还是
+  // 没追上去——比现在要修的 bug 更糟。这里只做记账，不判断"现在能不能编辑"。
+  //
+  // rawForSave() 必须在切视图**之前**调用：它内部走 raw() → assertWritable()，
+  // 「原始结构」视图下会抛错——这也如实反映了真实宿主的调用顺序：先在可写时
+  // 拿到要写的文本与 revision，落盘期间视图才可能被切走。
   it('不挂 assertWritable：处于「原始结构」视图时 markSaved 仍然生效', async () => {
     const s = new Session(root); await s.open()
     s.annotate({ path: 'src', isDir: true, annotation: 'x' })
+    const { revision } = s.rawForSave()
     s.setViewMode('disk')
 
-    expect(() => s.markSaved()).not.toThrow()
+    expect(() => s.markSaved(revision)).not.toThrow()
     expect(s.isDirty()).toBe(false)
   })
 })

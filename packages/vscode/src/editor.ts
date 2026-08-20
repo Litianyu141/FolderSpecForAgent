@@ -81,19 +81,30 @@ export class FolderSpecEditorProvider implements vscode.CustomTextEditorProvider
           const savingSession = session
           applyingOwnEdit = true
           try {
+            // text 与 revision 必须来自同一次 rawForSave() 调用，不能分开读——
+            // 下面横跨 WorkspaceEdit + document.save() 两个 await（后者会跑 save
+            // participants，窗口可能有几百毫秒），消息回调又不排队，这段时间完全
+            // 可能又处理一条把 session revision 推进的新消息。如果这里是"先调
+            // raw() 拿文本，回头调用 markSaved() 时再读一次 session 当下的
+            // revision"，两次读取之间可能已经隔着一次新编辑，读到的 revision 会比
+            // 实际写盘的文本新——markSaved() 就会把没写进磁盘的那一版误标成已
+            // 保存，dirty 假熄灭。rawForSave() 把两者绑成一次调用的返回值，这里
+            // 不需要（也不能）自己另外去读 session 的状态。
+            const { text, revision } = savingSession.rawForSave()
             const edit = new vscode.WorkspaceEdit()
             const whole = new vscode.Range(
               document.positionAt(0),
               document.positionAt(document.getText().length),
             )
-            edit.replace(document.uri, whole, savingSession.raw())
+            edit.replace(document.uri, whole, text)
             await vscode.workspace.applyEdit(edit)
             await document.save()
             // 这条写路径完全绕开 Session.save()（那个方法自己 fs.writeFile），
             // 磁盘上现在是哪个版本 Session 自己不知道要翻页——不补这一句，
             // dirty 会在首次编辑后再也灭不掉（哪怕撤销回了刚保存的那一步）。
-            // markSaved() 只改内存里的编号，不产生新的写路径。
-            savingSession.markSaved()
+            // markSaved() 只改内存里的编号，不产生新的写路径；传入的 revision
+            // 必须是上面 rawForSave() 给出的那个，不是"此刻"的 session.revision。
+            savingSession.markSaved(revision)
           } finally {
             applyingOwnEdit = false
           }

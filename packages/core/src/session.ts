@@ -370,37 +370,67 @@ export class Session {
     return text
   }
 
+  /**
+   * 供不走 save() 的宿主使用：把要落盘的文本和它对应的 revision **在同一次调用里**
+   * 一起交出去，而不是让宿主自己分两步拼（先读 raw()、再另外读一次"现在的 revision"）。
+   *
+   * 这不是防御性代码——两个宿主的消息回调都不排队（cli/src/server.ts 的
+   * `socket.on('message', async ...)`、vscode/src/editor.ts 的 `onDidReceiveMessage`），
+   * 宿主自己真实落盘的那几个 await（VSCode 是 WorkspaceEdit + document.save()，
+   * 后者会跑 save participants，窗口可能有几百毫秒）期间完全可能又处理一条把
+   * revision 推进的新消息。如果宿主是"调 raw() 拿文本，回头再读一次 session 的
+   * revision"，两次读取中间那一刻可能已经隔着一次新编辑，读到的 revision 会比
+   * 文本实际对应的那个新——回头拿去 markSaved() 会把没写进磁盘的那一版误标成
+   * 已保存，正是 save() 那个 bug 的翻版。绑成一次调用的返回值，宿主不可能读错。
+   */
+  rawForSave(): { text: string; revision: number } {
+    const text = this.raw()
+    return { text, revision: this.revision }
+  }
+
   async save(): Promise<{ written: boolean }> {
-    const text = this.raw() // raw() 已完成 assertWritable 与自校验
+    // text 与 revision 必须来自同一次 rawForSave() 调用：下面 await fs.writeFile
+    // 期间，两个宿主的消息回调都不排队，一笔新的 spec/annotate 完全可能插进来把
+    // this.revision 推进。若这里落盘后才去读"此刻的 this.revision"，记下的就是
+    // 那笔新编辑的版本号，而磁盘上写的其实是旧版本的文本——脏标记会被误判为已经
+    // 熄灭，用户以为存好了、关窗即丢，正是本工具唯一要严防的那种伤害。
+    const { text, revision } = this.rawForSave()
     await fs.writeFile(this.specPath, text, 'utf8')
     // 记下"磁盘上现在是哪一个状态"，而不是简单地把 dirty 抹掉：保存点可以落在撤销
     // 链的任意一处，之后往回退反而会重新变脏（见 revision 的注释）。
-    this.savedRevision = this.revision
+    this.savedRevision = revision
     return { written: true }
   }
 
   /**
    * 供不走 save() 的宿主在**它自己**把内容写盘成功之后，补记"磁盘现在是哪个版本"。
    * 目前只有 VSCode 一家：它不调用 save()（那个方法自己 fs.writeFile），而是拿
-   * session.raw() 的文本走 WorkspaceEdit + document.save()，好让 VSCode 原生的脏
+   * rawForSave() 的文本走 WorkspaceEdit + document.save()，好让 VSCode 原生的脏
    * 标记、Ctrl+S、撤销栈正常工作（见 editor.ts 的 spec/save 分支）。这条写路径完全
    * 绕开了 save()，于是 savedRevision 永远追不上 revision——dirty 语义升级成
    * "revision 是否等于 savedRevision" 之后，这个宿主里的脏标记会在首次编辑后永远
    * 亮着，undo 回到刚保存的那一步也摘不掉。
    *
+   * **必须传入调用 rawForSave() 时拿到的那个 revision，不能在这里改读"此刻的
+   * this.revision"。** VSCode 的写入路径中间隔着 WorkspaceEdit + document.save()
+   * 两个 await（document.save() 还会跑 save participants，窗口可能有几百毫秒），
+   * 若在这里才读 this.revision，中途插进来的一笔新编辑会让这次保存把"根本没写进
+   * 磁盘的那一版"标记成已保存——与 save() 曾经的那个 bug 是同一形状。参数化之后
+   * 宿主必须原样传回 rawForSave() 给出的值，不能自己现拼。
+   *
    * 这个方法只做记账，跟 save() 末尾那一行做的事完全一样，只是搬出来给调用方在
    * 自己完成落盘之后触发——它自己不碰文件系统，不构成新的写路径。
    *
-   * 刻意不挂 assertWritable()：调用它的前提是刚用 raw() 生成的内容已经真实写盘
-   * 成功，而 raw() 内部已经做过 assertWritable() 检查，那一刻状态确实可写。
-   * VSCode 的写入路径中间隔着 WorkspaceEdit / document.save() 两个 await，万一
-   * 期间视图切到「原始结构」，在这里重复挂一次 assertWritable() 只会把一次已经
-   * 真实写盘成功的保存上报成失败、savedRevision 还是没追上去——比现在要修的
-   * bug 更糟。只需要 assertOpened()：没打开就没有意义的 revision 可言。
+   * 刻意不挂 assertWritable()：调用它的前提是刚用 rawForSave() 生成的内容已经真实
+   * 写盘成功，而 rawForSave() 内部已经做过 assertWritable() 检查，那一刻状态确实
+   * 可写。VSCode 的写入路径中间隔着那两个 await，万一期间视图切到「原始结构」，
+   * 在这里重复挂一次 assertWritable() 只会把一次已经真实写盘成功的保存上报成
+   * 失败、savedRevision 还是没追上去——比现在要修的 bug 更糟。只需要
+   * assertOpened()：没打开就没有意义的 revision 可言。
    */
-  markSaved(): void {
+  markSaved(revision: number): void {
     this.assertOpened()
-    this.savedRevision = this.revision
+    this.savedRevision = revision
   }
 
   /**
