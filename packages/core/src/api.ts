@@ -161,13 +161,17 @@ export interface Api {
    * 一次点击丢掉多条用户或 Agent 已经写下的声明。想清空整棵子树，请自底向上对每个
    * 带内容的子节点分别调用一次；完整推导见 spec-edit.ts 的 removeNode()。
    *
-   * 路径不存在时是空操作，不报错（与 spec/deleteGroup 对不存在 id 的既有行为一致）。
+   * 路径不存在时是空操作：不报错，也不置脏、不进撤销栈——真正什么都没改变的调用
+   * 不该让界面显示"有未保存的改动"，与 spec/deleteGroup 对不存在 id 的行为、
+   * spec/setLang 传入相同语言时的行为都是同一条判据（见 Session.removeNode /
+   * Session.deleteGroup 的实现注释）。
    * 分组成员不会被一并清理，见 removeNode() 上方"分组成员留作悬空"一节。
    */
   'spec/removeNode': { params: { path: string }; result: EditResult }
   'spec/save': { params: Record<string, never>; result: SaveResult }
   'spec/raw': { params: Record<string, never>; result: { markdown: string } }
   'spec/setGroup': { params: SetGroupParams; result: EditResult & { id: string } }
+  /** id 不存在时是空操作：不置脏、不进撤销栈——见 spec/removeNode 上方关于这条判据的说明。 */
   'spec/deleteGroup': { params: { id: string }; result: EditResult }
   /**
    * 切换我们生成的样板文字（标题行、导言、四个章节标题）的语言。用户写的内容——节点

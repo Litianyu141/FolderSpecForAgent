@@ -472,6 +472,18 @@ describe('Session 的分组与文件读取', () => {
     expect(s.raw()).not.toContain('## 分组')
   })
 
+  // 参照 removeNode 那条同名修订（本文件下方）：id 在当前分组里找不到是真正的
+  // 空操作，不该置脏、不该吃一格撤销栈——与 setLang 传入相同语言时的既有行为
+  // 保持一致（254cdaf），而不是像旧版本那样把这个怪癖当成 removeNode 该效仿的
+  // "既有行为"。
+  it('deleteGroup 传入不存在的 id：不置脏、不进撤销栈（真正的空操作）', async () => {
+    const s = new Session(root); await s.open()
+    expect(s.isDirty()).toBe(false)
+    const r = s.deleteGroup('does-not-exist')
+    expect(r.dirty).toBe(false)
+    expect(r.canUndo).toBe(false)
+  })
+
   it('只读模式下 setGroup 抛错', async () => {
     await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
     const s = new Session(root); await s.open()
@@ -842,14 +854,24 @@ describe('Session.removeNode（撤销节点声明——只影响契约，不碰�
     expect((await fs.stat(nodePath.join(root, 'src'))).isDirectory()).toBe(true)
   })
 
-  it('路径不存在时是空操作，树的形状不变——但与 deleteGroup 对不存在 id 的既有行为一致，仍会置脏、进撤销栈', async () => {
+  // 这条用例的期望值本身经过一次修订：旧版本认为"路径不存在时仍置脏、仍进撤销栈"
+  // 是与 deleteGroup 保持一致的正确行为，复审裁定这个参照对象选错了——setLang
+  // 早就为同一个毛病改过（传入相同语言不再置脏、不再吃一格撤销栈，见 254cdaf），
+  // 项目已经裁定过"一次什么都没改变的调用不该置脏"，deleteGroup 带着这个怪癖是
+  // 遗留缺陷，不是该被沿用的标准。空操作置脏 = 界面告诉用户"有未保存的改动"，
+  // 而其实一个字节都没变；用户按撤销，看起来什么也没发生（因为那一格撤销栈
+  // 本来就是空的）——这与本轮另外三条旁路是同一族"界面在说谎"问题。
+  it('路径不存在时是真正的空操作：树的形状不变，且不置脏、不进撤销栈', async () => {
     const s = new Session(root); await s.open()
     expect(s.isDirty()).toBe(false)
     const before = s.tree()
     const r = s.removeNode('does/not/exist')
     expect(r.tree).toEqual(before)
-    expect(r.dirty).toBe(true)
-    expect(r.canUndo).toBe(true)
+    expect(r.dirty).toBe(false)
+    expect(r.canUndo).toBe(false)
+    // 连带验证：既然没进撤销栈，undo() 也该是空操作，不会把树改成别的东西
+    expect(s.undo().canUndo).toBe(false)
+    expect(s.tree()).toEqual(before)
   })
 
   // 红线：子树里有用户内容时拒绝，且 Session 的内存状态（spec 与撤销栈）必须

@@ -417,16 +417,32 @@ export class Session {
    * 只读视图拦下、天然会被 raw()/save() 的自校验闸门保护。
    *
    * 子树保护、分组成员是否清理、路径不存在时是空操作——完整语义推导见 spec-edit.ts
-   * 的 removeNode()。这里与 deleteGroup 一样，不特殊处理"路径不存在"这个空操作：
-   * 无条件走 captureState → 纯函数 → commitEdit，即便这次调用什么都没改也照样
-   * 置脏、进撤销栈——与 Session.deleteGroup 对不存在 id 的既有行为保持一致，
-   * 不为这一个方法单独发明一套"真空操作不进撤销栈"的例外。
+   * 的 removeNode()。
+   *
+   * 路径不存在时的"空操作"必须是**真正**的空操作：不置脏、不进撤销栈。旧版本在这
+   * 里无条件 commitEdit，理由是"与 Session.deleteGroup 对不存在 id 的既有行为保持
+   * 一致"——复审裁定这个参照对象选错了：setLang 早就为同一个毛病改过（传入相同
+   * 语言时不再置脏、不再吃一格撤销栈，见 254cdaf），项目已经裁定过"一次什么都没
+   * 改变的调用不该置脏"，deleteGroup 带着这个怪癖是遗留缺陷，不是该被沿用的标准
+   * （见下面 deleteGroup 的同款修复）。空操作置脏 = 界面告诉用户"有未保存的改动"，
+   * 而其实一个字节都没变，这与本轮另外三条旁路是同一族"界面在说谎"问题。
+   *
+   * 判据用"纯函数返回的结果是否深度等于调用前"，而不是"路径存不存在"：removeNode()
+   * 对空路径会抛错（"不能移除根节点"），如果改成调用前先用 findSpecNode 判断路径
+   * 存不存在、"找不到就当空操作提前返回"，会把这个抛错场景误判成路径不存在、悄悄
+   * 把一次本该报错的非法调用吞成了成功——那正是本项目一贯反对的"静默"。深度比较
+   * 不需要在这里复述 removeNode() 内部到底在哪些条件下会提前返回不变的结果，纯
+   * 函数以后再加新的空操作分支也不会让这里的判据过期。成本：多一次 JSON.stringify
+   * 级别的深比较，量级与 captureState() 本来就要做的 structuredClone 相同（都与
+   * 已标注节点数成正比，不是仓库文件数），不算新增的开销数量级。
    */
   removeNode(path: string): EditResult {
     this.assertWritable()
     assertRepresentablePath(path)
+    const candidate = removeNode(this.spec, path)
+    if (specsEqual(candidate, this.spec)) return this.editResult()
     const before = this.captureState()
-    this.spec = removeNode(this.spec, path)
+    this.spec = candidate
     this.commitEdit(before)
     return this.editResult()
   }
@@ -445,8 +461,18 @@ export class Session {
     return { ...this.editResult(), id: r.id }
   }
 
+  /**
+   * id 在当前分组里找不到时是真正的空操作：不置脏、不进撤销栈——理由与判据的完整
+   * 推导见上面 removeNode() 的注释。这里改用"存在性预判"而不是 removeNode 那种
+   * "算出结果再比较"：deleteGroup 的纯函数实现只是 `filter(g => g.id !== id)`，
+   * 没有 removeNode 那种"参数本身非法就该抛错"的分支，"id 是否存在于 groups 里"
+   * 与"结果是否会变化"完全等价，不必再算一遍结果、比较两份 Spec 的开销。这一步
+   * 参照的是 Session.setLang 已有的写法（254cdaf）：先判断"这次调用改不改变
+   * 任何东西"，改变才走 captureState → 纯函数 → commitEdit。
+   */
   deleteGroup(id: string): EditResult {
     this.assertWritable()
+    if (!this.spec.groups.some(g => g.id === id)) return this.editResult()
     const before = this.captureState()
     this.spec = deleteGroup(this.spec, id)
     this.commitEdit(before)
@@ -765,4 +791,17 @@ function lookupActual(node: ActualNode, path: string): { node: ActualNode | null
     cur = next
   }
   return { node: cur, unscanned: false }
+}
+
+/**
+ * 两份 Spec 是否深度相同——供 Session.removeNode 判断一次调用是否真的改变了契约。
+ * removeNode()（spec-edit.ts）统一走 structuredClone，即便什么都没删也会返回一个
+ * 新对象，不能靠 "===" 判断有没有变化。
+ *
+ * Spec 是不含函数/Date/循环引用的普通可 JSON 化数据（见 types.ts），且这里比较的
+ * 两侧都源自同一份原始对象——一侧是 structuredClone 出来的候选结果，另一侧是当前
+ * this.spec 本身——序列化后逐字节比较即可，不需要为了这一处引入一整个深比较库。
+ */
+function specsEqual(a: Spec, b: Spec): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
 }
