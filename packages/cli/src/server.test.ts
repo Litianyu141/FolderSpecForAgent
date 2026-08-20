@@ -6,6 +6,7 @@ import WebSocket from 'ws'
 import { startServer, isAuthorizedUpgrade } from './server.js'
 import type { ServerHandle } from './server.js'
 import { SPEC_FILENAME } from '@folderspec/core'
+import type { WireError } from '@folderspec/core'
 
 let repo: string
 let uiDir: string
@@ -25,7 +26,7 @@ const connect = (url: string, opts?: { origin?: string }): Promise<WebSocket> =>
   })
 
 const rpc = (ws: WebSocket, id: number, method: string, params: unknown) =>
-  new Promise<{ ok: boolean; result?: unknown; error?: string }>((resolve, reject) => {
+  new Promise<{ ok: boolean; result?: unknown; error?: WireError }>((resolve, reject) => {
     const onMessage = (raw: WebSocket.RawData) => {
       const msg = JSON.parse(String(raw))
       if (msg.id !== id) return
@@ -124,7 +125,34 @@ describe('startServer', () => {
     try {
       const res = await rpc(ws, 1, 'no/such/method', {})
       expect(res.ok).toBe(false)
-      expect(res.error).toContain('未知方法')
+      // error 现在是 WireError（api.ts），不再是一句裸字符串——收端永远先有一句能
+      // 显示的话，带不带 code 只决定它能不能被翻译。"未知方法"是 core 里那两条
+      // **程序员错误**之一（调用方违约才可能触达），刻意不是 SpecError，因此没有 code。
+      expect(res.error?.message).toContain('未知方法')
+      expect(res.error?.code).toBeUndefined()
+      expect(ws.readyState).toBe(WebSocket.OPEN)
+    } finally {
+      ws.close()
+    }
+  })
+
+  /**
+   * 宿主必须把 SpecError 的 code/params 一起回传，UI 才可能按语言翻译它。
+   * 只回 e.message 的话，英文用户看得懂、中文用户永远看的是英文——而报错恰恰是
+   * 用户被拒绝时唯一能看到的解释。
+   */
+  it('SpecError 以「message + code + params」回传，而不是只回一句话', async () => {
+    const ws = await connect(wsUrl())
+    try {
+      await rpc(ws, 1, 'workspace/open', { root: repo })
+      // 名字 ".." 在文件系统里有特殊含义，core 的 assertValidNodeName 会拒绝它
+      const res = await rpc(ws, 2, 'spec/createNode', { parentPath: '', name: '..', isDir: true })
+      expect(res.ok).toBe(false)
+      expect(res.error?.code).toBe('name.reserved')
+      // params 是**数据**（那个非法名字本身），不是渲染好的措辞——UI 拿它代进中文模板
+      expect(res.error?.params).toEqual({ name: '..' })
+      // message 仍然必填：不做翻译的消费者（日志、未来的 MCP 客户端）照旧有一句英文可读
+      expect(res.error?.message).toContain('may not be named')
       expect(ws.readyState).toBe(WebSocket.OPEN)
     } finally {
       ws.close()

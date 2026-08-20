@@ -1,7 +1,7 @@
 import * as vscode from 'vscode'
 import * as nodePath from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { Session } from '@folderspec/core'
+import { Session, toWireError } from '@folderspec/core'
 import type { ApiMethod } from '@folderspec/core'
 import { buildWebviewHtml } from './webview-html.js'
 
@@ -119,11 +119,11 @@ export class FolderSpecEditorProvider implements vscode.CustomTextEditorProvider
         }
         void panel.webview.postMessage({ id: msg.id, ok: true, result })
       } catch (e) {
-        void panel.webview.postMessage({
-          id: msg.id,
-          ok: false,
-          error: e instanceof Error ? e.message : String(e),
-        })
+        // 与 CLI 宿主逐字同一条：回 WireError（core/src/api.ts），SpecError 的
+        // code/params 一起带上，webview 侧才可能按语言开关翻译它。转换写在 core 的
+        // toWireError 里，两个宿主共用——各抄一份的话，只改了其中一处时，另一个
+        // 宿主里的报错会悄悄退化回"只有一句英文"，而这条退化在界面上没有任何症状。
+        void panel.webview.postMessage({ id: msg.id, ok: false, error: toWireError(e) })
       }
     })
 

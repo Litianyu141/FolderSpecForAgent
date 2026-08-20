@@ -69,6 +69,43 @@ describe('createVscodeBridge', () => {
     await expect(promise).rejects.toThrow('写入失败')
   })
 
+  /**
+   * 宿主现在回的是 `WireError`（api.ts）：`{ message, code?, params? }`。两个宿主的
+   * 桥必须**一样**地还原它——只接一边，另一个宿主里的报错就永远跟不了语言开关，
+   * 而"一份 UI 跑两个宿主"正是 Bridge 这层存在的全部理由。
+   */
+  it('ok:false 回的是 WireError 时，还原出来的 Error 带上 code 与 params', async () => {
+    const bridge = createVscodeBridge()
+
+    const promise = bridge.request('spec/createNode', { parentPath: '', name: '..', isDir: true })
+    const sentMsg = fakeApi.posted[0] as { id: number }
+
+    postToWindow({
+      id: sentMsg.id,
+      ok: false,
+      error: { message: 'A node may not be named "..".', code: 'name.reserved', params: { name: '..' } },
+    })
+
+    const caught = await withTimeout(promise).then(() => null, (e: unknown) => e)
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toBe('A node may not be named "..".')
+    expect((caught as { code?: unknown }).code).toBe('name.reserved')
+    expect((caught as { params?: unknown }).params).toEqual({ name: '..' })
+  })
+
+  it('宿主只给了一句 message、没有 code 时照常还原成一个普通 Error', async () => {
+    const bridge = createVscodeBridge()
+
+    const promise = bridge.request('spec/save', {})
+    const sentMsg = fakeApi.posted[0] as { id: number }
+
+    postToWindow({ id: sentMsg.id, ok: false, error: { message: '未知方法 "no/such"' } })
+
+    const caught = await withTimeout(promise).then(() => null, (e: unknown) => e)
+    expect((caught as Error).message).toBe('未知方法 "no/such"')
+    expect((caught as { code?: unknown }).code).toBeUndefined()
+  })
+
   it('事件只送达订阅了该事件的监听器', () => {
     const bridge = createVscodeBridge()
 

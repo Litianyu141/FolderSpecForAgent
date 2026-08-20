@@ -3970,3 +3970,127 @@ describe('英文界面下的复制 / 粘贴', () => {
       .toBe('Pastes the contract declaration of "src" under "docs" (nothing is created on disk)')
   })
 })
+
+// ---------------------------------------------------------------------------
+// 本轮：core 抛出的报错跟着右上角的语言开关走。
+//
+// core 现在抛 `SpecError(code, params)`（提交 985501e），`message` 是渲染好的**英文**；
+// 两个宿主把它按 `WireError` 回传，两个桥把 code/params 一起还原到 Error 上，UI 按码
+// 查一份**只有中文**的表。英文只有一份、就在 core——查不到码就直接显示 message。
+//
+// 横幅存的是**原始错误对象**，不是已经渲染好的字符串：用户切语言的目的就是看懂那条
+// 报错，停在旧语言上等于没切。渲染推迟到显示那一刻做。
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条 SpecError 跨过 bridge 之后在 UI 侧的样子：一个 Error，额外挂着 code 与 params。
+ *
+ * 刻意用 Object.assign 造形状、不用 wire-error.ts 的 BridgeError 类：翻译那一侧只能
+ * 按**形状**判断（跨过 bridge 之后原型没了，instanceof 一定不成立）。用类实例来测，
+ * 一个偷偷用了 instanceof 的实现照样绿。
+ */
+const wireError = (message: string, code?: string, params?: Record<string, string | number>): Error => {
+  const e = new Error(message)
+  if (code !== undefined) Object.assign(e, { code })
+  if (params !== undefined) Object.assign(e, { params })
+  return e
+}
+
+/** core 的 EN_MESSAGES['name.reserved'] 代入 name='..' 之后的原文（core/src/errors.ts） */
+const RESERVED_EN = 'A node may not be named "..": it has a special meaning in the filesystem, '
+  + 'and an Agent reading the contract could not tell such a declaration apart from an '
+  + 'instruction to act on the parent directory.'
+const RESERVED_ZH = '名字不能是 ".."：它在文件系统里有特殊含义，'
+  + 'Agent 读到这样一条声明时分不清是笔误，还是真要对上级目录动手'
+
+/** 让「原始结构」这一次点击失败——一次点击就能把报错顶到横幅上，不需要任何前置编辑 */
+const bridgeFailingOn = (e: Error, over: Partial<Record<string, unknown>> = {}) => {
+  const bridge = bridgeWith(over)
+  bridge.setHandler('view/setMode', (() => { throw e }) as never)
+  return bridge
+}
+
+describe('core 的报错跟着语言开关走', () => {
+  it('中文界面：按码显示中文，params（那个非法名字）代进句子里', async () => {
+    const bridge = bridgeFailingOn(wireError(RESERVED_EN, 'name.reserved', { name: '..' }))
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(RESERVED_ZH))
+  })
+
+  it('英文界面：显示 core 给的英文 message，UI 里不另存一份英文', async () => {
+    const bridge = bridgeFailingOn(wireError(RESERVED_EN, 'name.reserved', { name: '..' }), { lang: 'en' })
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText('Load')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disk Structure' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(RESERVED_EN))
+  })
+
+  it('横幅已经挂在屏幕上之后再切语言，那条报错跟着变——两个方向都要', async () => {
+    // 这条钉的是"横幅存的是原始错误对象、渲染推迟到显示时做"。存已渲染的字符串同样
+    // 能让上面两条用例变绿，只有这一条能把它们区分开。
+    const bridge = bridgeFailingOn(wireError(RESERVED_EN, 'name.reserved', { name: '..' }))
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(RESERVED_ZH))
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(RESERVED_EN))
+
+    fireEvent.click(screen.getByRole('button', { name: '中文' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(RESERVED_ZH))
+    await flushChain()
+  })
+
+  it('码不在中文表里时降级成英文，而不是把一个码甩给用户', async () => {
+    // 夹具是一个**真的没被翻译过**的码（第三轮才会给解析层配码）：拿一个已有的码来测，
+    // 走的是查表命中那条路，降级那条路一行都没跑到。
+    const message = 'The contract file could not be parsed at line 7: unexpected indentation.'
+    const bridge = bridgeFailingOn(wireError(message, 'parse.someFutureCodeNobodyTranslatedYet', { line: 7 }))
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(message))
+    expect(screen.getByRole('alert').textContent).not.toContain('parse.someFutureCode')
+  })
+
+  it('宿主自己的失败（没有 code）照旧原样显示，一个字都不动', async () => {
+    const bridge = bridgeFailingOn(new Error('与本地服务的连接已断开，请重新启动 folderspec'))
+    render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toBe('与本地服务的连接已断开，请重新启动 folderspec'))
+  })
+
+  it('我们自己生成的那条「复制失败」横幅同样跟着语言开关走', async () => {
+    // 它不是 core 抛的，两份文案都在 t() 字典里；存进 state 的必须同样是"还没渲染的
+    // 东西"，否则横幅上就出现了一条不跟随语言的例外——而它恰恰是最需要被读懂的一条
+    // （用户唯一的出路是从横幅里选中那条路径手动复制）。
+    breakClipboard()
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制路径'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toBe('复制失败：浏览器拒绝了剪贴板写入。请手动复制：/tmp/repo/src'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toBe('Copy failed: the browser denied clipboard access. Copy it manually: /tmp/repo/src'))
+    await flushChain()
+  })
+})

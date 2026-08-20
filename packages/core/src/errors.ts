@@ -31,6 +31,10 @@
  * 错了"。
  */
 
+// 唯一的一条 import，且是 `import type`：编译后一行都不剩，本文件仍然零运行期依赖
+// （index.ts 里 `export { SpecError, … }` 因此不会给任何消费者引入别的模块）。
+import type { WireError } from './api.js'
+
 /**
  * 全部英文文案。**这是英文的唯一定义处**（要点 2）。
  *
@@ -195,4 +199,23 @@ export class SpecError extends Error {
  */
 export function isSpecError(e: unknown): e is SpecError {
   return e instanceof SpecError
+}
+
+/**
+ * 把一个 catch 到的东西转成线上格式（`WireError`，定义见 api.ts）。
+ *
+ * **放在 core 而不是各宿主里各写一份**：这是"一个 SpecError 过桥之后长什么样"的唯一
+ * 定义。cli/src/server.ts 与 vscode/src/editor.ts 是两条独立的 catch，各抄一份的话，
+ * 哪天有人只改了其中一处（补个字段、换个判据），另一个宿主里的报错就悄悄退化回
+ * "只有一句英文"——那条退化没有任何外部症状，界面上照样有字，只是永远翻不动了。
+ *
+ * `isSpecError` 用的是 `instanceof`，只在 core 与调用方**同进程**时成立——两个宿主都
+ * 满足（它们直接 import core）。UI 侧不行，那边只能按形状判断，所以这个函数只给宿主用。
+ *
+ * 不是 SpecError 的（宿主自己的失败、core 里那两条程序员错误）只带 message：收端因此
+ * **永远**先有一句能显示的话，带不带 code 只影响它能不能被翻译。
+ */
+export function toWireError(e: unknown): WireError {
+  if (isSpecError(e)) return { message: e.message, code: e.code, params: e.params }
+  return { message: e instanceof Error ? e.message : String(e) }
 }

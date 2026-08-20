@@ -19,7 +19,7 @@ import type { ContextMenuTarget } from './ContextMenu.js'
 import { copyText } from './clipboard.js'
 import { NewNodeDialog } from './NewNodeDialog.js'
 import type { NewNodeDraft } from './NewNodeDialog.js'
-import { I18nContext, translate } from './i18n.js'
+import { I18nContext, translate, translateError } from './i18n.js'
 import type { I18n, Lang } from './i18n.js'
 
 export interface AppProps {
@@ -111,7 +111,21 @@ export function App({ bridge, initialRoot }: AppProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [dirty, setDirty] = useState(false)
   const [externalChange, setExternalChange] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  /**
+   * 横幅上那条报错。存的是**原始错误对象**（或一条 UiMessage），不是已经渲染好的字符串。
+   *
+   * 这是本轮那个设计判断的落点：用户切语言的目的就是看懂这条报错，横幅停在旧语言上
+   * 等于没切。存字符串的话，渲染在 catch 那一刻就发生了，语言被烘焙进去，之后再怎么
+   * 切开关都改不动它——而报错恰恰是最需要被读懂的一句话（用户的操作被拒时，它是他
+   * 唯一能看到的解释）。所以：state 存"还没渲染的东西"，渲染推迟到下面 errorText 那
+   * 一行、每次渲染重新做一遍。lang 一变，横幅跟着变。
+   *
+   * setError 包一层 setState 的 updater 形式：catch 到的 `e` 类型是 unknown，万一它
+   * 是个函数，`setErrorValue(e)` 会被 React 当成"用上一个值算新值"的 updater 直接调用，
+   * 存进去的就是它的返回值。`() => e` 让存的永远是 e 本身。
+   */
+  const [error, setErrorValue] = useState<unknown>(null)
+  const setError = useCallback((e: unknown) => setErrorValue(() => e), [])
   const [bodyHeight, setBodyHeight] = useState(600)
   /** 「原始结构 / 我的结构」显示模式，默认与 Session 的默认值一致（api.ts view/setMode）。 */
   const [viewMode, setViewModeState] = useState<ViewMode>('spec')
@@ -192,6 +206,12 @@ export function App({ bridge, initialRoot }: AppProps) {
   // 的注释。这里用 useMemo 是因为 Provider 的 value 一变，整棵消费了 useContext 的
   // 子树都会重渲染——lang 没变时不必跟着 App 别的 state 变化一起抖一遍。
   const i18n = useMemo(() => ({ lang, t }), [lang, t])
+  /**
+   * 横幅上那句话，**每次渲染按当前语言重新算一遍**（见 error state 上的注释）。
+   * core 抛来的错带着 code/params，按码查中文；查不到码（或界面是英文）就用它的
+   * message——英文只有一份，就在 core，UI 这边不另存。
+   */
+  const errorText = error === null ? null : translateError(error, lang)
 
   const headerRef = useRef<HTMLDivElement>(null)
   const treeApiRef = useRef<TreeApi<ViewNode> | undefined>(undefined)
@@ -270,7 +290,7 @@ export function App({ bridge, initialRoot }: AppProps) {
   // 兜底：jsdom 没有实现 ResizeObserver，measured 永远是 0，树若拿到 0 高度就一行都不渲染，
   // 依赖真实渲染的 App 测试会全灭。jsdom 里 getBoundingClientRect 恒为 0，头部高度会退化成
   // 0——不精确但安全（树只会偏高，不会消失）。
-  useEffect(() => { measure() }, [measure, parseErrors, externalChange, error])
+  useEffect(() => { measure() }, [measure, parseErrors, externalChange, errorText])
 
   // 实测优先，未测到（尚未 observe，或宿主没有 ResizeObserver）时退回估算值。
   // 宽度的估算值就是分隔条给这一栏定的 flex-basis，构造上等于它的真实宽度。
@@ -325,7 +345,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       // reload 后不该被悄悄重置（与 core 侧 Session.viewMode 的裁定对称）。
       if (!isSameWorkspace) setViewModeState('spec')
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge, setPending])
 
@@ -371,7 +391,7 @@ export function App({ bridge, initialRoot }: AppProps) {
         setCanRedo(r.canRedo)
       } catch (e) {
         if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-        setError(e instanceof Error ? e.message : String(e))
+        setError(e)
       }
     })()
   }, [bridge, readOnly])
@@ -401,7 +421,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setViewModeState(r.mode)
     } catch (e) {
       if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge, viewMode])
 
@@ -417,7 +437,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setCanRedo(r.canRedo)
     } catch (e) {
       if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge])
 
@@ -433,7 +453,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setCanRedo(r.canRedo)
     } catch (e) {
       if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge])
 
@@ -453,7 +473,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setTree(r.tree)
     } catch (e) {
       if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge])
 
@@ -469,7 +489,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setCanRedo(r.canRedo)
     } catch (e) {
       if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge])
 
@@ -484,7 +504,7 @@ export function App({ bridge, initialRoot }: AppProps) {
     } catch (e) {
       if (seq !== contentReqRef.current) return
       setContent(null)
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     } finally {
       if (seq === contentReqRef.current) setContentLoading(false)
     }
@@ -570,7 +590,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setCanRedo(r.canRedo)
     } catch (e) {
       if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge, selectedPath, tree])
 
@@ -590,7 +610,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       return r.id
     } catch (e) {
       if (epoch !== loadEpochRef.current) return null // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
       return null
     }
   }, [bridge])
@@ -679,7 +699,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       // 回调里放进会抛的代码，未捕获的 rejection 会让 chainRef 永久停在 rejected，
       // 此后**所有**分组写入都静默消失，还会留下 unhandled rejection。这里兜住，
       // 链条继续可用。（这一句目前没有用例能判到，是明知故留的防御，别按"没测到就删"处理。）
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     })
   }, [sendSetGroup, setPending])
 
@@ -837,9 +857,12 @@ export function App({ bridge, initialRoot }: AppProps) {
     void (async () => {
       // copyText 自己不抛（见 clipboard.ts 顶部：抛出去就是一次没人接的 rejection，
       // 症状退化成"点了没反应"）。它返回 false 是这里弹横幅的唯一依据。
-      if (!await copyText(text)) setError(t('banner.copyFailed', { text }))
+      // 存字典键而不是 t(...) 渲染好的字符串：它和 core 抛来的报错走同一条显示路径，
+      // 因此同样跟着语言开关走。少了这一层，横幅上就出现一条不跟随语言的例外——
+      // 而它恰恰最需要被读懂（用户唯一的出路是从横幅里选中那条路径手动复制）。
+      if (!await copyText(text)) setError({ uiKey: 'banner.copyFailed', uiParams: { text } })
     })()
-  }, [t])
+  }, [setError])
 
   /**
    * 菜单里点了「复制」。**纯读**：只把源路径记进一个 useState，不发任何 bridge 请求、
@@ -897,7 +920,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       // core 拒绝的那几条（粘进自己的子树、目标父级尚未展开、父级是文件、源节点已被
       // 拖走）报错原文都写明了原因和出路，**原样显示**，别吞、别改写。
       if (loadEpoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge, clipboard, readOnly, setPending])
 
@@ -1007,7 +1030,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       // 的三条，报错原文都写明了原因和出路，**原样显示**。吞掉它，用户只会看到点了
       // 没反应，然后转去手改 .folderspec.md——那才是真正会弄丢注释的路径。
       if (loadEpoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     } finally {
       // finally 不设闸门：这两句复位的是"这一笔 createNode 还在不在途"这个纯本地的
       // 按钮态，它与工作区换没换没有关系；跳过它会让新建按钮永远卡在禁用上。
@@ -1069,7 +1092,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       // core 在输入边界拦下的那几条（名字非法、契约/磁盘撞名、懒加载边界、被拖走的
       // 旧位置）报错原文都写明了原因和出路，**原样显示**，别吞、别改写。
       if (loadEpoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     } finally {
       // 与 submitNewNode 同理：复位的是纯本地的按钮态，与工作区换没换无关。
       creatingRef.current = false
@@ -1150,7 +1173,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       // 的声明"——原样显示，别吞、别改写：吞掉它，用户会以为「取消声明」坏了，转而去
       // 用别的方式达到目的（手改文件），那才是真正丢东西的路径。
       if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge, readOnly, tree, setPending])
 
@@ -1167,7 +1190,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setError(null)
     } catch (e) {
       if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e)
     }
   }, [bridge])
 
@@ -1225,7 +1248,7 @@ export function App({ bridge, initialRoot }: AppProps) {
             </div>
           )}
 
-          {error && <div className="fs-banner" role="alert">{error}</div>}
+          {errorText && <div className="fs-banner" role="alert">{errorText}</div>}
         </div>
 
         <div className="fs-body">

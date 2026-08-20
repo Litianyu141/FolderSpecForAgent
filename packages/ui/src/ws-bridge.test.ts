@@ -151,6 +151,52 @@ describe('createWebSocketBridge', () => {
     await expect(promise).rejects.toThrow('写入失败')
   })
 
+  /**
+   * 宿主现在回的是 `WireError`（api.ts）：`{ message, code?, params? }`。
+   * 桥必须把 code/params 一起带到 UI 侧的 Error 上——丢掉它们，App 就只剩一句英文
+   * 可显示，报错永远跟不了语言开关（这一整轮做的就是这件事）。
+   */
+  it('ok:false 回的是 WireError 时，还原出来的 Error 带上 code 与 params', async () => {
+    const bridge = createWebSocketBridge('ws://x')
+    const socket = FakeWebSocket.instances[0]!
+    socket.triggerOpen()
+
+    const promise = bridge.request('spec/createNode', { parentPath: '', name: '..', isDir: true })
+    await flush()
+    const sentMsg = JSON.parse(socket.sent[0]) as { id: number }
+
+    socket.triggerMessage({
+      id: sentMsg.id,
+      ok: false,
+      error: { message: 'A node may not be named "..".', code: 'name.reserved', params: { name: '..' } },
+    })
+
+    const caught = await promise.then(() => null, (e: unknown) => e)
+    // 仍然是一个 Error：整条调用链（App 的 catch、translateError 的兜底）都按 Error 处理
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toBe('A node may not be named "..".')
+    expect((caught as { code?: unknown }).code).toBe('name.reserved')
+    expect((caught as { params?: unknown }).params).toEqual({ name: '..' })
+  })
+
+  it('宿主只给了一句 message、没有 code 时照常还原成一个普通 Error', async () => {
+    // 不是所有失败都是 SpecError：宿主自己的错、core 里那两条程序员错误都只有 message。
+    // 收端必须永远先有一句能显示的话，带不带码只决定它能不能被翻译。
+    const bridge = createWebSocketBridge('ws://x')
+    const socket = FakeWebSocket.instances[0]!
+    socket.triggerOpen()
+
+    const promise = bridge.request('spec/save', {})
+    await flush()
+    const sentMsg = JSON.parse(socket.sent[0]) as { id: number }
+
+    socket.triggerMessage({ id: sentMsg.id, ok: false, error: { message: '未知方法 "no/such"' } })
+
+    const caught = await promise.then(() => null, (e: unknown) => e)
+    expect((caught as Error).message).toBe('未知方法 "no/such"')
+    expect((caught as { code?: unknown }).code).toBeUndefined()
+  })
+
   it('事件只送达订阅了该事件的监听器', () => {
     const bridge = createWebSocketBridge('ws://x')
     const socket = FakeWebSocket.instances[0]!

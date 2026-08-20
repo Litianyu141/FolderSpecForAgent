@@ -1,4 +1,5 @@
 import type { Api, ApiMethod, Bridge, BridgeEvent } from '@folderspec/core/api'
+import { errorFromWire } from './wire-error.js'
 
 const CONNECTION_LOST_MESSAGE = '与本地服务的连接已断开，请重新启动 folderspec'
 
@@ -59,7 +60,9 @@ export function createWebSocketBridge(url: string): Bridge {
     if (!slot) return
     pending.delete(msg.id)
     if (msg.ok) slot.resolve(msg.result)
-    else slot.reject(new Error(msg.error))
+    // msg.error 是 WireError（core/src/api.ts）：还原时必须把 code/params 一起带上，
+    // 否则 App 只剩一句英文可显示，报错永远跟不了语言开关。
+    else slot.reject(errorFromWire(msg.error))
   })
 
   return {

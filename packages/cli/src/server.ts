@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as nodePath from 'node:path'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer } from 'ws'
-import { Session } from '@folderspec/core'
+import { Session, toWireError } from '@folderspec/core'
 import type { ApiMethod } from '@folderspec/core'
 import type { RpcRequest, RpcResponse } from './protocol.js'
 
@@ -99,7 +99,9 @@ export async function startServer(opts: ServerOpts): Promise<ServerHandle> {
         const result = await session.handle(req.method as ApiMethod, req.params as never)
         response = { id: req.id, ok: true, result }
       } catch (e) {
-        response = { id: req.id, ok: false, error: e instanceof Error ? e.message : String(e) }
+        // 不再压成一句 e.message：SpecError 的 code/params 必须一起过桥，UI 才可能
+        // 按语言开关翻译它（判据与实现都在 core 的 toWireError，两个宿主共用一份）。
+        response = { id: req.id, ok: false, error: toWireError(e) }
       }
       socket.send(JSON.stringify(response))
     })

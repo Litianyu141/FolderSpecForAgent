@@ -1,13 +1,26 @@
 import { createContext, useContext } from 'react'
 import type { Lang } from '@folderspec/core/api'
+// `import type`，编译后一行不剩：ui 对 core 只允许类型依赖，运行期一个符号都不引入。
+import type { SpecErrorCode } from '@folderspec/core'
 
 export type { Lang }
 
 /**
- * 只翻译"操作界面"（我们自己写的按钮/标签/提示语），绝不翻译用户内容：节点注释、
- * 分组说明、规则文字、模板描述、语义角色、文件名/路径、core 抛出的报错文案、解析错误
- * 的行号与原文——这些是用户或磁盘给的数据，字典里没有它们的位置，调用点也不会替它们
- * 找一个键（判据见 i18n-brief.md：这段文字是我们写的还是用户/磁盘给的？我们写的才翻译）。
+ * 只翻译"我们自己写的字"（按钮/标签/提示语/报错），绝不翻译用户或磁盘给的内容：
+ * 节点注释、分组说明、规则文字、模板描述、语义角色、文件名/路径、解析错误里的行号与
+ * 原文——字典里没有它们的位置，调用点也不会替它们找一个键（判据见 i18n-brief.md：
+ * 这段文字是我们写的还是用户/磁盘给的？我们写的才翻译）。
+ *
+ * **`core` 抛出的报错曾被划在"不翻译"那一侧，那是一次错划，本轮已纠正。** 双语那一轮
+ * 定这条规矩时，core 的报错还是硬编码的中文整句：UI 拿到的只有一句话，除了原样显示
+ * 别无办法，于是它被顺手归进了"外面给的数据"。但它其实是**我们自己写的界面文案**，
+ * 只是写在另一个包里——用户的操作被拒时，那句话是他唯一能看到的解释，界面切了语言而
+ * 它不切，等于没切。提交 985501e 之后 core 改抛 `SpecError(code, params)`，`message` 是
+ * 渲染好的英文，UI 因此能按**码**查一份中文模板、把 params 代回去。注意翻译的对象是
+ * **码**，不是文案：那句英文 message 一个字都没有被"翻译"，它只是在查不到码时被原样
+ * 显示（英文的唯一定义处始终在 core 的 EN_MESSAGES）。判据本身一个字没变，变的只是
+ * 这一类文字被归到了正确的一侧。**下面的 ERROR_ZH 不是漏网的用户数据，别照着这段注释
+ * 的旧版本把它删回去。**
  *
  * "导出的 folderspec 里的结构化内容"（标题行、导言、四个章节标题）不归这份字典管——
  * 那是 core 侧 `spec/setLang`（提交 9ce8b86）的地盘，本文件只管界面 chrome。
@@ -310,7 +323,7 @@ export const en: Record<TranslationKey, string> = {
 
 const dictionaries: Record<Lang, Record<TranslationKey, string>> = { zh, en }
 
-type Interpolations = Record<string, string | number>
+export type Interpolations = Record<string, string | number>
 
 /**
  * 命名占位符 `{xxx}` 替换成 `params.xxx`；params 里没有这个键就原样保留占位符——
@@ -360,4 +373,186 @@ export function useT(): I18n['t'] {
 
 export function useLang(): Lang {
   return useContext(I18nContext).lang
+}
+
+// ---------------------------------------------------------------------------
+// 报错的翻译。**与上面的 t() 字典是两张表，刻意分开。**
+// ---------------------------------------------------------------------------
+
+/**
+ * 错误码 → 中文。**这张表只有中文，没有英文，而且必须一直只有中文。**
+ *
+ * 英文的唯一定义处是 core 的 `EN_MESSAGES`（core/src/errors.ts），`SpecError.message`
+ * 就是它渲染好的结果，一路带过 bridge 到这里。在这儿再存一份英文，等于同一句话在两个
+ * 包里各有一份，从此开始漂移；而查不到码时直接显示 message，新增的码即使还没翻译也会
+ * **自动降级成英文**，而不是把一个码甩给用户。
+ *
+ * **为什么不并进上面的 zh/en 字典**：那两张表有一条测试强制键集完全一致（i18n.test.ts
+ * 第一条），而这张表故意只有一侧。并进去只有两种结局——要么补一份英文（正是上一段说的
+ * 漂移），要么把那条校验放松（它守的是"界面文案少了一个语言"这类真缺陷）。两张表各有
+ * 各的不变量，合并会让两条都变松。
+ *
+ * 类型是 `Partial<Record<SpecErrorCode, string>>` 而不是 `Record<string, string>`：
+ * `Partial` 允许"这个码还没翻译"（降级路径靠的就是这个），但键名拼错、或者 core 那侧
+ * 删掉/改名了一个码，`tsc` 当场就红。这类错误的运行期表现是"这一句永远是英文"——界面上
+ * 看着完全正常，没有任何症状能让人发现它，只能靠编译期。
+ *
+ * 文案直接取自 core 改造之前那批中文原文（第一轮报告 §4 的对照表），不是重新翻译一遍：
+ * 重译只会引入与 core 英文措辞不一致的第三种说法。两处例外，各有理由，见下面的行内注释。
+ *
+ * 占位符名字必须与 core 的 params 键**逐字**一致（`interpolate` 对缺键是原样保留，
+ * 写错会在界面上留下一个显眼的 `{path}`）。`path.*` / `name.*` 系列的参数值在 core 侧
+ * 已经 `JSON.stringify` 过（自带引号），中文句子里不要再套一层引号。
+ */
+export const ERROR_ZH: Partial<Record<SpecErrorCode, string>> = {
+  // ---- 路径进入系统的边界 ----
+  'path.notRelative': '路径必须是工作区相对路径，实际是 {path}',
+  'path.parentSegment': '路径不得包含 ".." 段，实际是 {path}',
+  'path.escapesWorkspace': '路径 {path} 解析后逃出工作区，可能经过符号链接，拒绝读取',
+
+  // ---- 路径 / 名字的可表示性 ----
+  'path.empty': '路径不能为空',
+  'path.unrepresentable': '路径 {path} 含有反引号或换行，当前契约格式无法表示；请重命名该文件或目录',
+  // {field} 是 role / template 这两个标识符本身（core 侧原样传过来），不是可翻译的词：
+  // 它指的就是 `[role:x]` 标签里的那个字面量，翻成"角色"反而对不上用户看到的语法。
+  'identifier.forbiddenChar':
+    '{field} 不能包含反引号、"]" 或空白字符（会破坏 `[{field}:...]` 标签语法）：{value}',
+  'name.empty': '名字不能为空',
+  'name.hasSlash': '名字 {name} 不能包含 "/"：这里只接受单个路径段，不是路径',
+  'name.unrepresentable': '名字 {name} 含有反引号或换行，当前契约格式无法表示',
+  // 例外之一：原中文只有前半句"在文件系统里有特殊含义"，后半句"为什么"当时只写在
+  // session.ts 的代码注释里，英文版把它提进了文案。这里照着**那条已有的中文注释**补齐，
+  // 不是新译——否则中文用户拿到的解释比英文用户少一半，而这半句正是他判断该怎么办的依据。
+  'name.reserved':
+    '名字不能是 "{name}"：它在文件系统里有特殊含义，'
+    + 'Agent 读到这样一条声明时分不清是笔误，还是真要对上级目录动手',
+
+  // ---- 同层重名 ----
+  'name.duplicateSibling':
+    '`{parent}` 下已经有同名节点 `{name}`：同层同名兄弟是重复声明，解析器会拒绝，请换个名字',
+  'name.duplicateSiblingAtRoot':
+    '工作区根下已经有同名节点 `{name}`：同层同名兄弟是重复声明，解析器会拒绝，请换个名字',
+
+  // ---- 根节点不可动 ----
+  'move.rootNode': '不能移动根节点',
+  'copy.rootNode': '不能复制根节点',
+  'rename.rootNode': '不能重命名根节点',
+  'remove.rootNode': '不能移除根节点',
+
+  // ---- 自己套自己 ----
+  'move.intoOwnSubtree': '不能把节点移动到它自己的子树下',
+  // 这个码覆盖 core 里的两处 throw，原本有长短两版中文；一个码只能有一条中文，
+  // 取带"为什么"的那一版（与英文侧的取舍一致，见第一轮报告 §4 的 #9/#28）。
+  'copy.intoOwnSubtree':
+    '不能把节点粘贴到它自己或它的子树下：那会让这个节点声明自己内部还有一份自己，'
+    + '再粘一次又翻一倍，而契约的消费者是会照着它真去建目录的 Agent',
+
+  // ---- 移动时的合并冲突 ----
+  // 例外之二：{conflicts} 是 core 已经渲染好的**英文**明细（每条冲突自带字段名、路径和
+  // 两侧的值），params 装不下"可翻译的子句数组"，翻不动——这是第一轮报告 §10 顾虑 1 记下的
+  // 已知缺口。这里用上 core 特意多给的 {count}，让中文这侧至少能说清"一共几处"，
+  // 而不是把冲突截断成第一条（少报一条就等于把一条会被覆盖的注释藏起来）。
+  'move.mergeConflict':
+    '目标位置已经有同名节点，这次移动会覆盖掉它已经写下的内容（共 {count} 处）：{conflicts}。'
+    + '请先决定保留哪一份（把其中一侧清空，或把两侧改成相同内容），再重试这次移动',
+
+  // ---- 移除声明时的子树保护 ----
+  'remove.subtreeHasContent':
+    '`{path}` 下还有带注释/角色/模板/严重级别的子节点，移除会连带丢失这些声明：'
+    + '请先分别移除这些子节点自己的声明，再移除该节点本身',
+
+  // ---- 懒加载边界 ----
+  'node.unscannedKind': '`{path}` 尚未扫描到，无法确认它是文件还是目录；请先展开它所在的目录再重试',
+  'rename.targetUnscanned': '`{path}` 尚未扫描到，无法确认磁盘上有没有同名的东西；请先展开它所在的目录再重试',
+  'copy.targetChildrenUnscanned': '`{path}` 的子项尚未扫描，无法确认磁盘上有没有同名的东西；请先展开该目录再重试',
+  'parent.unscanned': '`{path}` 尚未扫描到，无法确认磁盘上是文件还是目录；请先展开该节点再重试',
+
+  // ---- 目标不存在 ----
+  'rename.sourceMissing': '契约里和磁盘上都没有 `{path}`，没有可以重命名的节点',
+  'copy.sourceMissing': '契约里和磁盘上都没有 `{path}`，没有可以复制的节点',
+
+  // ---- 磁盘上已经有人占着这个名字 ----
+  'rename.targetOccupiedOnDisk':
+    '`{path}` 在磁盘上已经存在：改成这个名字会让契约把两个不同的东西说成同一个，'
+    + '两边的注释也会被揉到一起。请换一个名字（本工具不会去动磁盘上的文件名）',
+
+  // ---- hidden：本次会话里被拖走的旧位置 ----
+  'hidden.oldLocation':
+    '`{path}` 是本次会话里刚被拖走的旧位置，它和它下面的一切在树上都不显示；'
+    + '在这里写下的声明你既看不见也删不掉，请改用它现在所在的位置',
+  'hidden.resultPath':
+    '`{path}` 是本次会话里刚被拖走的旧位置，在这里新建的声明不会显示在树上；请改用它现在所在的位置',
+
+  // ---- 父级不可挂载 ----
+  'parent.fileOnDisk': '`{path}` 在磁盘上是一个文件，不能在它下面新建节点',
+  'parent.fileInSpec': '`{path}` 在契约里被声明为文件，不能在它下面新建节点',
+
+  // ---- 声明的类型与磁盘冲突。两个方向各一个码——"目录"/"文件"这两个词是句子的一部分，
+  //      不是参数；当参数传的话中文这侧会得到"在磁盘上是一个 directory"。
+  'declare.typeConflictDiskDir':
+    '`{path}` 在磁盘上是一个目录，不能在契约里把它声明成文件：树上只会按磁盘上的真实类型显示，'
+    + '界面看不出任何异常，而契约里留下的是一条 Agent 会照做的假声明',
+  'declare.typeConflictDiskFile':
+    '`{path}` 在磁盘上是一个文件，不能在契约里把它声明成目录：树上只会按磁盘上的真实类型显示，'
+    + '界面看不出任何异常，而契约里留下的是一条 Agent 会照做的假声明',
+
+  // ---- 只读态 ----
+  'readonly.parseFailed': '契约文件解析失败，当前为只读模式，请先修复文件',
+  'readonly.diskView': '当前处于「原始结构」视图，为只读模式；切回「我的结构」视图后即可编辑',
+
+  // ---- 写盘前的自校验 ----
+  // {details} 是解析器给的行号 + 原因。解析层的报错第三轮才配码，在那之前它是中文原文，
+  // 英文界面下会在这一句里嵌一段中文——已知，见本轮报告"未覆盖"一节。
+  'serialize.selfCheckFailed': '序列化自校验失败，已中止以免损坏契约文件：{details}',
+}
+
+/**
+ * 我们自己在界面里生成的一条报错（不是 core 抛的），带的是**字典键**而不是渲染好的字符串。
+ *
+ * 为什么不直接 `setError(t('banner.copyFailed', …))`：横幅要跟着语言开关走，存进 state 的
+ * 就必须是"还没渲染的东西"，渲染推迟到显示那一刻。存字符串等于把语言烘焙进去——用户切了
+ * 语言，横幅还停在旧语言上，而他切语言的目的恰恰是看懂它。
+ */
+export interface UiMessage {
+  uiKey: TranslationKey
+  uiParams?: Interpolations
+}
+
+/** `e` 是不是一条我们自己生成的界面报错。按形状判断，理由同 translateError。 */
+function isUiMessage(e: unknown): e is UiMessage {
+  return typeof e === 'object' && e !== null && typeof (e as UiMessage).uiKey === 'string'
+}
+
+/**
+ * 把一个 catch 到的东西按当前语言渲染成横幅上的那句话。
+ *
+ * 规则只有两条：
+ * 1. `lang === 'zh'` 且这个码在 ERROR_ZH 里 → 用中文模板，params 代回占位符；
+ * 2. 其余一切 → 用 `message`（core 给的英文，或宿主自己那句话）。非 Error 的值退化成
+ *    `String(e)`，与接线之前 `e instanceof Error ? e.message : String(e)` 逐字一致。
+ *
+ * **按形状判断，不用 instanceof。** core 导出了 `isSpecError()`，但那是 `instanceof
+ * SpecError`——错误跨过 bridge 是走 JSON 的，原型早就没了，那个函数只对与 core 同进程的
+ * 宿主成立。ui 对 core 也只允许 `import type`，运行期符号根本不该出现在这一侧。
+ */
+export function translateError(e: unknown, lang: Lang): string {
+  if (isUiMessage(e)) return translate(lang, e.uiKey, e.uiParams)
+
+  const message = e instanceof Error ? e.message : String(e)
+  if (lang !== 'zh') return message
+
+  const wire = typeof e === 'object' && e !== null
+    ? e as { code?: unknown; params?: unknown }
+    : null
+  if (wire === null || typeof wire.code !== 'string') return message
+
+  // 从进程外收来的 code 本来就不可信，这里只是一次运行期查表：查不到就是 undefined，
+  // 走的正是"还没翻译的码降级成英文"那条路，而不是把码甩给用户。
+  const template = ERROR_ZH[wire.code as SpecErrorCode]
+  if (template === undefined) return message
+
+  const params = typeof wire.params === 'object' && wire.params !== null
+    ? wire.params as Interpolations
+    : undefined
+  return interpolate(template, params)
 }
