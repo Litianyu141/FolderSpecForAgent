@@ -292,6 +292,12 @@ export class Session {
     this.assertWritable()
     const { path, isDir, annotation, role, template, severity } = params
     assertRepresentablePath(path)
+    // annotate 是第三条会往契约里写下一条路径的写路径（另两条是 createNode 与 move），
+    // 此前完全没接这道闸门：往一个被拖走的旧位置（或它的子路径）上写注释会"写成功"，
+    // raw() 里确实多出那一行，而 merge 在 spec 视图下把整条路径跳过——用户既看不见
+    // 也点不到，本次会话里再也够不着自己刚写的字。"文件里还在、界面上够不着"与真的
+    // 丢了在用户那边是同一件事，所以三条写路径必须用同一道闸门。
+    this.assertNotHidden(path)
     assertValidIdentifier('role', role)
     assertValidIdentifier('template', template)
     const patch: AnnotationPatch = {
@@ -318,12 +324,23 @@ export class Session {
     // 因此在说谎。见 assertCreatableParent 上方注释里对 hidden / 懒加载边界两条
     // 旁路检查的完整推导。
     this.assertCreatableParent(params.toParent)
+
+    // to 必须在动手之前算出来：它既是下面 hidden 记账的键，也是"这次移动会在契约里
+    // 写下哪一条路径"这个问题的答案，闸门要审的正是它。按段拼接（而不是字符串直接
+    // 相连）是为了与 moveNode 内部的 toSegments 归一化保持一致——两边对同一次调用
+    // 必须算出同一条路径，否则闸门审的是 A、写下去的是 B。
+    const name = params.from.split('/').filter(Boolean).pop() ?? ''
+    const to = [...params.toParent.split('/').filter(Boolean), name].join('/')
+
+    // 结果路径闸门。allowHidden 这里必须是 true，是本函数与 createNode 之间**唯一**
+    // 一处刻意的不对称：结果路径落在 hidden 上，对 move 而言恰恰是"把节点拖回它原来
+    // 的位置"这个完全合法的动作，下面的 this.hidden.delete(to) 正是为它准备的；而对
+    // createNode 而言没有任何合法解释，只能拒绝。
+    this.assertDeclarableResult(to, this.movedIsDir(params.from, to, params.isDir), true)
+
     // 快照必须盖住下面对 hidden 的两处改动，不能只盖 spec——见 Snapshot 的注释
     const before = this.captureState()
     this.spec = moveNode(this.spec, params.from, params.toParent, params.isDir)
-
-    const name = params.from.split('/').filter(Boolean).pop() ?? ''
-    const to = params.toParent === '' ? name : `${params.toParent}/${name}`
 
     // 目标路径如果正好是此前某次拖拽留下的隐藏旧位置，这次移动等于把节点还回去；
     // 必须先解除隐藏，否则该路径会同时在 actual 侧（磁盘上真实存在）和 spec 侧
@@ -353,6 +370,9 @@ export class Session {
     assertValidParentPath(parentPath)
     assertValidNodeName(name)
     this.assertCreatableParent(parentPath)
+    // 结果路径与 createNode() 纯函数算出来的那条必须逐字相同，否则闸门审的是一条、
+    // 写进契约的是另一条。
+    this.assertDeclarableResult([...parentPath.split('/').filter(Boolean), name].join('/'), isDir, false)
     const before = this.captureState()
     const created = createNode(this.spec, parentPath, name, isDir)
     this.spec = created.spec
@@ -361,6 +381,34 @@ export class Session {
   }
 
   /**
+   * hidden 记的是本次会话里被拖走节点的旧位置，merge 在 spec 视图下会把这条路径
+   * **连同它下面的一切**整个跳过（不看磁盘、不看契约，见 merge.ts：命中 hidden 的
+   * actual 节点直接 continue、fromSpec 直接返回 null）。在这样一条路径上写下声明，
+   * 写盘会成功、raw() 里确实有那一行，但树上永远看不见——与 CLAUDE.md"唯一能造成
+   * 的伤害是弄丢人写的注释"是同一类失效：内容还在文件里，用户却再也找不到、够不着。
+   * hidden 只记旧位置、不记去向（spec §6.1 拖拽绝不记录来源，这里对称地也不该反向
+   * 猜测去向），能做的只有据实拒绝。
+   *
+   * **必须逐级查祖先，不能只做精确匹配**：merge 那边 hidden 是对整棵子树生效的，
+   * 这边只比较相等的话，hidden 路径的任意后代都能绕过去（终审实测：拖走 `src` 之后
+   * `src/sub` 照样放行，声明与被搬过去的注释一起从树上消失）。同一条不变量在两处
+   * 用了宽窄不同的判据，本身就是缺陷。
+   */
+  private assertNotHidden(path: string): void {
+    for (const p of ancestorChain(path)) {
+      if (this.hidden.has(p)) {
+        throw new Error(
+          `\`${p}\` 是本次会话里刚被拖走的旧位置，它和它下面的一切在树上都不显示；` +
+          '在这里写下的声明用户既看不见也删不掉，请改用它现在所在的位置',
+        )
+      }
+    }
+  }
+
+  /**
+   * "这个父级下面能不能安全地挂一条新声明"——createNode 与 move 的 toParent 共用
+   * （e7a723f 确立的原则：同一条不变量必须只有一个实现，否则界面在说谎）。
+   *
    * "目录判断只信一个真相源"这条隐含假设在这里会出错：ensure()（setAnnotation 也在
    * 用）为了让路径能穿过去，会把 spec 侧的中间节点强行升级成目录；但 merge() 对
    * "磁盘和契约都有"的节点只信磁盘（merge.ts 的 fromActual 用 a.kind==='dir'，
@@ -369,45 +417,109 @@ export class Session {
    * 选不中、用户永远看不见也删不掉的声明，因为合成出来的树坚持认为那里是文件。
    * spec 里已经声明为文件的叶子也一并拒绝：不能因为一次"新建子项"的副作用，就
    * 悄悄把用户之前"这是个文件"的声明改写成目录。
+   *
+   * **三项检查都要逐级走完整条祖先链**，不能只审 parentPath 落到的那一个节点：
+   * ensure() 是对**每一个**中间段做 `found.isDir = true` 的，一条 parentPath 多深
+   * 一层，只审末段的闸门就完全绕过去了——契约里用户明确写下的"这是个文件"会被一次
+   * 毫不相干的深层新建静默翻成目录，注释文字还留着，但它现在描述的是一个与自己矛盾
+   * 的结构，正踩中"悄悄改掉一个标识符比报错更糟"（见本文件顶部）。
    */
   private assertCreatableParent(parentPath: string): void {
-    // hidden 记的是本次会话里被拖走节点的旧位置，merge 在 spec 视图下会把这条
-    // 路径整个跳过（不看磁盘、不看契约，见 merge.ts 对 hidden 的处理）。在这里
-    // 新建子节点，写盘会成功、raw() 确实有这条声明，但树上永远看不见——与本文件
-    // 顶部 CLAUDE.md"唯一能造成的伤害是弄丢人写的注释"是同一类失效：注释还在
-    // 文件里，用户却再也找不到、够不着。hidden 只记旧位置、不记去向（spec §6.1
-    // 拖拽绝不记录来源，这里对称地也不该反向猜测去向），能做的只有据实拒绝。
-    if (this.hidden.has(parentPath)) {
-      throw new Error(`\`${parentPath}\` 是本次会话里刚被拖走的旧位置，在这里新建的声明不会显示；请改用它现在所在的位置`)
+    this.assertNotHidden(parentPath)
+
+    for (const p of ancestorChain(parentPath)) {
+      // 这一级可能落在懒加载边界（DEFAULT_DEPTH）之下——此时磁盘扫描结果里既没有
+      // 它、也没有证据证明它不存在，lookupActual 用 unscanned 把这种"还不知道"与
+      // "确实没有"区分开（findActual 对两者给出同一个 null，分不出来）。
+      //
+      // 取向：宁可让用户多点一次"展开"重试，也不要在不知道的时候放行——一旦这一级
+      // 真实存在且是文件，merge 会在下次展开时把它按磁盘判定为文件，挂在它下面的
+      // 声明从树上永久消失（正是上一轮复审用真实 Session 复现出来的那条链路：
+      // createNode 放行 → raw() 里有 child.md → expand 之后 child.md 从树上消失）。
+      //
+      // 代价：合法的深层声明——这一级磁盘上其实并不存在，纯粹是要往下声明新内容——
+      // 如果恰好落在这个边界之下，也会被一并挡下，需要先展开那一层再重试。这个代价
+      // 小于"悄悄产生一个用户看不见的结果"，而且在真实 UI 里根本走不到：parentPath
+      // 只来自树上一个已经可见的节点，可见就意味着它自己已经被扫到了。
+      const { node: onDisk, unscanned } = lookupActual(this.actual, p)
+      if (unscanned) {
+        throw new Error(`\`${p}\` 尚未扫描到，无法确认磁盘上是文件还是目录；请先展开该节点再重试`)
+      }
+      if (onDisk && onDisk.kind !== 'dir') {
+        throw new Error(`\`${p}\` 在磁盘上是一个文件，不能在它下面新建节点`)
+      }
+      const inSpec = findSpecNode(this.spec.nodes, p)
+      if (inSpec && !inSpec.isDir) {
+        throw new Error(`\`${p}\` 在契约里被声明为文件，不能在它下面新建节点`)
+      }
+    }
+  }
+
+  /**
+   * 闸门的另一半：**这次操作会在契约里写下的那条路径本身**能不能安全存在。
+   * 上面那个函数只审父级，于是闸门恰好错了一层——管住了父，没管住子。
+   *
+   * 两项检查：
+   *
+   * 1. 落在 hidden 上（`allowHidden` 为 false 时）。理由与 assertNotHidden 完全相同，
+   *    只是对象换成了结果路径：拖走 `src` 之后在根下新建 `src`，parentPath 是 ''、
+   *    怎么查都干净，而写下去的那一行在树上永远不出现。祖先侧已经由
+   *    assertCreatableParent 覆盖，这里只需补上"恰好等于某条 hidden"这一格。
+   *
+   * 2. 与磁盘的类型冲突。merge 对 origin='both' 的节点只信磁盘（fromActual 用
+   *    a.kind），所以把磁盘上的文件 README.md 声明成目录时，**界面上零异常**——树上
+   *    照旧是文件、右栏照旧写"文件"，用户以为这次点击什么都没发生；而契约里留下的是
+   *    `- \`README.md/\``（尾斜杠 = 目录），契约的消费者是会照着 rm 掉再 mkdir 的
+   *    Agent。反方向（把磁盘上的目录声明成文件）同样成立。这条与 1 不同：1 是"用户
+   *    够不着自己写的东西"，2 是"契约携带一条 Agent 会照做的谎话"。
+   *
+   * 未扫描到（unscanned）时**放行**，与 assertCreatableParent 对父级的做法刻意不同。
+   * 差别在两件事上：(a) 危害不同——父级未知时整条声明可能挂在一个文件下面、从树上
+   * 彻底消失（红线）；结果路径未知时这条声明照样在树上显示、选得中、删得掉，可能出错
+   * 的只有 isDir 这一位，而且用户一展开那层，merge 立刻按磁盘显示真相。(b) 代价不同
+   * ——父级不可能未扫描（它来自树上一个可见节点），拒绝它零成本；而结果路径落在未扫描
+   * 区里是**最普通不过的 UI 动作**：右键一个还没展开过的目录 →「新建目录」，它的
+   * children 就还是 undefined。为这种情形抛"请先展开该节点再重试"，是拿一条红线级的
+   * 措辞去挡一次完全正常的操作。代价：这一格里 isDir 与磁盘不符的谎话仍写得进契约，
+   * 属于已知限制（要根治得让这条写路径能按需扫描，那是另一件事）。
+   */
+  private assertDeclarableResult(path: string, isDir: boolean, allowHidden: boolean): void {
+    // allowHidden 只对 move 为 true：结果路径正好是某条 hidden，对 move 而言就是
+    // "把节点拖回它原来的位置"这个完全合法的动作，move() 里的 this.hidden.delete(to)
+    // 正是为它准备的；对 createNode 而言没有任何合法解释。
+    if (!allowHidden && this.hidden.has(path)) {
+      throw new Error(
+        `\`${path}\` 是本次会话里刚被拖走的旧位置，在这里新建的声明不会显示在树上；` +
+        '请改用它现在所在的位置',
+      )
     }
 
-    // parentPath 可能落在懒加载边界（DEFAULT_DEPTH）之下——此时磁盘扫描结果里既
-    // 没有它、也没有证据证明它不存在，lookupActual 用 unscanned 把这种"还不知道"
-    // 与"确实没有"区分开（下面 findActual 对两者给出同一个 null，分不出来）。
-    //
-    // 取向：宁可让用户多点一次"展开"重试，也不要在不知道的时候放行——一旦
-    // parentPath 真实存在且是文件，merge 会在下次展开时把它按磁盘判定为文件，
-    // 刚新建的子声明从树上永久消失（正是上一轮复审用真实 Session 复现出来的那条
-    // 链路：createNode 放行 → raw() 里有 child.md → expand 之后 child.md 从树上
-    // 消失）。
-    //
-    // 代价：合法的深层声明——parentPath 磁盘上其实并不存在，纯粹是要往下声明新
-    // 内容——如果恰好落在这个边界之下，也会被一并挡下，需要先展开那一层再重试。
-    // 这个代价小于"悄悄产生一个用户看不见的结果"：多数真实 UI 流程里，用户得先
-    // 在树上展开、选中 parentPath 才能把它当新建目标，那一刻它的父级八成已经展开
-    // 过；直接手写深层路径调 API 的场景本来就该对"这一层到底有什么"更谨慎，一条
-    // 可操作的报错（"先展开再重试"）比一个静默的坏结果更安全。
-    const { node: onDisk, unscanned } = lookupActual(this.actual, parentPath)
-    if (unscanned) {
-      throw new Error(`\`${parentPath}\` 尚未扫描到，无法确认磁盘上是文件还是目录；请先展开该节点再重试`)
+    const { node: onDisk, unscanned } = lookupActual(this.actual, path)
+    if (unscanned || !onDisk) return
+    const diskIsDir = onDisk.kind === 'dir'
+    if (diskIsDir !== isDir) {
+      throw new Error(
+        `\`${path}\` 在磁盘上是一个${diskIsDir ? '目录' : '文件'}，不能在契约里把它声明成${isDir ? '目录' : '文件'}：` +
+        '树上只会按磁盘上的真实类型显示，界面看不出任何异常，而契约里留下的是一条 Agent 会照做的假声明',
+      )
     }
-    if (onDisk && onDisk.kind !== 'dir') {
-      throw new Error(`\`${parentPath}\` 在磁盘上是一个文件，不能在它下面新建节点`)
-    }
-    const inSpec = findSpecNode(this.spec.nodes, parentPath)
-    if (inSpec && !inSpec.isDir) {
-      throw new Error(`\`${parentPath}\` 在契约里被声明为文件，不能在它下面新建节点`)
-    }
+  }
+
+  /**
+   * 这次移动落定之后，目标路径在契约里究竟会是目录还是文件——与 moveNode/mergeInto
+   * 内部的优先级严格一致：契约里已有的源节点说了算（`detach(...) ?? { isDir }`：
+   * 现有数据优先于调用方的声明），源节点不存在时才用调用方传来的 isDir；两侧任一带
+   * 着子项，结果必然是目录（mergeInto 末尾那一行）。
+   *
+   * 磁盘冲突检查必须拿这个"最终值"去比。直接拿 params.isDir 比，会在"契约里的源节点
+   * 与调用方声明不一致"时判错——闸门放行的是一个值、写进契约的是另一个值，正是这一
+   * 族缺陷本身的形状。
+   */
+  private movedIsDir(from: string, to: string, declared: boolean): boolean {
+    const src = findSpecNode(this.spec.nodes, from)
+    const dst = findSpecNode(this.spec.nodes, to)
+    if ((src?.children.length ?? 0) > 0 || (dst?.children.length ?? 0) > 0) return true
+    return src ? src.isDir : declared
   }
 
   /**
@@ -799,6 +911,19 @@ export class Session {
       throw new Error('当前处于「原始结构」视图，为只读模式；切回「我的结构」视图后即可编辑')
     }
   }
+}
+
+/**
+ * 把一条路径拆成"每一级祖先，加它自己"，根（''）给出空数组：
+ * 'a/b/c' → ['a', 'a/b', 'a/b/c']。
+ *
+ * 丙 那四个缺口里有三个是同一句话的不同说法："判据只认整条路径落到的那一个节点，
+ * 不看中间层"。ensure() 与 merge 的 hidden 都是对整条链/整棵子树生效的，闸门这边
+ * 也必须逐级走一遍，否则路径多深一层就绕过去了。
+ */
+function ancestorChain(path: string): string[] {
+  const segs = path.split('/').filter(s => s !== '')
+  return segs.map((_, i) => segs.slice(0, i + 1).join('/'))
 }
 
 /** 一棵 spec 子树里出现过的全部节点名（含根自己）。供 releaseHiddenFor 用，判据的

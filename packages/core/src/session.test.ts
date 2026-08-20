@@ -1701,3 +1701,167 @@ describe('Session.removeNode 回收 move 遗留的 hidden（乙）', () => {
   })
 })
 
+// 丙：assertCreatableParent 只审 parentPath、判据还过窄。五条发现同一个根因，
+// 四个缺口一次补齐，并且让 createNode 与 move 走同一套判据（e7a723f 已经确立的
+// 原则：同一条不变量必须只有一个实现，否则界面在说谎）。
+describe('Session 新增声明的闸门：结果路径与祖先链（丙）', () => {
+  it('结果路径正好是本次会话刚被拖走的旧位置时拒绝——闸门不能只管父级', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(find(s.tree(), 'src/core')).toBeNull() // 确认 hidden 真的生效了
+    const beforeRaw = s.raw()
+
+    expect(() => s.createNode({ parentPath: 'src', name: 'core', isDir: true })).toThrow('拖走')
+    expect(s.raw()).toBe(beforeRaw)
+    expect(s.isDirty()).toBe(true) // 上面那次 move 造成的，不是这次被拒的调用
+  })
+
+  it('parentPath 落在被拖走节点的子树里（祖先命中 hidden）时拒绝——判据不能是精确匹配', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(() => s.createNode({ parentPath: 'src/core/sub', name: 'x.md', isDir: false }))
+      .toThrow('拖走')
+  })
+
+  it('move 的 toParent 落在被拖走节点的子树里时同样拒绝——两条写路径同一套判据', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'README.md', isDir: false, annotation: '别把我搬到看不见的地方' })
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+
+    expect(() => s.move({ from: 'README.md', toParent: 'src/core/sub', isDir: false }))
+      .toThrow('拖走')
+    // 被拒绝之后注释仍在原地、树上仍看得见——这条失效的形状正是"内容还在文件里，
+    // 界面上再也找不回来"，只断言抛错是不够的。
+    expect(find(s.tree(), 'README.md')?.annotation).toBe('别把我搬到看不见的地方')
+  })
+
+  it('对照：move 的结果路径落在 hidden 上是合法的——那是把节点拖回原位', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(() => s.move({ from: 'core', toParent: 'src', isDir: true })).not.toThrow()
+    expect(find(s.tree(), 'src/core')).not.toBeNull()
+  })
+
+  it('「新建目录」用磁盘上真实文件的名字时拒绝——契约不能写下一条 Agent 会照做的谎话', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: 'README.md', isDir: true }))
+      .toThrow('在磁盘上是一个文件')
+    // 树上零异常（merge 对 origin=both 只信磁盘），所以必须断言契约本身没被写脏
+    expect(s.raw()).not.toContain('`README.md/`')
+    expect(s.isDirty()).toBe(false)
+  })
+
+  it('「新建文件」用磁盘上真实目录的名字时同样拒绝（反方向）', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: 'src', isDir: false }))
+      .toThrow('在磁盘上是一个目录')
+  })
+
+  it('对照：类型一致时照常放行——把磁盘上已有的目录声明进契约是正常用法', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: 'src', name: 'deep', isDir: true })).not.toThrow()
+  })
+
+  it('move 的结果路径与磁盘类型冲突时拒绝——与 createNode 同一套判据', async () => {
+    // 根下真实存在一个名叫 core 的**文件**，把目录 src/core 拖到根 = 契约要声明
+    // "根下的 core 是个目录"，而 merge 只信磁盘，这一行永远显示成文件。
+    await fs.writeFile(nodePath.join(root, 'core'), '')
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '核心模块' })
+    const beforeRaw = s.raw()
+
+    expect(() => s.move({ from: 'src/core', toParent: '', isDir: true }))
+      .toThrow('在磁盘上是一个文件')
+    expect(s.raw()).toBe(beforeRaw)
+    // 被拒绝的 move 绝不能顺手把旧位置记进 hidden
+    expect(find(s.tree(), 'src/core')?.annotation).toBe('核心模块')
+  })
+
+  // 闸门必须拿"这次移动落定之后目标路径的最终 isDir"去和磁盘比，而不是调用方传来的
+  // params.isDir——moveNode 内部是"契约里已有的源节点优先于调用者的声明"，两者不一致
+  // 时若按后者判，闸门放行的是一个值、写进契约的是另一个值，正是这一族缺陷本身的形状。
+  it('结果类型按契约里源节点的 isDir 判定，不被调用方声明的 isDir 带偏', async () => {
+    await fs.writeFile(nodePath.join(root, 'thing'), '') // 根下真实存在的**文件**
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: 'old', name: 'thing', isDir: true }) // 契约里声明成**目录**
+
+    expect(() => s.move({ from: 'old/thing', toParent: '', isDir: false }))
+      .toThrow('在磁盘上是一个文件')
+  })
+
+  it('parentPath 的中间祖先在契约里被声明为文件时拒绝——ensure() 会把它悄悄改写成目录', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: '', name: 'notes.txt', isDir: false })
+    s.annotate({ path: 'notes.txt', isDir: false, annotation: '这是一个文件，我明确这么声明的' })
+
+    expect(() => s.createNode({ parentPath: 'notes.txt/inner', name: 'x.ts', isDir: false }))
+      .toThrow('在契约里被声明为文件')
+    // 用户写下的 isDir=false 必须原样活着：结构区里 notes.txt 不带尾斜杠
+    expect(s.raw()).toContain('`notes.txt`')
+    expect(s.raw()).not.toContain('`notes.txt/`')
+  })
+
+  it('move 的 toParent 中间祖先在契约里被声明为文件时同样拒绝', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: '', name: 'notes.txt', isDir: false })
+    expect(() => s.move({ from: 'README.md', toParent: 'notes.txt/inner', isDir: false }))
+      .toThrow('在契约里被声明为文件')
+  })
+
+  it('parentPath 的中间祖先在磁盘上是文件时，报的是「是一个文件」而不是「尚未扫描」', async () => {
+    const s = new Session(root); await s.open()
+    // 旧实现走到 'README.md/inner' 时只发现"README.md 的 children 是 undefined"，
+    // 于是报"尚未扫描"——一条让用户去展开一个文件的、无从执行的提示。
+    expect(() => s.createNode({ parentPath: 'README.md/inner', name: 'x.ts', isDir: false }))
+      .toThrow('在磁盘上是一个文件')
+    expect(() => s.createNode({ parentPath: 'README.md/inner', name: 'x.ts', isDir: false }))
+      .not.toThrow('尚未扫描')
+  })
+
+  // annotate 是第三条会往契约里写路径的写路径，此前完全没接这道闸门：终审实测
+  // 在拖走的旧位置上 annotate 会"写成功"，raw() 里多出一行用户在树上够不着的
+  // 声明——与甲/乙是同一条红线的第三次现形。
+  it('annotate 落在被拖走的旧位置上时拒绝——写得进契约却在树上够不着，等同弄丢', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(() => s.annotate({ path: 'src/core', isDir: true, annotation: '够不着的注释' }))
+      .toThrow('拖走')
+    expect(s.raw()).not.toContain('够不着的注释')
+  })
+
+  it('对照：annotate 一个祖先链上没有任何 hidden 的普通路径不受影响', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    // 'src' 是被拖走节点的**父**，它自己在树上好好的，绝不能被连坐
+    expect(() => s.annotate({ path: 'src', isDir: true, annotation: '照常可写' })).not.toThrow()
+    expect(find(s.tree(), 'src')?.annotation).toBe('照常可写')
+  })
+})
+
+// 控制器点名的反向护栏：新增闸门绝不能误伤"给 Agent 布置一棵纯 spec-only 的目录
+// 模板"——那正是「新建目录（仅契约）」这个功能存在的理由。
+describe('纯 spec-only 模板树必须继续放行（丙 的反向护栏）', () => {
+  it('templates/cases/fixtures/demo.json 四级逐层建得出来，树上可见、raw() 里有', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: '', name: 'templates', isDir: true })).not.toThrow()
+    expect(() => s.createNode({ parentPath: 'templates', name: 'cases', isDir: true })).not.toThrow()
+    expect(() => s.createNode({ parentPath: 'templates/cases', name: 'fixtures', isDir: true })).not.toThrow()
+    const r = s.createNode({ parentPath: 'templates/cases/fixtures', name: 'demo.json', isDir: false })
+
+    expect(r.path).toBe('templates/cases/fixtures/demo.json')
+    expect(find(r.tree, 'templates/cases/fixtures/demo.json')?.origin).toBe('spec-only')
+    expect(s.raw()).toContain('demo.json')
+    // 落盘 + 重开也要活着（结构区四级嵌套必须能被自己解析回来）
+    await s.save()
+    const s2 = new Session(root)
+    const r2 = await s2.open()
+    expect(find(r2.tree, 'templates/cases/fixtures/demo.json')).not.toBeNull()
+  })
+
+  it('一次性声明一条全新的深层路径（父级链条按需补齐）同样放行', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: 'templates/cases/fixtures', name: 'demo.json', isDir: false }))
+      .not.toThrow()
+    expect(find(s.tree(), 'templates/cases/fixtures/demo.json')?.origin).toBe('spec-only')
+  })
+})
