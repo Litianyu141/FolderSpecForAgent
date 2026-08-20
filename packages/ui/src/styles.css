@@ -17,6 +17,38 @@
   --fs-group-dot: #b180d7;
   --fs-line-number: #9a9a9a;
 
+  /* 选中态的前景色。--fs-selected-bg 一直有，配套的前景色一直没有，于是凡是用
+   * 选中底色的地方（树上的选中行、两个分段控件的当前态）前景都来自 --fs-fg——
+   * 两个 token 各自跟随不同的 VSCode 变量，在浅色主题下必然打架：
+   * list.activeSelectionBackground 是实心蓝 #0060C0，而 foreground 是深灰 #3B3B3B。
+   * **凡是显式设了 background 的地方，就必须显式设 color**，否则前景来自别处，
+   * 两者迟早在某个主题下撞成一样的明度。这条规则在本文件与 layout.css 里逐处落实。 */
+  --fs-selected-fg: #1f1f1f;
+
+  /* 表单控件的主题化。改动前 input / textarea / select / button 四类**从未被认领过**
+   * background 与 color，用的是浏览器 UA 默认值——深色主题下实测是纯白底黑字的输入框、
+   * rgb(239,239,239) 浅灰底的按钮，一整排白方块糊在 #1F1F1F 的编辑器背景上。
+   *
+   * 兜底值取的是与上面同一套浅色体系（#ffffff/#1f1f1f/#d4d4d4），CLI 宿主没有
+   * THEME_BRIDGE，这些兜底值就是它唯一的取值，必须自己好看且自洽。
+   *
+   * 三个 *-border 的兜底刻意多退一级到 --fs-border/面板边框色而不是直接落到浅灰硬编码：
+   * input.border / dropdown.border / button.border 在 VSCode 里注册时的默认值都是
+   * contrastBorder（只有高对比主题才有值），普通深色主题里这些 CSS 变量**根本不存在**，
+   * 直接落到 #d4d4d4 就会给每个深色控件描一圈浅色边。具体映射见 webview-html.ts。 */
+  --fs-input-bg: #ffffff;
+  --fs-input-fg: #1f1f1f;
+  --fs-input-border: #d4d4d4;
+  --fs-input-placeholder: #767676;
+  --fs-dropdown-bg: #ffffff;
+  --fs-dropdown-fg: #1f1f1f;
+  --fs-dropdown-border: #d4d4d4;
+  --fs-button-bg: #e8e8e8;
+  --fs-button-fg: #1f1f1f;
+  --fs-button-hover-bg: #dcdcdc;
+  --fs-button-border: #d4d4d4;
+  --fs-focus-border: #0078d4;
+
   /* 中间栏文件预览的 Prism 语法高亮。CLI 宿主没有 VSCode 主题可映射，这十三个是
    * 独立于宿主的默认色，和 webview-html.ts 的 THEME_BRIDGE 逐条对应（同一个桶两边
    * 必须用同一个 hex——那边是 var() 的 fallback，这边是 CLI 唯一的取值）。按语法
@@ -55,12 +87,53 @@
  * 这条约定的一次必要例外——字体要跟随宿主主题，唯一入口就是这两个属性。
  * line-height 维持原值，颜色规则一律不动。 */
 body { margin: 0; font-family: var(--fs-font-family); font-size: var(--fs-font-size); line-height: 1.5; color: var(--fs-fg); background: var(--fs-bg); }
+
+/* 表单控件跟随宿主主题。用**元素选择器**而不是逐处加类：整份文档都是本 UI 的，
+ * 漏掉任何一个入口就是深色主题下的一块白方块，而"以后新加的控件也自动跟随"这件事
+ * 只有元素选择器给得了。既有的那些 .fs-xxx button（分段控件、右键菜单项、成员列表的
+ * ×、色点、分组跳转链接）特异度都更高，仍然维持它们各自的透明/自定义底色，不受影响。
+ *
+ * border 在这里统一认领：改动前 .fs-field 与 .fs-new-node 各自写了一遍
+ * `border: 1px solid var(--fs-border)`，那是"输入框边框"却借用了面板边框色，
+ * 现在归到 --fs-input-border/--fs-dropdown-border 上，两处只保留形状（padding/圆角）。 */
+input, textarea {
+  background: var(--fs-input-bg); color: var(--fs-input-fg);
+  border: 1px solid var(--fs-input-border);
+}
+input::placeholder, textarea::placeholder { color: var(--fs-input-placeholder); opacity: 1; }
+select {
+  background: var(--fs-dropdown-bg); color: var(--fs-dropdown-fg);
+  border: 1px solid var(--fs-dropdown-border);
+}
+button {
+  background: var(--fs-button-bg); color: var(--fs-button-fg);
+  border: 1px solid var(--fs-button-border); border-radius: 3px;
+}
+button:hover:not(:disabled) { background: var(--fs-button-hover-bg); }
+/* 认领了 background 之后就不能再指望 UA 那套"禁用即变淡"的默认外观——它已经被
+ * 我们的实心底色顶掉了。禁用态改用与 .fs-context-menu / .fs-member-list 同一条
+ * 判据的透明度表达（连 hover 反馈一起收掉，否则鼠标划过去还像能点）。 */
+input:disabled, textarea:disabled, select:disabled, button:disabled { opacity: 0.5; cursor: default; }
+/* VSCode webview 的默认样式里有一条 `a,input,select,textarea:focus { outline: 1px solid
+ * -webkit-focus-ring-color }`，它在 @layer vscode-default 里，永远输给这条未分层的规则。
+ * 焦点框必须自己认领，否则深色主题下焦点色由宿主的默认环色决定，与 focusBorder 不一致。 */
+input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
+  outline: 1px solid var(--fs-focus-border); outline-offset: -1px;
+}
+
 .fs-toolbar { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--fs-border); }
 .fs-toolbar input { flex: 1 1 auto; min-width: 0; }
 .fs-row { display: flex; align-items: center; gap: 6px; height: 100%; padding-right: 8px; cursor: pointer; white-space: nowrap; }
-.fs-row[data-selected='true'] { background: var(--fs-selected-bg); }
+.fs-row[data-selected='true'] { background: var(--fs-selected-bg); color: var(--fs-selected-fg); }
 .fs-row[data-origin='spec-only'] { border: 1px dashed currentColor; border-radius: 3px; opacity: 0.85; }
 .fs-row[data-annotated='true'] .fs-name { color: var(--fs-annotated); font-weight: 600; }
+/* 选中行上的"已标注"蓝要让位给选中前景色——同一条"设了 background 就得管住压在它
+   上面的 color"的规则。--fs-annotated 跟的是 textLink.foreground，--fs-selected-bg
+   跟的是 list.activeSelectionBackground，浅色主题下两者分别是 #005FB8 与 #0060C0：
+   蓝字压蓝底，选中一个已标注的节点等于把它的名字擦掉。git 状态色不在这条规则里——
+   它是 NodeRow 上的**内联** style（见 nodeColorVar），CSS 够不着，而且"红=有冲突"
+   这类信息在选中态下也该保留，与 VSCode 资源管理器的做法一致。 */
+.fs-row[data-selected='true'][data-annotated='true'] .fs-name { color: var(--fs-selected-fg); }
 .fs-caret { display: inline-flex; justify-content: center; width: 12px; flex-shrink: 0; }
 .fs-badge { flex-shrink: 0; }
 .fs-annotation { opacity: 0.65; overflow: hidden; text-overflow: ellipsis; }
@@ -70,4 +143,5 @@ body { margin: 0; font-family: var(--fs-font-family); font-size: var(--fs-font-s
 .fs-panel-path { margin: 0 0 4px; font-size: 14px; word-break: break-all; }
 .fs-panel-origin { margin: 0 0 12px; opacity: 0.65; }
 .fs-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-.fs-field textarea, .fs-field input, .fs-field select { font: inherit; padding: 4px 6px; border: 1px solid var(--fs-border); border-radius: 3px; }
+/* 边框归元素级规则统一认领（见上面 input/select 那一段），这里只留形状。 */
+.fs-field textarea, .fs-field input, .fs-field select { font: inherit; padding: 4px 6px; border-radius: 3px; }

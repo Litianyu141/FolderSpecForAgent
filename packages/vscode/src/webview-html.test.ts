@@ -60,6 +60,34 @@ describe('buildWebviewHtml', () => {
     expect(html).toContain('--fs-line-number: var(--vscode-editorLineNumber-foreground')
   })
 
+  it('表单控件与选中态前景也映射到 VSCode 主题变量', () => {
+    const html = build()
+    // 选中底色必须有配套前景，否则前景来自 workbench 的 foreground，浅色主题下是
+    // 深灰字压实心蓝 #0060C0（见 styles.css 里 --fs-selected-fg 那段）。
+    expect(html).toContain('--fs-selected-fg: var(--vscode-list-activeSelectionForeground')
+    expect(html).toContain('--fs-input-bg: var(--vscode-input-background')
+    expect(html).toContain('--fs-input-fg: var(--vscode-input-foreground')
+    expect(html).toContain('--fs-input-placeholder: var(--vscode-input-placeholderForeground')
+    expect(html).toContain('--fs-dropdown-bg: var(--vscode-dropdown-background')
+    expect(html).toContain('--fs-dropdown-fg: var(--vscode-dropdown-foreground')
+    // 顶栏那排是次要动作，必须是 button.secondary* 而不是主按钮色 button.background
+    expect(html).toContain('--fs-button-bg: var(--vscode-button-secondaryBackground')
+    expect(html).toContain('--fs-button-fg: var(--vscode-button-secondaryForeground')
+    expect(html).toContain('--fs-focus-border: var(--vscode-focusBorder')
+  })
+
+  it('三个控件边框的兜底必须先退到 panel.border，不能直接落到 CLI 的浅灰硬编码', () => {
+    // input.border / dropdown.border / button.border 在 vscode 的 registerColor() 里
+    // 默认值都是 contrastBorder（只有高对比主题才有值），普通深色主题下这三个 CSS
+    // 变量根本不存在。少了中间这一级，深色主题里每个控件都会被描上一圈 #d4d4d4 浅边。
+    const html = build()
+    for (const name of ['--fs-input-border', '--fs-dropdown-border', '--fs-button-border']) {
+      const line = html.split('\n').find(l => l.includes(`${name}:`))
+      expect(line, `${name} 应该出现在 THEME_BRIDGE 里`).toBeTruthy()
+      expect(line).toContain('var(--vscode-panel-border,')
+    }
+  })
+
   it('语法高亮 token 颜色映射到 VSCode 的语义色（symbolIcon.*/debugTokenExpression.*/descriptionForeground/charts.*）', () => {
     // 每条都在 vscode 源码里核实过确实存在、会被注入进 webview，见 theme-report.md。
     // keyword/property/operator/namespace/constant 五个特意不用 symbolIcon.* 对应色——

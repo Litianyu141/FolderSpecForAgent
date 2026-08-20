@@ -36,6 +36,34 @@ const THEME_BRIDGE = `
   --fs-group-dot: var(--vscode-charts-purple, #b180d7);
   --fs-line-number: var(--vscode-editorLineNumber-foreground, #9a9a9a);
 
+  /* 选中底色配套的前景色。上面的 --fs-selected-bg 指向 list.activeSelectionBackground，
+   * 而 VSCode 为这个底色注册的**配套**前景就是 list.activeSelectionForeground（两个
+   * 主题默认都是 #FFFFFF）。缺了它，选中行与两个分段控件的当前态会拿 --fs-fg
+   * （= workbench 的 foreground）去压这块底色——浅色主题下是深灰字压实心蓝 #0060C0。 */
+  --fs-selected-fg: var(--vscode-list-activeSelectionForeground, #1f1f1f);
+
+  /* 表单控件。VSCode 把输入框、下拉框、按钮注册成三组彼此独立的颜色，不能混用：
+   * 顶栏与面板里的按钮全是**次要动作**（载入/新建/撤销/重做/保存），对应
+   * button.secondary*，不是那个高饱和的主按钮色 button.background。
+   *
+   * 三个 *-border 多退一级到 panel.border 而不是直接落到 CLI 的浅灰硬编码：
+   * input.border / dropdown.border / button.border 在 vscode 的 registerColor() 里
+   * 默认值都是 contrastBorder（只有高对比主题才有值），普通深/浅色主题下这三个 CSS
+   * 变量根本不存在，直接落 #d4d4d4 会给每个深色控件描一圈浅色边。panel.border 一定
+   * 有定义，且正是 --fs-border 用的那一个，退到它等于"跟界面其它边框同色"。 */
+  --fs-input-bg: var(--vscode-input-background, #ffffff);
+  --fs-input-fg: var(--vscode-input-foreground, #1f1f1f);
+  --fs-input-border: var(--vscode-input-border, var(--vscode-panel-border, #d4d4d4));
+  --fs-input-placeholder: var(--vscode-input-placeholderForeground, #767676);
+  --fs-dropdown-bg: var(--vscode-dropdown-background, #ffffff);
+  --fs-dropdown-fg: var(--vscode-dropdown-foreground, #1f1f1f);
+  --fs-dropdown-border: var(--vscode-dropdown-border, var(--vscode-panel-border, #d4d4d4));
+  --fs-button-bg: var(--vscode-button-secondaryBackground, #e8e8e8);
+  --fs-button-fg: var(--vscode-button-secondaryForeground, #1f1f1f);
+  --fs-button-hover-bg: var(--vscode-button-secondaryHoverBackground, #dcdcdc);
+  --fs-button-border: var(--vscode-button-border, var(--vscode-panel-border, #d4d4d4));
+  --fs-focus-border: var(--vscode-focusBorder, #0078d4);
+
   /* Prism 语法高亮 token → VSCode 语义色。VSCode 不把完整的 TextMate 语法着色
    * 暴露成 CSS 变量，只有这批语义化的变量能用来近似。但名字对不代表值真的独立于
    * 正文色——用 WebFetch 逐条查过 vscode 源码的 registerColor() 默认值（见
