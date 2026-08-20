@@ -486,10 +486,21 @@ describe('removeNode 红线：子树里有用户内容时拒绝级联删除', ()
     expect(find(s.nodes, 'src/cases/foo')?.role).toBe('fixture')
   })
 
-  it('只有 template/severity（没有 annotation/role）的子孙同样能拦下', () => {
+  // 这两条原本是合写的一条，用例名写着『只有 template/severity』，用例体却只设了
+  // severity——把 hasContent 里的 template 判据整条删掉照样全绿（终审做过单点变异
+  // 实证）。四个内容字段每一个都得有自己那一条，声称覆盖而没真的覆盖是本项目记录
+  // 在案的老毛病，拆开写是为了让"哪一格空着"一眼可见。
+  it('只有 template（没有 annotation/role/severity）的子孙同样能拦下', () => {
     let s = emptySpec()
     ;({ spec: s } = createNode(s, '', 'src', true))
-    s = setAnnotation(s, 'src/cases', false, { severity: 'warning' })
+    s = setAnnotation(s, 'src/cases', false, { template: 'case-dir' })
+    // 先证明这个夹具真的只有 template 这一个内容字段——否则拦下它的可能是别的判据，
+    // 这条用例对 template 就没有区分力。
+    const child = find(s.nodes, 'src/cases')
+    expect(child?.template).toBe('case-dir')
+    expect(child?.annotation).toBeUndefined()
+    expect(child?.role).toBeUndefined()
+    expect(child?.severity).toBeUndefined()
 
     expect(() => removeNode(s, 'src')).toThrow()
   })
