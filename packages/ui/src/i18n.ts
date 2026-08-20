@@ -122,6 +122,11 @@ export const zh = {
   'contextMenu.newFile': '新建文件（仅契约）',
   /** {parent} 是路径或"工作区根"，数据/另一条字典项，不再翻译 */
   'contextMenu.newTarget': '将建在「{parent}」下',
+  /** 位置在「新建…」与「取消声明」之间。同样带「仅契约」：它一个字都不会改磁盘上的
+   *  文件名，真正改名的是随后读契约的 Agent。 */
+  'contextMenu.rename': '重命名（仅契约）',
+  /** {path} 是被改名节点的路径，数据，不翻译 */
+  'contextMenu.renameTarget': '只改契约里「{path}」的名字，不动磁盘上的文件',
   'contextMenu.removeNode': '取消声明',
   /** 不叫「删除」：它不删磁盘上任何东西，对磁盘上真实存在的节点，取消声明之后那一行
    *  依旧在树上，只是不再带任何标注 */
@@ -137,6 +142,13 @@ export const zh = {
   'newNode.namePlaceholder': '例如 cases',
   'newNode.create': '创建',
   'newNode.cancel': '取消',
+
+  // ---- 重命名：与新建共用同一个输入框，只有这几条文案分叉 ----
+  /** {path} 是被改名节点的完整路径，数据，不翻译 */
+  'rename.title': '重命名「{path}」（仅契约）',
+  'rename.hint': '只改契约里声明的名字，不会重命名磁盘上的任何文件或目录——真正去改名的是随后读契约的 Agent。',
+  'rename.nameLabel': '新名称',
+  'rename.submit': '重命名',
 } as const
 
 export type TranslationKey = keyof typeof zh
@@ -230,6 +242,8 @@ export const en: Record<TranslationKey, string> = {
   'contextMenu.newDir': 'New directory (contract only)',
   'contextMenu.newFile': 'New file (contract only)',
   'contextMenu.newTarget': 'Will be declared under "{parent}"',
+  'contextMenu.rename': 'Rename (contract only)',
+  'contextMenu.renameTarget': 'Only renames "{path}" in the contract; nothing on disk is touched',
   'contextMenu.removeNode': 'Remove declaration',
   'contextMenu.removeDisabledNotDeclared':
     'This node has no declaration in the contract yet — there is nothing to remove',
@@ -244,6 +258,12 @@ export const en: Record<TranslationKey, string> = {
   'newNode.namePlaceholder': 'e.g. cases',
   'newNode.create': 'Create',
   'newNode.cancel': 'Cancel',
+
+  'rename.title': 'Rename "{path}" (contract only)',
+  'rename.hint':
+    'This only changes the name declared in the contract — no file or directory on disk is renamed. The agent that reads the contract is what actually renames it.',
+  'rename.nameLabel': 'New name',
+  'rename.submit': 'Rename',
 }
 
 const dictionaries: Record<Lang, Record<TranslationKey, string>> = { zh, en }

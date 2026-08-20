@@ -79,6 +79,40 @@ const createdPath = (parentPath: string, name: string) =>
   parentPath === '' ? name : `${parentPath}/${name}`
 
 /**
+ * 把一次改名的结果做成 core 侧 merge 真实会给出的样子：旧路径那一行**整个消失**
+ * （core 把它记进 hidden，见 Session.rename），新名字以 spec-only（虚线）出现，
+ * 子树连同它们的路径跟着走。
+ *
+ * 桩必须真的这么改，不能原样返回 FIXTURE：不改的话"提交后重新选中改过名的那个节点"
+ * 那条用例里 `flatten(tree).get(r.path)` 查不到，AnnotationPanel 退回空态，断言就
+ * 变成了断言一个不存在的路径——正是本项目记录里那类"检查了周边、没检查目标"。
+ *
+ * 只处理顶层节点，本文件的改名用例只用到这一种。
+ */
+const withRenamed = (path: string, newName: string): ViewNode[] => {
+  const target = FIXTURE.find(n => n.path === path)
+  if (!target) return FIXTURE
+  const renamed: ViewNode = {
+    ...target,
+    name: newName,
+    path: newName,
+    origin: 'spec-only',
+    ...(target.children === undefined
+      ? {}
+      : { children: target.children.map(c => ({ ...c, path: `${newName}/${c.name}` })) }),
+  }
+  return [...FIXTURE.filter(n => n.path !== path), renamed]
+}
+
+/** 与 core 的 renameNode 同一条拼接规则：改名不换父级，根下的节点不带前导斜杠。
+ *  桩若在根下拼出 '/lib'，"UI 用的是 core 给的 r.path、不是自己拼的"这条就测不出来了
+ *  （api.ts 的 spec/rename 正是为这件事返回 path 字段）。 */
+const renamedPath = (path: string, newName: string) => {
+  const i = path.lastIndexOf('/')
+  return i === -1 ? newName : `${path.slice(0, i)}/${newName}`
+}
+
+/**
  * 让一次响应晚 ms 毫秒才落地。真实宿主的往返必然晚于本次点击引发的渲染，"在途那一帧"
  * 里的缺陷只长在那个窗口里——零延迟的桩测不出来（与 groupBridge 上那段是同一条判据）。
  * 类型上骗过 FakeBridge 的同步 Handlers 签名：request() 本身是 async，返回 Promise
@@ -115,6 +149,11 @@ const bridgeWith = (over: Partial<Record<string, unknown>> = {}) => new FakeBrid
     path: createdPath(parentPath, name),
   }),
   'spec/removeNode': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false }),
+  'spec/rename': ({ path, newName }: { path: string; newName: string }) => ({
+    tree: tree(withRenamed(path, newName)),
+    dirty: true, groups: [G1], canUndo: true, canRedo: false,
+    path: renamedPath(path, newName),
+  }),
   // 切语言确实会置脏（core 会改写 lang 字段、可能连带换掉标题/导言），桩如实反映
   'spec/setLang': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false }),
 } as never)
@@ -2424,6 +2463,256 @@ describe('右键菜单：新建声明（仅契约）', () => {
   })
 })
 
+const renameInput = () => screen.getByLabelText('新名称') as HTMLInputElement
+const renameBtn = () => screen.getByRole('button', { name: '重命名' }) as HTMLButtonElement
+
+/**
+ * 重命名走的是与「新建声明」同一个输入框（NewNodeDialog 的 kind: 'rename' 分支），
+ * 所以 Esc / 空名字 / 在途禁用这三条在这里再钉一遍不是重复——它们要防的是"分派到
+ * 改名这条分支之后某一件悄悄走样"，而不是那个组件本身。
+ */
+describe('右键菜单：重命名（仅契约）', () => {
+  it('菜单项排在「新建…」与「取消声明」之间；契约里没声明过的节点上照样可点', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/') // SRC 在 FIXTURE 里是 actual-only
+    expect(Array.from(container.querySelectorAll('[role="menuitem"]')).map(b => b.textContent))
+      .toEqual(['新建目录（仅契约）', '新建文件（仅契约）', '重命名（仅契约）', '取消声明'])
+    // 同一个节点上：改名可点、取消声明是灰的——两条菜单项用的**不是**同一条判据。
+    // 少了这半条对照，"改名故意不看 declared"这件事就没有任何用例能侦测到。
+    expect(menuItem('重命名（仅契约）').disabled).toBe(false)
+    expect(menuItem('取消声明').disabled).toBe(true)
+  })
+
+  it('输入框预填当前名字，提交后带着新名字发出 spec/rename', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    // 标题说的是"哪个节点"，不是"建在哪儿"——这是改名与新建唯一要分开的一件事
+    expect(screen.getByText('重命名「src」（仅契约）')).toBeTruthy()
+    // 「不会重命名磁盘上的任何文件」这句是本功能最容易被误解的地方，必须在眼前
+    expect(screen.getByText(
+      '只改契约里声明的名字，不会重命名磁盘上的任何文件或目录——真正去改名的是随后读契约的 Agent。',
+    )).toBeTruthy()
+
+    expect(renameInput().value).toBe('src') // 预填当前名字
+    fireEvent.change(renameInput(), { target: { value: 'lib' } })
+    fireEvent.click(renameBtn())
+
+    await waitFor(() => expect(bridge.lastCall('spec/rename')).toEqual({ path: 'src', newName: 'lib' }))
+  })
+
+  it('提交后用 core 返回的 path 重新选中改过名的那个节点，右栏立刻能给它写注释', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    fireEvent.change(renameInput(), { target: { value: 'lib' } })
+    fireEvent.click(renameBtn())
+
+    // 'lib' 而不是 '/lib'：根下的节点两边拼接规则正好分叉，这条承的是"UI 用的是
+    // core 回来的 r.path、不是自己拼的"（api.ts 的 spec/rename）
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('lib'))
+    expect((screen.getByLabelText('注释') as HTMLTextAreaElement).disabled).toBe(false)
+    // 对话框收掉、脏标记亮起
+    expect(screen.queryByLabelText('新名称')).toBeNull()
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('文件节点也能改名，目标是它自己而不是它的父目录', async () => {
+    // 「新建」在文件上会落到父目录（ContextMenuTarget.parentPath），改名不能跟着走：
+    // 用文件来测正是为了让这条区别真的承重。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'README.md')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    expect(renameInput().value).toBe('README.md')
+    fireEvent.change(renameInput(), { target: { value: 'READ.md' } })
+    fireEvent.click(renameBtn())
+
+    await waitFor(() => expect(bridge.lastCall('spec/rename'))
+      .toEqual({ path: 'README.md', newName: 'READ.md' }))
+  })
+
+  it('Esc 取消：对话框消失，一个写请求都没发出去', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    fireEvent.change(renameInput(), { target: { value: 'lib' } })
+    fireEvent.keyDown(renameInput(), { key: 'Escape' })
+
+    expect(screen.queryByLabelText('新名称')).toBeNull()
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/rename')).toBe(false)
+  })
+
+  it('名字全是空白时不提交：按钮不可点，回车也发不出请求', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    fireEvent.change(renameInput(), { target: { value: '   ' } })
+
+    expect(renameBtn().disabled).toBe(true)
+    fireEvent.keyDown(renameInput(), { key: 'Enter' })
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/rename')).toBe(false)
+    expect(screen.getByLabelText('新名称')).toBeTruthy() // 对话框留着，补个名字就能继续
+  })
+
+  it('提交在途时按钮禁用，连按两次回车也只发得出一笔', async () => {
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/rename', ((p: { path: string; newName: string }) => delayed({
+      tree: tree(withRenamed(p.path, p.newName)),
+      dirty: true, groups: [G1], canUndo: true, canRedo: false,
+      path: renamedPath(p.path, p.newName),
+    })) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    fireEvent.change(renameInput(), { target: { value: 'lib' } })
+    fireEvent.keyDown(renameInput(), { key: 'Enter' })
+
+    expect(renameBtn().disabled).toBe(true) // 在途那一帧：按钮已经灰了
+    fireEvent.keyDown(renameInput(), { key: 'Enter' })
+
+    await waitFor(() => expect(screen.queryByLabelText('新名称')).toBeNull())
+    expect(bridge.calls.filter(c => c.method === 'spec/rename').length).toBe(1)
+  })
+
+  it('切进「原始结构」只读视图：开着的改名输入框被收掉，菜单项也禁用', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    expect(screen.getByLabelText('新名称')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+    await waitFor(() => expect(screen.queryByLabelText('新名称')).toBeNull())
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('重命名（仅契约）').disabled).toBe(true)
+  })
+
+  it('输入框开着时按撤销：草稿留在屏幕上，目标也不跟着树漂移', async () => {
+    // 目标在菜单被点中那一刻就冻住了（ContextMenuTarget）。撤销会换掉整棵树，
+    // 若草稿的目标跟着重算，用户按下「重命名」时改的会是另一个节点。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    // 先落一笔编辑，撤销按钮才点得动
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.click(createBtn())
+    await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false))
+
+    rightClickRow(container, 'README.md')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    fireEvent.click(screen.getByText('撤销'))
+    await flushChain()
+
+    expect(renameInput().value).toBe('README.md')
+    fireEvent.change(renameInput(), { target: { value: 'READ.md' } })
+    fireEvent.click(renameBtn())
+    await waitFor(() => expect(bridge.lastCall('spec/rename'))
+      .toEqual({ path: 'README.md', newName: 'READ.md' }))
+  })
+
+  it('提交在途时用户点了别的节点：落地后不把右栏拽到改过名的那个节点上', async () => {
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/rename', ((p: { path: string; newName: string }) => delayed({
+      tree: tree(withRenamed(p.path, p.newName)),
+      dirty: true, groups: [G1], canUndo: true, canRedo: false,
+      path: renamedPath(p.path, p.newName),
+    }, 40)) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    fireEvent.change(renameInput(), { target: { value: 'lib' } })
+    fireEvent.click(renameBtn())
+
+    // 用户亲手改了选中（这一下让 selectionEpochRef 自增）
+    fireEvent.click(rowByName(container, 'README.md'))
+    await act(async () => { await new Promise(r => setTimeout(r, 80)) })
+
+    // 右栏必须停在用户自己点的那个节点上；被拽走会连带清掉他正在写的注释
+    expect(container.querySelector('.fs-panel-path')?.textContent).toBe('README.md')
+    // 而这笔编辑本身照常落地：树、脏标记、撤销可用性都得更新
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false)
+    expect(rowsOf(container).some(r => r.querySelector('.fs-name')?.textContent === 'lib/')).toBe(true)
+  })
+
+  it('在别的行上再按一次右键：上一个改名草稿被收掉，屏幕上只留一个', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    expect(renameInput().value).toBe('src')
+
+    rightClickRow(container, 'docs/')
+    expect(screen.queryByLabelText('新名称')).toBeNull()
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    expect(renameInput().value).toBe('docs')
+  })
+})
+
+describe('重命名：core 的报错必须原样显示在界面上', () => {
+  const expectBannerAndKeepDraft = async (msg: string) => {
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/rename', (() => { throw new Error(msg) }) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    fireEvent.change(renameInput(), { target: { value: 'docs' } })
+    fireEvent.click(renameBtn())
+
+    await waitFor(() => expect(screen.getByText(msg)).toBeTruthy())
+    // 输入框与已经打好的名字都留着：这几条全是用户能就地补救的
+    expect(renameInput().value).toBe('docs')
+  }
+
+  it('撞上磁盘上的同名条目：那段话一字不改地出现在横幅上', async () => {
+    await expectBannerAndKeepDraft(
+      '`docs` 在磁盘上已经存在：改成这个名字会让契约把两个不同的东西说成同一个，'
+      + '两边的注释也会被揉到一起。请换一个名字（本工具不会去动磁盘上的文件名）',
+    )
+  })
+
+  it('撞上契约里的同名声明：同样原样显示', async () => {
+    await expectBannerAndKeepDraft('`src` 下已经有同名节点 `docs`：同层同名兄弟是重复声明，解析器会拒绝，请换个名字')
+  })
+
+  it('名字非法（core 在输入边界拦下的那几条）：原样显示，UI 不复述一遍规则', async () => {
+    await expectBannerAndKeepDraft('名字 "a/b" 不能包含 "/"：这里只接受单个路径段，不是路径')
+  })
+})
+
 describe('右键菜单：取消声明', () => {
   it('契约里没有声明过的节点（origin: actual-only）上不可点，点了也不发请求', async () => {
     // README.md 在 FIXTURE 里是 actual-only —— 磁盘上有、契约里没有
@@ -2634,6 +2923,32 @@ describe('落地回调的「还是不是同一次载入」闸门', () => {
     expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
     expect(rowsOf(container).some(r => r.querySelector('.fs-name')?.textContent === 'cases/')).toBe(false)
+  })
+
+  it('在途的 spec/rename 在换工作区之后才落地：同样不回贴', async () => {
+    const bridge = twoWorkspaceBridge()
+    bridge.setHandler('spec/rename', ((p: { path: string; newName: string }) => delayed({
+      tree: tree(withRenamed(p.path, p.newName)),
+      dirty: true, groups: [G1], canUndo: true, canRedo: false,
+      path: renamedPath(p.path, p.newName),
+    }, 40)) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('重命名（仅契约）'))
+    fireEvent.change(renameInput(), { target: { value: 'lib' } })
+    fireEvent.click(renameBtn())
+    await waitFor(() => expect(bridge.lastCall('spec/rename')).toEqual({ path: 'src', newName: 'lib' }))
+
+    await switchWorkspace()
+    await waitFor(() => expect(rowByName(container, 'OTHER.md')).toBeTruthy())
+    await act(async () => { await new Promise(r => setTimeout(r, 80)) })
+
+    // 新工作区刚载入：撤销栈空、没有未保存改动。改过名的那一行更不该出现在这儿。
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+    expect(rowsOf(container).some(r => r.querySelector('.fs-name')?.textContent === 'lib/')).toBe(false)
   })
 
   it('这道闸门必须与「用户改选」那个序号分开：在途的注释落地前点了别的节点，编辑照样落地', async () => {

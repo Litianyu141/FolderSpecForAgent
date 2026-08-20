@@ -37,6 +37,13 @@ function parentOf(path: string): string {
   return i === -1 ? '' : path.slice(0, i)
 }
 
+/** 一条路径的最后一段。重命名的输入框拿它当预填值——同一条路径的两半（parentOf /
+ *  basenameOf）用同一个分割点，两处各写一遍迟早在根这一档上分叉。 */
+function basenameOf(path: string): string {
+  const i = path.lastIndexOf('/')
+  return i === -1 ? path : path.slice(i + 1)
+}
+
 /**
  * 正在雕琢的这一组：成员集、锚点，以及它绑定到哪个既有分组（null = 还没落地成分组）。
  *
@@ -766,6 +773,8 @@ export function App({ bridge, initialRoot }: AppProps) {
       parentPath: node.isDir ? path : parentOf(path),
       // origin 是唯一能区分"契约里有没有它"的字段，见 ContextMenuTarget.declared。
       declared: node.origin !== 'actual-only',
+      // 被点中的那一个自己是不是目录——与 parentPath 是两件事，见 ContextMenuTarget.isDir
+      isDir: node.isDir,
       x,
       y,
     })
@@ -777,13 +786,13 @@ export function App({ bridge, initialRoot }: AppProps) {
     setNewNode(null)
     // path: null —— 没有节点被点中，所以菜单不渲染「取消声明」（根节点本来也移不掉，
     // core 的 removeNode 对空路径直接抛"不能移除根节点"）。
-    setMenu({ path: null, parentPath: '', declared: false, x: e.clientX, y: e.clientY })
+    setMenu({ path: null, parentPath: '', declared: false, isDir: true, x: e.clientX, y: e.clientY })
   }, [])
 
   /** 顶栏「新建」按钮：与空白区域右键完全同一条路径，只是位置换到按钮下方。 */
   const handleToolbarNewNode = useCallback((x: number, y: number) => {
     setNewNode(null)
-    setMenu({ path: null, parentPath: '', declared: false, x, y })
+    setMenu({ path: null, parentPath: '', declared: false, isDir: true, x, y })
   }, [])
 
   /** 菜单里点了「新建目录/新建文件」：换成输入框，位置沿用菜单原来的位置。 */
@@ -791,7 +800,41 @@ export function App({ bridge, initialRoot }: AppProps) {
     if (menu === null) return
     // parentPath 从菜单那一份**原样搬过来**，不重新按当前选中集算——冻结这一步是
     // 本轮时序安全的地基，见 ContextMenuTarget 顶部的注释。
-    setNewNode({ id: ++newNodeIdRef.current, parentPath: menu.parentPath, isDir, x: menu.x, y: menu.y })
+    setNewNode({
+      id: ++newNodeIdRef.current,
+      kind: 'create',
+      parentPath: menu.parentPath,
+      renamePath: null,
+      isDir,
+      initialName: '',
+      x: menu.x,
+      y: menu.y,
+    })
+    setCreating(false)
+    creatingRef.current = false
+    setMenu(null)
+  }, [menu])
+
+  /**
+   * 菜单里点了「重命名」：复用同一个输入框，预填当前名字。
+   *
+   * 目标同样从菜单那一份原样搬过来（path / isDir），不重新按选中集算——右键之后
+   * 用户完全可以再去点别的节点，跟着选中集跑就会把名字改到一个他从没打算过的节点上，
+   * 而契约里那条改名声明是给 Agent 看的。冻结的完整推导见 ContextMenuTarget 顶部。
+   */
+  const openRenameDraft = useCallback((path: string) => {
+    if (menu === null) return
+    setNewNode({
+      id: ++newNodeIdRef.current,
+      kind: 'rename',
+      // 改名不换父级，这里只用于显示；真正的目标是下面的 renamePath
+      parentPath: parentOf(path),
+      renamePath: path,
+      isDir: menu.isDir,
+      initialName: basenameOf(path),
+      x: menu.x,
+      y: menu.y,
+    })
     setCreating(false)
     creatingRef.current = false
     setMenu(null)
@@ -856,6 +899,67 @@ export function App({ bridge, initialRoot }: AppProps) {
     } finally {
       // finally 不设闸门：这两句复位的是"这一笔 createNode 还在不在途"这个纯本地的
       // 按钮态，它与工作区换没换没有关系；跳过它会让新建按钮永远卡在禁用上。
+      creatingRef.current = false
+      setCreating(false)
+    }
+  }, [bridge, newNode, readOnly, setPending])
+
+  /**
+   * 提交一次重命名。**不改磁盘上的任何文件名**——改的是契约里声明的那个名字，
+   * 真正去改名的是随后读契约的 Agent（api.ts 的 spec/rename）。
+   *
+   * 时序上与 submitNewNode 逐条同构，两道 epoch 闸门的含义也完全相同（上面那道问
+   * "工作区还是不是同一次载入"，下面那道问"用户有没有改选"），推导见 submitNewNode
+   * 与两个 ref 的字段注释，这里不再复述一遍。
+   *
+   * 失败时**输入框留着、名字留着**：会失败的几条路（名字非法、同层已有同名、磁盘上
+   * 已有同名、落在懒加载边界之下）全都是用户能就地补救的——改一个字母、换个名字，
+   * 或者照着报错原文先去展开那一层。关掉等于让他重打一遍。
+   */
+  const submitRename = useCallback(async (rawName: string) => {
+    const draft = newNode
+    if (draft === null || draft.kind !== 'rename' || draft.renamePath === null) return
+    const name = rawName.trim()
+    if (name === '') return
+    // 只读闸门。与 submitNewNode 里那一句同源：readOnly 一为真，上面那个 useEffect
+    // 就把 newNode 收掉了，今天这一句够不着；它是同一条规则的最后一道，别按"没测到
+    // 就删"处理。
+    if (readOnly) return
+    // 同步的那道防重闸必须是 ref 不是 state：连按两次回车时，第二次调用闭包里的
+    // `creating` 完全可能还是上一帧的 false。重复提交不会写坏契约（第二笔的 path 是
+    // 旧名字，core 会以"契约里和磁盘上都没有"拒绝），但那条报错对用户纯属噪声。
+    if (creatingRef.current) return
+    creatingRef.current = true
+    setCreating(true)
+    const epoch = selectionEpochRef.current
+    const loadEpoch = loadEpochRef.current
+    try {
+      const r = await bridge.request('spec/rename', { path: draft.renamePath, newName: name })
+      if (loadEpoch !== loadEpochRef.current) return // 见 loadEpochRef
+      setTree(r.tree)
+      setGroups(r.groups)
+      setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
+      setNewNode(null)
+      // 重新选中改过名的那个节点。**用 r.path，不自己拼 parentPath + 新名字**：根下
+      // 的节点两边拼接规则正好分叉（api.ts 的 spec/rename 就是为此返回 path 的）。
+      // 这一拨同时也收拾了幽灵——旧路径在落地后的树上已经不存在了（core 把它记进
+      // hidden），选中集若还留着它，右栏会退回空态、而分组草稿会把一条树上没有的
+      // 路径写进 members。
+      // epoch 相等才拨：期间用户若已经点了别的节点，这一拨会把右栏拽走、连带清掉他
+      // 正在写的注释，见 selectionEpochRef。
+      if (epoch === selectionEpochRef.current) {
+        setPending(null)
+        setSelection({ selected: [r.path], anchor: r.path })
+      }
+    } catch (e) {
+      // core 在输入边界拦下的那几条（名字非法、契约/磁盘撞名、懒加载边界、被拖走的
+      // 旧位置）报错原文都写明了原因和出路，**原样显示**，别吞、别改写。
+      if (loadEpoch !== loadEpochRef.current) return // 见 loadEpochRef
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      // 与 submitNewNode 同理：复位的是纯本地的按钮态，与工作区换没换无关。
       creatingRef.current = false
       setCreating(false)
     }
@@ -1085,6 +1189,7 @@ export function App({ bridge, initialRoot }: AppProps) {
             target={menu}
             disabled={readOnly}
             onNew={openNewNodeDraft}
+            onRename={openRenameDraft}
             onRemove={path => void handleRemoveNode(path)}
             onClose={() => setMenu(null)}
           />
@@ -1098,7 +1203,9 @@ export function App({ bridge, initialRoot }: AppProps) {
             draft={newNode}
             disabled={readOnly}
             submitting={creating}
-            onSubmit={name => void submitNewNode(name)}
+            // 一个输入框两条去向，按草稿自己的 kind 分派——目标在菜单被点中那一刻
+            // 就连同 kind 一起冻住了，这里不重新判断"用户现在想干什么"。
+            onSubmit={name => void (newNode.kind === 'rename' ? submitRename(name) : submitNewNode(name))}
             onCancel={() => setNewNode(null)}
           />
         )}

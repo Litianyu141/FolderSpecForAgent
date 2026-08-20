@@ -2,9 +2,13 @@ import { useState } from 'react'
 import { useT } from './i18n.js'
 
 /**
- * 一次「新建声明」的草稿。父目录与类型在菜单项被点中的那一刻定死（见
- * ContextMenuTarget 上的注释），此后无论用户在树上怎么改选中、按了几次撤销，
- * 提交出去的都还是这一份。
+ * 一次「给节点定名字」的草稿。**新建声明与重命名共用这一个输入框**，只在标题、提示语、
+ * 输入框标签、提交按钮文案与提交去向上分叉——用户看到的本来就是同一件事（给一个节点
+ * 起名字），而 Esc 取消、空名字不提交、提交在途禁用、core 报错原样上横幅这四件事已经
+ * 在这里踩齐了；另造一个组件只会在其中某一件上悄悄走样。
+ *
+ * 父目录 / 被改名的那个节点与类型在菜单项被点中的那一刻定死（见 ContextMenuTarget
+ * 上的注释），此后无论用户在树上怎么改选中、按了几次撤销，提交出去的都还是这一份。
  */
 export interface NewNodeDraft {
   /**
@@ -14,8 +18,18 @@ export interface NewNodeDraft {
    * （建完一个 cases 紧接着再建一个 fixtures），那两次的 key 会相同。
    */
   id: number
+  /** 'create' = 在 parentPath 下新建一条声明；'rename' = 给 renamePath 那个节点改名 */
+  kind: 'create' | 'rename'
+  /** kind 为 'create' 时是新节点挂进去的父目录；'rename' 下是被改名节点的父目录，只用于显示 */
   parentPath: string
+  /** kind 为 'rename' 时被改名节点的完整路径；'create' 下恒为 null */
+  renamePath: string | null
   isDir: boolean
+  /**
+   * 输入框初值。新建是空串；重命名**预填当前名字**——改名多半只动一两个字母，
+   * 逼用户从空框重打一遍既是白费力气，也更容易打错另一个字。
+   */
+  initialName: string
   /** 视口坐标；对话框接着菜单原来的位置显示，视线不用跳 */
   x: number
   y: number
@@ -32,15 +46,25 @@ export interface NewNodeDialogProps {
 }
 
 export function NewNodeDialog({ draft, disabled, submitting, onSubmit, onCancel }: NewNodeDialogProps) {
-  const [name, setName] = useState('')
+  const [name, setName] = useState(draft.initialName)
   const t = useT()
 
+  const renaming = draft.kind === 'rename'
   const parentLabel = draft.parentPath === '' ? t('common.workspaceRoot') : draft.parentPath
+  // 改名说的是"哪个节点"，新建说的是"建在哪儿"——两者要摆在用户眼前的不是同一件事。
+  const title = renaming
+    ? t('rename.title', { path: draft.renamePath ?? '' })
+    : draft.isDir
+      ? t('newNode.titleDir', { parent: parentLabel })
+      : t('newNode.titleFile', { parent: parentLabel })
   // 空名字/全空白不提交。core 的 assertValidNodeName 确实会抛"名字不能为空"，但那是一次
   // 注定失败的宿主往返，用户该看到的是"创建按钮还不能点"，不是一条本可以不出现的报错。
   // 其余非法名（反引号、"." / ".."、含 "/"）**不在这里预判**：那几条是 core 在输入边界
   // 的裁定（"悄悄改掉一个标识符比报错更糟"），UI 复述一遍就等于把同一条规则实现两遍，
   // 两处一旦分叉界面就在说谎。让它发出去、把 core 的原话显示给用户。
+  //
+  // 改名时"新名字与原名逐字相同"同样**不**在这里挡：core 对它是真正的空操作（不置脏、
+  // 不吃撤销栈，见 Session.rename），UI 再判一遍还是同一条规则的第二份实现。
   const submittable = name.trim() !== '' && !disabled && !submitting
 
   const submit = () => { if (submittable) onSubmit(name) }
@@ -49,7 +73,7 @@ export function NewNodeDialog({ draft, disabled, submitting, onSubmit, onCancel 
     <div
       className="fs-new-node"
       role="dialog"
-      aria-label={draft.isDir ? t('newNode.titleDir', { parent: parentLabel }) : t('newNode.titleFile', { parent: parentLabel })}
+      aria-label={title}
       style={{ left: draft.x, top: draft.y }}
       // Esc 取消、Enter 提交都挂在容器上：输入框自动获得焦点，事件从它冒上来；
       // 焦点若已经挪到「创建」/「取消」按钮上，Esc 一样还能用。
@@ -61,27 +85,29 @@ export function NewNodeDialog({ draft, disabled, submitting, onSubmit, onCancel 
       {/* 目标必须写在这里，而不是只写在菜单上：右键点在**文件**节点上时新建落到它的
           父目录，两者不是同一个东西。这一行是用户按下「创建」之前最后一次、也是唯一
           一次看到真实写入目标的机会。 */}
-      <div className="fs-new-node-title">
-        {draft.isDir ? t('newNode.titleDir', { parent: parentLabel }) : t('newNode.titleFile', { parent: parentLabel })}
-      </div>
+      <div className="fs-new-node-title">{title}</div>
       {/* 「仅契约」这三个字在菜单项里已经出现过一次，这里再用一整句展开说明。
-          它防的是本工具最容易被误解的一件事：用户以为点完磁盘上会冒出一个目录。
-          真正去建它的是随后读契约的 Agent（CLAUDE.md 铁律 1）。 */}
-      <div className="fs-new-node-hint">{t('newNode.hint')}</div>
+          它防的是本工具最容易被误解的一件事：用户以为点完磁盘上会冒出一个目录、
+          或者磁盘上那个目录真的被改了名。真正动手的是随后读契约的 Agent
+          （CLAUDE.md 铁律 1）。 */}
+      <div className="fs-new-node-hint">{renaming ? t('rename.hint') : t('newNode.hint')}</div>
 
       <input
-        aria-label={t('newNode.nameLabel')}
+        aria-label={renaming ? t('rename.nameLabel') : t('newNode.nameLabel')}
         type="text"
         autoFocus
         value={name}
-        placeholder={t('newNode.namePlaceholder')}
+        // 改名的框里已经预填了当前名字，占位符永远看不见，给了也是死代码
+        placeholder={renaming ? undefined : t('newNode.namePlaceholder')}
         disabled={disabled || submitting}
         onChange={e => setName(e.target.value)}
       />
 
       <div className="fs-new-node-actions">
         <button type="button" onClick={onCancel}>{t('newNode.cancel')}</button>
-        <button type="button" disabled={!submittable} onClick={submit}>{t('newNode.create')}</button>
+        <button type="button" disabled={!submittable} onClick={submit}>
+          {renaming ? t('rename.submit') : t('newNode.create')}
+        </button>
       </div>
     </div>
   )

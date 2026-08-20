@@ -35,6 +35,13 @@ export interface ContextMenuTarget {
    * path === null（空白区域/顶栏按钮）时这一项无意义，菜单也不会渲染「取消声明」。
    */
   declared: boolean
+  /**
+   * 被右键点中的那个节点自己是不是目录（path === null 时是工作区根，恒为 true）。
+   * 与 parentPath 是两件事：右键点在文件上时 parentPath 是它的父目录，而这一位说的
+   * 是被点中的那一个。「重命名」把它原样搬进草稿——菜单一关，树上的选中/展开怎么变
+   * 都不该再影响这次操作的目标（冻结的理由见本接口顶部）。
+   */
+  isDir: boolean
   /** 视口坐标（clientX/clientY）；菜单用 position: fixed 直接落在这里 */
   x: number
   y: number
@@ -42,14 +49,15 @@ export interface ContextMenuTarget {
 
 export interface ContextMenuProps {
   target: ContextMenuTarget
-  /** 只读态（契约解析失败 / 「原始结构」视图）：三条菜单项全部禁用 */
+  /** 只读态（契约解析失败 / 「原始结构」视图）：四条菜单项全部禁用 */
   disabled: boolean
   onNew(isDir: boolean): void
+  onRename(path: string): void
   onRemove(path: string): void
   onClose(): void
 }
 
-export function ContextMenu({ target, disabled, onNew, onRemove, onClose }: ContextMenuProps) {
+export function ContextMenu({ target, disabled, onNew, onRename, onRemove, onClose }: ContextMenuProps) {
   const t = useT()
 
   // Esc 关菜单。挂在 window 上而不是菜单自己的 onKeyDown：菜单打开时焦点大概率还留在
@@ -96,6 +104,23 @@ export function ContextMenu({ target, disabled, onNew, onRemove, onClose }: Cont
         {target.path !== null && (
           <>
             <div className="fs-context-menu-sep" aria-hidden="true" />
+            <button
+              type="button"
+              role="menuitem"
+              // 刻意**不看** target.declared：改名对任何节点都成立，不限于已声明过的。
+              // 给一个 actual-only 节点改名等于"我声明这东西应该叫 X"，本身就是有效
+              // 数据（与 spec/move 对未声明节点的既有行为、core 的 renameNode 是同一
+              // 条取向）。「取消声明」那条才需要 declared——那里确实没有可取消的东西。
+              disabled={disabled}
+              title={
+                disabled
+                  ? t('contextMenu.disabledReadOnly')
+                  : t('contextMenu.renameTarget', { path: target.path })
+              }
+              onClick={() => onRename(target.path as string)}
+            >
+              {t('contextMenu.rename')}
+            </button>
             <button
               type="button"
               role="menuitem"
