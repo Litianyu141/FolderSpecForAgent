@@ -15,7 +15,7 @@ file it writes nothing to disk, and it never runs `mv` / `mkdir` / `rm`. Changin
 repository is the agent's job. FolderSpec's job is to say clearly what the repository
 should look like.
 
-![How FolderSpec works: an agent scatters files, you declare the intended structure, the agent rearranges the repo](docs/media/hero.png)
+![How FolderSpec works: an agent scatters files, you declare the intended structure, the agent rearranges the repo](docs/media/folderspec-intent-flow-v2.png)
 
 ---
 
@@ -62,10 +62,6 @@ code --install-extension folderspec-vscode-0.6.0.vsix
 
 Or, from inside VSCode: `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the
 file. Reload the window (`Developer: Reload Window`) afterwards.
-
-> It is not on the VS Code Marketplace yet, so searching for it turns up nothing —
-> `.vsix` is the only route. That also means **no automatic updates**: moving to a new
-> version means downloading and installing again.
 
 ### Using the VSCode extension
 
