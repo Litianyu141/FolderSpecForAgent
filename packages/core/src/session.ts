@@ -364,6 +364,16 @@ export class Session {
    * 悄悄把用户之前"这是个文件"的声明改写成目录。
    */
   private assertCreatableParent(parentPath: string): void {
+    // hidden 记的是本次会话里被拖走节点的旧位置，merge 在 spec 视图下会把这条
+    // 路径整个跳过（不看磁盘、不看契约，见 merge.ts 对 hidden 的处理）。在这里
+    // 新建子节点，写盘会成功、raw() 确实有这条声明，但树上永远看不见——与本文件
+    // 顶部 CLAUDE.md"唯一能造成的伤害是弄丢人写的注释"是同一类失效：注释还在
+    // 文件里，用户却再也找不到、够不着。hidden 只记旧位置、不记去向（spec §6.1
+    // 拖拽绝不记录来源，这里对称地也不该反向猜测去向），能做的只有据实拒绝。
+    if (this.hidden.has(parentPath)) {
+      throw new Error(`\`${parentPath}\` 是本次会话里刚被拖走的旧位置，在这里新建的声明不会显示；请改用它现在所在的位置`)
+    }
+
     // parentPath 可能落在懒加载边界（DEFAULT_DEPTH）之下——此时磁盘扫描结果里既
     // 没有它、也没有证据证明它不存在，lookupActual 用 unscanned 把这种"还不知道"
     // 与"确实没有"区分开（下面 findActual 对两者给出同一个 null，分不出来）。

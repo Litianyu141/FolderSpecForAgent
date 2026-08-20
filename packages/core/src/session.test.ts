@@ -765,6 +765,26 @@ describe('Session.createNode 懒加载边界（旁路 2）', () => {
   })
 })
 
+// 旁路 3：assertCreatableParent 不查 hidden。move() 之后旧位置被记进 hidden、
+// merge 会在 spec 视图下把它整个跳过（无论磁盘/契约有没有内容）；在这个路径下
+// createNode，写盘会成功、raw() 里确实有这条声明，但树上永远看不见。
+// "把 lib 拖走之后再声明 lib 下面应该有什么"是相当自然的用户动作，这条不是边角情形。
+describe('Session.createNode 与 hidden（旁路 3）', () => {
+  it('parentPath 是本次会话刚拖走的旧位置时拒绝', async () => {
+    const s = new Session(root); await s.open()
+    // 先真的 move 一次，让 hidden 非空——否则"查不查 hidden"这条判断没有区分力。
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(find(s.tree(), 'src/core')).toBeNull() // 确认 hidden 真的生效了
+    expect(() => s.createNode({ parentPath: 'src/core', name: 'x.ts', isDir: false }))
+      .toThrow('拖走')
+  })
+
+  it('对照：拖走之前，同一路径下 createNode 不受影响', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.createNode({ parentPath: 'src/core', name: 'x.ts', isDir: false })).not.toThrow()
+  })
+})
+
 describe('Session.removeNode（撤销节点声明——只影响契约，不碰磁盘）', () => {
   it('移除一个叶子声明，raw() 里不再出现它的注释', async () => {
     const s = new Session(root); await s.open()
