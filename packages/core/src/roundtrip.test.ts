@@ -136,8 +136,13 @@ describe('lang 为 zh 时与既有输出格式的兼容性', () => {
     fc.assert(
       fc.property(specArb.map(s => ({ ...s, lang: 'zh' as const })), spec => {
         const text = serializeSpec(spec)
-        expect(text.split('\n')).not.toContain('lang: zh')
-        expect(text.split('\n')).not.toContain('lang: en')
+        // 之前这里分别断言 not.toContain('lang: zh') 和 not.toContain('lang: en')——
+        // 第二条是恒真式：上面 .map() 已经把 lang 强制成了 'zh'，序列化器压根不可能
+        // 走到会写 "lang: en" 的分支，这条断言测不出任何回归（评审指出的死断言）。
+        // 换成一条正则，直接断言"整份输出里没有任何一行以 lang: 开头"——不管序列化器
+        // 将来把 zh 错误地写成 "lang: zh"、"lang:zh"（漏了空格）还是别的什么值，
+        // 只要多写出这一行就会被抓到，比原来两条 toContain 都更贴近要防的回归。
+        expect(text).not.toMatch(/^lang:/m)
       }),
       { numRuns: 200 },
     )
