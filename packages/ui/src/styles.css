@@ -19,29 +19,32 @@
   --fs-line-number: #9a9a9a;
 
   /* 中间栏文件预览的 Prism 语法高亮。CLI 宿主没有 VSCode 主题可映射，这十三个是
-   * 独立于宿主的默认色；VSCode 宿主里 webview-html.ts 的 THEME_BRIDGE 会把它们
-   * 逐个指到 symbolIcon.* / debugTokenExpression.* / descriptionForeground 等语义色上
-   * （这些 id 已在 vscode 源码与官方 theme-color 文档里核实存在，见 theme-report.md）。
-   * 按语法角色分桶而非逐个 Prism 别名区分：Prism 给同一元素叠多个别名类
+   * 独立于宿主的默认色，和 webview-html.ts 的 THEME_BRIDGE 逐条对应（同一个桶两边
+   * 必须用同一个 hex——那边是 var() 的 fallback，这边是 CLI 唯一的取值）。按语法
+   * 角色分桶而非逐个 Prism 别名区分：Prism 给同一元素叠多个别名类
    * （如 <class="function-definition function">），只要桶里选中其中任一别名，
-   * CSS 就会命中——不必穷举每个别名。 */
-  --fs-token-keyword: #0000ff;
+   * CSS 就会命中——不必穷举每个别名。keyword/property/operator/namespace/constant
+   * 五个没有用 symbolIcon.* 对应色（那五个 id 在 vscode 里注册的默认值直接就是正文
+   * 色本身，映射了也白映射，见 webview-html.ts 里 THEME_BRIDGE 那段注释与
+   * theme-report.md「C1」），改用 charts.* 系的色号，这里的默认色也换成一致的取值。 */
+  --fs-token-keyword: #e51400;
   --fs-token-function: #795e26;
   --fs-token-class-name: #267f99;
   --fs-token-variable: #001080;
-  --fs-token-property: #b98f13;
-  --fs-token-operator: #383a42;
-  --fs-token-namespace: #af00db;
-  --fs-token-constant: #d16969;
+  --fs-token-property: #388a34;
+  --fs-token-operator: #bf8803;
+  --fs-token-namespace: #652d90;
+  --fs-token-constant: #0063d3;
   --fs-token-string: #a31515;
   --fs-token-number: #098658;
   --fs-token-boolean: #0000ff;
   --fs-token-comment: #008000;
   --fs-token-punctuation: #9a9a9a;
 
-  /* 界面字体 vs. 代码等宽字体：VSCode 分别用 --vscode-font-* 与
-   * --vscode-editor-font-* 两套变量注入，语义不同（前者是工作台 UI 字体，
-   * 后者是编辑器等宽字体），不能共用一份映射。默认值就是这两行改动前的硬编码值。 */
+  /* 界面字体 vs. 代码等宽字体：VSCode 宿主分别用工作台 UI 字体与编辑器等宽字体
+   * 两套变量注入（具体变量名见 webview-html.ts 的 THEME_BRIDGE——那份映射只能
+   * 出现在 packages/vscode 里，这份注释故意不写出前缀，免得 grep 边界护栏失效），
+   * 语义不同，不能共用一份映射。默认值就是这两行改动前的硬编码值。 */
   --fs-font-family: system-ui, sans-serif;
   --fs-font-size: 13px;
   --fs-code-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

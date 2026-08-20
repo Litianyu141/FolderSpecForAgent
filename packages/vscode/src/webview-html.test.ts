@@ -57,19 +57,21 @@ describe('buildWebviewHtml', () => {
     expect(html).toContain('--fs-line-number: var(--vscode-editorLineNumber-foreground')
   })
 
-  it('语法高亮 token 颜色映射到 VSCode 的语义色（symbolIcon.*/debugTokenExpression.*/descriptionForeground）', () => {
-    // 每条都在 raw.githubusercontent.com/microsoft/vscode-docs 的 theme-color.md
-    // 与 vscode 源码 src/vs/workbench/contrib/webview/browser/themeing.ts 里核实过
-    // 确实存在、会被注入进 webview，见 theme-report.md。
+  it('语法高亮 token 颜色映射到 VSCode 的语义色（symbolIcon.*/debugTokenExpression.*/descriptionForeground/charts.*）', () => {
+    // 每条都在 vscode 源码里核实过确实存在、会被注入进 webview，见 theme-report.md。
+    // keyword/property/operator/namespace/constant 五个特意不用 symbolIcon.* 对应色——
+    // 那五个 id 的 registerColor() 默认值就是 foreground（正文色）本身，映射了也不会
+    // 显示出颜色，改用 charts.*（各自核实过默认值独立于正文色），见「C1」一节与下面
+    // 那个专门断言"默认值真的不等于正文色"的用例。
     const html = build()
-    expect(html).toContain('--fs-token-keyword: var(--vscode-symbolIcon-keywordForeground')
+    expect(html).toContain('--fs-token-keyword: var(--vscode-charts-red')
     expect(html).toContain('--fs-token-function: var(--vscode-symbolIcon-functionForeground')
     expect(html).toContain('--fs-token-class-name: var(--vscode-symbolIcon-classForeground')
     expect(html).toContain('--fs-token-variable: var(--vscode-symbolIcon-variableForeground')
-    expect(html).toContain('--fs-token-property: var(--vscode-symbolIcon-propertyForeground')
-    expect(html).toContain('--fs-token-operator: var(--vscode-symbolIcon-operatorForeground')
-    expect(html).toContain('--fs-token-namespace: var(--vscode-symbolIcon-namespaceForeground')
-    expect(html).toContain('--fs-token-constant: var(--vscode-symbolIcon-constantForeground')
+    expect(html).toContain('--fs-token-property: var(--vscode-charts-green')
+    expect(html).toContain('--fs-token-operator: var(--vscode-charts-yellow')
+    expect(html).toContain('--fs-token-namespace: var(--vscode-charts-purple')
+    expect(html).toContain('--fs-token-constant: var(--vscode-charts-blue')
     expect(html).toContain('--fs-token-string: var(--vscode-debugTokenExpression-string')
     expect(html).toContain('--fs-token-number: var(--vscode-debugTokenExpression-number')
     expect(html).toContain('--fs-token-boolean: var(--vscode-debugTokenExpression-boolean')
@@ -214,5 +216,53 @@ describe('buildWebviewHtml 注入值的转义', () => {
     const rootMatch = body.match(/window\.__folderspecRoot=(.*?);/)
     const parsed = JSON.parse(rootMatch![1])
     expect(parsed).toBe(evilRoot)
+  })
+})
+
+describe('token 颜色变量的 VSCode 默认值必须真的和正文色不同', () => {
+  // 光是变量名存在、var() 的 fallback 不炸，不代表选对了——VSCode 里不少
+  // symbolIcon.* 直接把 registerColor() 的默认值注册成 `foreground`（正文色）本身：
+  // keywordForeground/propertyForeground/operatorForeground/namespaceForeground/
+  // constantForeground 都是。默认主题从不覆盖这些 id（dark_modern.json 的 colors
+  // 里没有任何 symbolIcon.* 键），挂上去的 token 在真实 VSCode 里会和正文同色，
+  // "上色"名不副实——var() 的 fallback 救不了：变量本身有定义，只是值恰好等于
+  // 正文色，fallback 永远不会被触发。
+  //
+  // 这张表是逐条用 WebFetch 去 vscode 源码 registerColor() 查证的结果（不是凭
+  // 名字猜的，见 theme-report.md「C1」）：
+  //   - src/vs/editor/contrib/symbolIcons/browser/symbolIcons.ts
+  //   - src/vs/workbench/contrib/debug/browser/debugColors.ts
+  //   - src/vs/platform/theme/common/colors/{baseColors,editorColors,chartsColors}.ts
+  //   - src/vs/editor/common/core/editorColorRegistry.ts
+  const VSCODE_COLOR_DEFAULT: Record<string, 'distinct' | 'sameAsForeground'> = {
+    'symbolIcon-functionForeground': 'distinct', // {dark:'#B180D7', light:'#652D90'}
+    'symbolIcon-classForeground': 'distinct', // {dark:'#EE9D28', light:'#D67E00'}
+    'symbolIcon-variableForeground': 'distinct', // {dark:'#75BEFF', light:'#007ACC'}
+    'symbolIcon-keywordForeground': 'sameAsForeground',
+    'symbolIcon-propertyForeground': 'sameAsForeground',
+    'symbolIcon-operatorForeground': 'sameAsForeground',
+    'symbolIcon-namespaceForeground': 'sameAsForeground',
+    'symbolIcon-constantForeground': 'sameAsForeground',
+    'debugTokenExpression-string': 'distinct', // {dark:'#ce9178', light:'#a31515'}
+    'debugTokenExpression-number': 'distinct', // {dark:'#b5cea8', light:'#098658'}
+    'debugTokenExpression-boolean': 'distinct', // {dark:'#4e94ce', light:'#0000ff'}
+    'descriptionForeground': 'distinct', // light:'#717171'；dark 是 foreground 70% 透明度，非满色正文色
+    'editorLineNumber-foreground': 'distinct', // {dark:'#858585', light:'#237893'}
+    'charts-red': 'distinct', // = editorError.foreground，light:'#E51400'
+    'charts-blue': 'distinct', // = editorInfo.foreground，light:'#0063d3'
+    'charts-yellow': 'distinct', // = editorWarning.foreground，light:'#BF8803'
+    'charts-green': 'distinct', // 显式 hex，light:'#388A34'
+    'charts-purple': 'distinct', // 显式 hex，light:'#652D90'
+  }
+
+  it('THEME_BRIDGE 里每条 --fs-token-* 映射都指向一个默认值真的独立于正文色的 --vscode-* 变量', () => {
+    const html = build()
+    const matches = [...html.matchAll(/--fs-token-[a-z-]+: var\(--vscode-([a-zA-Z-]+),/g)]
+    expect(matches.length).toBe(13) // 十三个 token 桶，数目不对说明映射被删了/多了
+    for (const [, vscodeVar] of matches) {
+      const status = VSCODE_COLOR_DEFAULT[vscodeVar]
+      expect(status, `--vscode-${vscodeVar} 没有在核实表里，先去 vscode 源码查 registerColor 的默认值再收进来`).toBeDefined()
+      expect(status, `--vscode-${vscodeVar} 的默认值就是 foreground（正文色），映射到它的桶在真实 VSCode 默认主题下不会显示出颜色`).toBe('distinct')
+    }
   })
 })

@@ -34,21 +34,26 @@ const THEME_BRIDGE = `
   --fs-line-number: var(--vscode-editorLineNumber-foreground, #9a9a9a);
 
   /* Prism 语法高亮 token → VSCode 语义色。VSCode 不把完整的 TextMate 语法着色
-   * 暴露成 CSS 变量，只有这批语义化的变量能用来近似：symbolIcon.* 是大纲/面包屑
-   * 图标色（按符号种类区分，天然贴合"关键字/函数/类"这类角色分桶）、
-   * debugTokenExpression.* 是调试面板按值类型上色（字符串/数字/布尔），
-   * descriptionForeground 是弱化说明文字色（拿来近似注释）。这些 id 都在
-   * vscode 源码 themeing.ts 与官方 theme-color 文档里逐条核实过真实存在
-   * （见 theme-report.md），不是照抄一张未经验证的表。每条都带 --fs-* 同名的
-   * 默认色兜底——那批变量本身在极旧主题里也可能未定义。 */
-  --fs-token-keyword: var(--vscode-symbolIcon-keywordForeground, #0000ff);
+   * 暴露成 CSS 变量，只有这批语义化的变量能用来近似。但名字对不代表值真的独立于
+   * 正文色——用 WebFetch 逐条查过 vscode 源码的 registerColor() 默认值（见
+   * theme-report.md「C1」）后发现 symbolIcon.keyword/property/operator/
+   * namespace/constantForeground 这五个的默认值直接就是 foreground 常量本身，
+   * 默认主题也从不覆盖，挂上去的 token 在真实 VSCode 里会和正文同色——var() 的
+   * fallback 救不了，因为变量本身有定义，只是值恰好等于正文色。这五个改用
+   * charts.*（red/yellow/green/purple/blue，来自图表配色，各自要么是显式 hex
+   * 要么转引 editorError/Warning/Info.foreground，都核实过真的独立于正文色），
+   * 语义不如"关键字色"贴切，但换来的是真会显示出颜色。剩下八个（function/
+   * class-name/variable/string/number/boolean/comment/punctuation）本来就有
+   * 独立默认值，维持原映射。每条都带 --fs-* 同名的默认色兜底——那批变量本身在
+   * 极旧主题里也可能未定义。 */
+  --fs-token-keyword: var(--vscode-charts-red, #e51400);
   --fs-token-function: var(--vscode-symbolIcon-functionForeground, #795e26);
   --fs-token-class-name: var(--vscode-symbolIcon-classForeground, #267f99);
   --fs-token-variable: var(--vscode-symbolIcon-variableForeground, #001080);
-  --fs-token-property: var(--vscode-symbolIcon-propertyForeground, #b98f13);
-  --fs-token-operator: var(--vscode-symbolIcon-operatorForeground, #383a42);
-  --fs-token-namespace: var(--vscode-symbolIcon-namespaceForeground, #af00db);
-  --fs-token-constant: var(--vscode-symbolIcon-constantForeground, #d16969);
+  --fs-token-property: var(--vscode-charts-green, #388a34);
+  --fs-token-operator: var(--vscode-charts-yellow, #bf8803);
+  --fs-token-namespace: var(--vscode-charts-purple, #652d90);
+  --fs-token-constant: var(--vscode-charts-blue, #0063d3);
   --fs-token-string: var(--vscode-debugTokenExpression-string, #a31515);
   --fs-token-number: var(--vscode-debugTokenExpression-number, #098658);
   --fs-token-boolean: var(--vscode-debugTokenExpression-boolean, #0000ff);
