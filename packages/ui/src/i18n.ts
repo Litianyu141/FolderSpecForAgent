@@ -147,6 +147,23 @@ export const zh = {
    */
   'contextMenu.copyPath': '复制路径',
   'contextMenu.copyRelPath': '复制相对路径',
+  /**
+   * 「复制」**不带「仅契约」**，「粘贴」带。不是随手的不一致：
+   * 「仅契约」三个字是在提醒"磁盘不会跟着变"，只有真的会往契约里写下一条声明的那些项
+   * 才需要它。复制什么都不改（只是记下源路径），加上反而在暗示它会动契约；粘贴恰恰
+   * 是用户最容易以为"磁盘上会真的多出一份拷贝"的那一项，一个字都不能省。
+   * 也不叫「复制节点」「复制声明」：用户是拿文件管理器的心智来要这条功能的，
+   * 「复制」两个字就是他要找的那个词；它到底复制了什么由 title 那句话讲清楚。
+   */
+  'contextMenu.copyNode': '复制',
+  'contextMenu.paste': '粘贴（仅契约）',
+  /** {path} 是被复制节点的路径，数据，不翻译 */
+  'contextMenu.copyNodeTarget': '把「{path}」在契约里的声明记进剪贴板，稍后可粘到别处',
+  /** {from} 是源路径，{parent} 是落点路径或"工作区根"，都是数据/另一条字典项 */
+  'contextMenu.pasteTarget': '把「{from}」的契约声明粘到「{parent}」下（不会在磁盘上创建任何东西）',
+  /** 剪贴板为空时「粘贴」置灰的理由。灰着不给理由，只是把"点了没反应"换成"灰着没理由"
+   *  （与 removeDisabledNotDeclared 同一条模式） */
+  'contextMenu.pasteDisabledEmpty': '剪贴板是空的：先在某个节点上点「复制」',
 
   // ---- NewNodeDialog：新建节点（仅契约） ----
   /** {parent} 是父目录路径，或 common.workspaceRoot */
@@ -267,6 +284,13 @@ export const en: Record<TranslationKey, string> = {
     'Editing is disabled right now: the contract failed to parse, or you are in the "Disk Structure" view',
   'contextMenu.copyPath': 'Copy Path',
   'contextMenu.copyRelPath': 'Copy Relative Path',
+  'contextMenu.copyNode': 'Copy',
+  'contextMenu.paste': 'Paste (contract only)',
+  'contextMenu.copyNodeTarget':
+    'Records the contract declaration of "{path}" to the clipboard, ready to paste elsewhere',
+  'contextMenu.pasteTarget':
+    'Pastes the contract declaration of "{from}" under "{parent}" (nothing is created on disk)',
+  'contextMenu.pasteDisabledEmpty': 'Clipboard is empty — click "Copy" on a node first',
 
   'newNode.titleDir': 'New directory under "{parent}" (contract only)',
   'newNode.titleFile': 'New file under "{parent}" (contract only)',

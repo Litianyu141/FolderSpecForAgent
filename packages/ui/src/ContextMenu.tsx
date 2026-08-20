@@ -51,15 +51,32 @@ export interface ContextMenuTarget {
 export interface ContextMenuProps {
   target: ContextMenuTarget
   /**
-   * 只读态（契约解析失败 /「原始结构」视图）：**四条写操作**菜单项全部禁用。
+   * 只读态（契约解析失败 /「原始结构」视图）下要禁用哪些菜单项。
    *
-   * 管辖范围到此为止——「复制路径」「复制相对路径」两项**不看这个值**。它俩是纯读，
-   * 一个字节都不碰 Spec，跟"现在允不允许写"没有任何关系；而只读态恰恰是最需要它们的
-   * 时候：契约解析失败时用户要把那个文件的路径复制到终端里去修，「原始结构」视图的
-   * 意义是"让你对比"，对比的下一步往往就是把路径贴到别处。跟着一起灰掉，等于因为
-   * 写不了就连看都不让看。
+   * 判据只有一条：**这一项会不会往契约里写下什么**。今天分成两拨——
+   *
+   * - 受它管辖（会写）：新建目录、新建文件、重命名、取消声明、**粘贴**。
+   * - 不看它（纯读）：**复制**、复制路径、复制相对路径。
+   *
+   * 三项纯读的一个字节都不碰 Spec，跟"现在允不允许写"没有任何关系；而只读态恰恰是
+   * 最需要它们的时候：契约解析失败时用户要把那个文件的路径复制到终端里去修，
+   * 「原始结构」视图的意义是"让你对比"，对比的下一步往往就是把东西记下来贴到别处。
+   * 跟着一起灰掉，等于因为写不了就连看都不让看。
+   *
+   * 「复制」和「粘贴」分处两拨，是本轮最容易一刀切的地方：它俩在用户眼里是一对，
+   * 在闸门眼里却是两类东西——复制只是把源路径记进剪贴板（纯 UI 状态），粘贴会往
+   * 契约里加一条 Agent 会照做的声明。
    */
   disabled: boolean
+  /**
+   * 剪贴板里此刻记着哪条源路径（null = 空）。**只是一条路径，不是一份被复制的子树**：
+   * 真正"复制什么"是在粘贴那一刻由 core 从当时的契约里取的（spec/copyNode 的 from）。
+   * 这样才不会出现"复制之后又改了源节点的注释，粘出来却是旧的那一份"。
+   *
+   * 它是纯粹的会话内 UI 状态，与 hidden 同类：workspace/open 时清空、永不落盘
+   * （CLAUDE.md 不变量 2——契约描述长期不变量，不记录一次性操作）。
+   */
+  clipboard: string | null
   /**
    * 工作区根的绝对路径（平台原生写法）与本平台的路径分隔符，来自 `OpenResult.root`
    * / `OpenResult.sep`。只用于把 `target.path`（工作区相对、恒 `/` 分隔）拼成
@@ -71,13 +88,20 @@ export interface ContextMenuProps {
   onNew(isDir: boolean): void
   onRename(path: string): void
   onRemove(path: string): void
+  /** 把这条路径记进剪贴板。纯读，不发任何请求——菜单只负责说"复制的是谁" */
+  onCopyNode(path: string): void
+  /** 把剪贴板里那条路径的契约声明粘到这个父目录下（'' = 工作区根） */
+  onPaste(parentPath: string): void
   /** 把这段文字送进剪贴板。菜单只负责算出"复制什么"，怎么复制、失败了怎么报是 App 的事 */
   onCopy(text: string): void
   onClose(): void
 }
 
 export function ContextMenu(
-  { target, disabled, root, sep, onNew, onRename, onRemove, onCopy, onClose }: ContextMenuProps,
+  {
+    target, disabled, clipboard, root, sep,
+    onNew, onRename, onRemove, onCopyNode, onPaste, onCopy, onClose,
+  }: ContextMenuProps,
 ) {
   const t = useT()
 
@@ -168,10 +192,54 @@ export function ContextMenu(
             >
               {t('contextMenu.removeNode')}
             </button>
+          </>
+        )}
 
-            {/* 复制两项排在最底部、与上面四条写操作之间再隔一条分隔线——对齐 VSCode
-                资源管理器的排布，也是因为它们是**另一类东西**：上面四条会改写契约，
-                这两条什么都不改。 */}
+        {/* 复制 / 粘贴自成一段。它们**跨着只读闸门**：复制在上、纯读，粘贴在下、是写。
+            两项挨着摆是因为用户脑子里它们本来就是一对（文件管理器的心智），把粘贴
+            单独挪去别处只会让人找不到。 */}
+        <div className="fs-context-menu-sep" aria-hidden="true" />
+        {target.path !== null && (
+          <button
+            type="button"
+            role="menuitem"
+            // 刻意**不传** disabled：把一条路径记进剪贴板不碰 Spec，不归只读闸门管，
+            // 理由见 ContextMenuProps.disabled。也刻意不看 target.declared——复制一个
+            // 从没被标注过的节点是完全正当的（粘出来是一条"这里也该有个这样的东西"
+            // 的空声明），与「重命名」对 actual-only 节点的取向一致。
+            title={t('contextMenu.copyNodeTarget', { path: target.path })}
+            onClick={() => onCopyNode(target.path as string)}
+          >
+            {t('contextMenu.copyNode')}
+          </button>
+        )}
+        <button
+          type="button"
+          role="menuitem"
+          // 两个禁用理由，**顺序要紧**：只读优先。剪贴板里有东西、但当前不可编辑时，
+          // 说"剪贴板是空的"是一句假话；反过来只读态本来就把整片写操作灰了，用户
+          // 需要知道的是"现在整个不能写"，而不是纠结剪贴板。
+          disabled={disabled || clipboard === null}
+          title={
+            disabled
+              ? t('contextMenu.disabledReadOnly')
+              : clipboard === null
+                ? t('contextMenu.pasteDisabledEmpty')
+                : t('contextMenu.pasteTarget', { from: clipboard, parent: parentLabel })
+          }
+          // 落点与「新建」完全同一条语义，直接复用 target.parentPath：右键目录 → 粘进
+          // 它下面；右键文件 → 粘进它的父目录（文件不可能有子节点）；右键空白 → 工作区根。
+          // 完整推导见 ContextMenuTarget.parentPath，这里不另起一套。
+          onClick={() => onPaste(target.parentPath)}
+        >
+          {t('contextMenu.paste')}
+        </button>
+
+        {target.path !== null && (
+          <>
+            {/* 「复制路径」两项排在最底部、与上面再隔一条分隔线——对齐 VSCode 资源
+                管理器的排布。这条分隔线尤其不能省：它和上面那个「复制」名字只差两个字，
+                干的却是完全不同的事（一个记的是契约子树，一个往剪贴板塞一条字符串）。 */}
             <div className="fs-context-menu-sep" aria-hidden="true" />
             <button
               type="button"

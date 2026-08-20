@@ -137,6 +137,19 @@ export function App({ bridge, initialRoot }: AppProps) {
    * 正开着的右键菜单（null = 没开）。目标在右键按下那一刻定死，见 ContextMenuTarget。
    */
   const [menu, setMenu] = useState<ContextMenuTarget | null>(null)
+  /**
+   * 剪贴板：右键「复制」记下的那条源路径（null = 空）。
+   *
+   * **放 UI，不进 core**，与 hidden 同类的会话内状态：`workspace/open` 时清空、
+   * 永不落盘（CLAUDE.md 不变量 2——契约描述长期不变量，不记录一次性操作。"这一份是
+   * 从哪儿复制来的"正是那种一被执行就过期的操作记录）。
+   *
+   * 记的是**一条路径，不是一份被复制的子树**。真正复制什么，是在粘贴那一刻由 core
+   * 从当时的契约里取的（spec/copyNode 的 from）。反过来做——复制时就把子树快照下来
+   * ——会让"复制之后又改了源节点的注释，粘出来却是旧的那一份"成为可能，而用户没有
+   * 任何办法看出剪贴板里那份已经过期了。
+   */
+  const [clipboard, setClipboard] = useState<string | null>(null)
   /** 正开着的「新建声明」输入框（null = 没开）。父目录/类型同样在打开那一刻定死。 */
   const [newNode, setNewNode] = useState<NewNodeDraft | null>(null)
   /** spec/createNode 在途：按钮禁用。同步的那道闸在 creatingRef 上，见 submitNewNode。 */
@@ -289,6 +302,11 @@ export function App({ bridge, initialRoot }: AppProps) {
       // 完全可能根本没有这条路径。整个收掉，不留半成品。
       setMenu(null)
       setNewNode(null)
+      // 剪贴板同理，且**重载同一个工作区时也要清**（不看 isSameWorkspace）：重载之后
+      // 契约是从磁盘重读的，剪贴板里那条源路径完全可能已经不在契约里了。留着它等于
+      // 让用户拿一条过期的路径去粘，报错来自 core，看着像功能坏了。core 侧的 hidden
+      // 在 open() 时无条件清空（session.ts），这边跟着它走。
+      setClipboard(null)
       // 开关对齐契约里写的语言。这是 OpenResult.lang 存在的全部理由（api.ts 有推导）。
       setLang(r.lang)
       // 与切到目录时同理：在途的 file/read 必须作废，否则它晚到时会往一个已经不存在的
@@ -823,6 +841,66 @@ export function App({ bridge, initialRoot }: AppProps) {
     })()
   }, [t])
 
+  /**
+   * 菜单里点了「复制」。**纯读**：只把源路径记进一个 useState，不发任何 bridge 请求、
+   * 不碰 Spec、不置脏、不进撤销栈，也**不受 readOnly 管辖**（与「复制路径」同一条
+   * 道理，见 ContextMenuProps.disabled）。写在这一刻发生的只有粘贴。
+   *
+   * 刻意不动选中集：右键本来就不改选中集（改了会把多选态收成一项，还会撞上分组草稿
+   * 的成员锁，见 handleSelect），「复制」没有理由破这条例。
+   */
+  const handleCopyNode = useCallback((path: string) => {
+    setClipboard(path)
+    setMenu(null)
+  }, [])
+
+  /**
+   * 菜单里点了「粘贴」。**这是写**——往契约里加一条"那儿也该有一个这样的东西"的声明，
+   * 磁盘一个字节不动（api.ts 的 spec/copyNode）。所以它与新建/改名/取消声明同级，
+   * 必须过 readOnly 闸门；「复制」那条不必。
+   *
+   * 时序上与 submitNewNode 逐条同构，两道 epoch 闸门的含义完全相同（上面那道问
+   * "工作区还是不是同一次载入"，下面那道问"用户有没有改选"），推导见 submitNewNode
+   * 与两个 ref 的字段注释，这里不再复述一遍。
+   */
+  const handlePaste = useCallback(async (parentPath: string) => {
+    setMenu(null)
+    if (readOnly) return
+    // 剪贴板为空时菜单项本来就是禁用的，这一句是同一条规则的第二道——与
+    // submitNewNode 里那句 `if (readOnly) return` 同源，别按"没测到就删"处理。
+    // 更实在的理由：from 为 null 时发出去的是一条 core 只能报错的请求，那个错跟
+    // 用户刚做的事对不上。
+    const from = clipboard
+    if (from === null) return
+
+    const epoch = selectionEpochRef.current
+    const loadEpoch = loadEpochRef.current
+    try {
+      const r = await bridge.request('spec/copyNode', { from, toParent: parentPath })
+      if (loadEpoch !== loadEpochRef.current) return // 见 loadEpochRef
+      setTree(r.tree)
+      setGroups(r.groups)
+      setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
+      // 选中副本，让用户能紧接着给它写注释。**必须用 r.path**：撞名时 core 会自动
+      // 加后缀（demo → demo-copy → demo-copy-2），落点叫什么 UI 根本猜不到，自己拼
+      // `parentPath + basename(from)` 会选中一条树上不存在的路径，右栏退回空态，
+      // 用户以为粘贴失败了。这正是 spec/copyNode 返回 path 的全部理由（api.ts）。
+      // epoch 相等才拨：期间用户若已经点了别的节点，这一拨会把右栏拽走、连带清掉他
+      // 正在写的注释，见 selectionEpochRef。
+      if (epoch === selectionEpochRef.current) {
+        setPending(null)
+        setSelection({ selected: [r.path], anchor: r.path })
+      }
+    } catch (e) {
+      // core 拒绝的那几条（粘进自己的子树、目标父级尚未展开、父级是文件、源节点已被
+      // 拖走）报错原文都写明了原因和出路，**原样显示**，别吞、别改写。
+      if (loadEpoch !== loadEpochRef.current) return // 见 loadEpochRef
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [bridge, clipboard, readOnly, setPending])
+
   /** 顶栏「新建」按钮：与空白区域右键完全同一条路径，只是位置换到按钮下方。 */
   const handleToolbarNewNode = useCallback((x: number, y: number) => {
     setNewNode(null)
@@ -1222,6 +1300,10 @@ export function App({ bridge, initialRoot }: AppProps) {
           <ContextMenu
             target={menu}
             disabled={readOnly}
+            // 「粘贴」靠它决定能不能点、title 写什么。传路径本身而不是一个布尔量：
+            // title 里要把源路径摆给用户看——粘贴前唯一一次核对"粘的是不是我复制的
+            // 那个"的机会（与「复制路径」的 title 是同一条判据）。
+            clipboard={clipboard}
             // 只给复制那两项用：把 target.path 拼成一条平台原生的绝对路径。
             // 两者都来自同一次 workspace/open（见 openRoot 里 setSep 那一句）。
             root={root}
@@ -1229,6 +1311,8 @@ export function App({ bridge, initialRoot }: AppProps) {
             onNew={openNewNodeDraft}
             onRename={openRenameDraft}
             onRemove={path => void handleRemoveNode(path)}
+            onCopyNode={handleCopyNode}
+            onPaste={parentPath => void handlePaste(parentPath)}
             onCopy={handleCopy}
             onClose={() => setMenu(null)}
           />

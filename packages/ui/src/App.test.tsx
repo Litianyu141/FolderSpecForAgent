@@ -160,7 +160,37 @@ const bridgeWith = (over: Partial<Record<string, unknown>> = {}) => new FakeBrid
   }),
   // 切语言确实会置脏（core 会改写 lang 字段、可能连带换掉标题/导言），桩如实反映
   'spec/setLang': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false }),
+  // 本轮（右键「复制」/「粘贴」）接上的方法。同样加进共用工厂而不是逐条用例里补：
+  // 桩缺一条，FakeBridge 会抛 "未配置方法"，那条报错会落到错误横幅上，把一批与本轮
+  // 无关的既有用例污染成"界面上多了一条红横幅"。**既有用例的断言一个字没动。**
+  'spec/copyNode': ({ from, toParent }: { from: string; toParent: string }) => ({
+    tree: tree(withCreated(toParent, copiedName(from, toParent), true)),
+    dirty: true, groups: [G1], canUndo: true, canRedo: false,
+    path: createdPath(toParent, copiedName(from, toParent)),
+  }),
 } as never)
+
+/**
+ * 落点的名字，照 core 的规则算（Session.uniqueCopyName）：**撞名才加后缀**，
+ * 文件的后缀加在扩展名之前。
+ *
+ * 桩必须真的实现这条，不能一律原样返回源名字：往一个已经有同名兄弟的地方粘贴时，
+ * 那样会造出一棵**同层重名**的树，React 当场报 duplicate key——而那是桩自己造的
+ * 假象，被测代码并没有这个缺陷（core 那侧根本不可能产生同名兄弟）。
+ *
+ * 也不能一律加后缀：那样"UI 用的是 core 给的 r.path、不是自己拼的"这条就分不出来了
+ * ——两种实现会给出同一个答案。默认桩走"不撞名 → 名字原样"这条路，带后缀的那一格由
+ * 专门的用例自己改写 handler 覆盖。
+ */
+const copiedName = (from: string, toParent: string): string => {
+  const base = from.slice(from.lastIndexOf('/') + 1)
+  const siblings = (toParent === ''
+    ? FIXTURE
+    : FIXTURE.find(n => n.path === toParent)?.children ?? []).map(n => n.name)
+  if (!siblings.includes(base)) return base
+  const i = base.lastIndexOf('.')
+  return i <= 0 ? `${base}-copy` : `${base.slice(0, i)}-copy${base.slice(i)}`
+}
 
 const rowsOf = (container: HTMLElement) => Array.from(container.querySelectorAll('.fs-row'))
 
@@ -2482,13 +2512,13 @@ describe('右键菜单：重命名（仅契约）', () => {
     await waitFor(() => screen.getByLabelText('工作区路径'))
 
     rightClickRow(container, 'src/') // SRC 在 FIXTURE 里是 actual-only
-    // 本轮在末尾追加了「复制路径」「复制相对路径」两项。这条断言是**穷举**的
-    // （querySelectorAll 全取），加菜单项就必然要跟着补——这正是它的价值：
-    // 菜单里多出/少掉任何一项都瞒不过去。它钉的"改名排在新建与取消声明之间"
-    // 这层语义一个字没变。
+    // 上一轮在末尾追加了「复制路径」「复制相对路径」，这一轮又在它们之前插进了
+    // 「复制」「粘贴（仅契约）」。这条断言是**穷举**的（querySelectorAll 全取），
+    // 加菜单项就必然要跟着补——这正是它的价值：菜单里多出/少掉任何一项都瞒不过去。
+    // 它钉的"改名排在新建与取消声明之间"这层语义一个字没变。
     expect(Array.from(container.querySelectorAll('[role="menuitem"]')).map(b => b.textContent))
       .toEqual(['新建目录（仅契约）', '新建文件（仅契约）', '重命名（仅契约）', '取消声明',
-        '复制路径', '复制相对路径'])
+        '复制', '粘贴（仅契约）', '复制路径', '复制相对路径'])
     // 同一个节点上：改名可点、取消声明是灰的——两条菜单项用的**不是**同一条判据。
     // 少了这半条对照，"改名故意不看 declared"这件事就没有任何用例能侦测到。
     expect(menuItem('重命名（仅契约）').disabled).toBe(false)
@@ -2986,6 +3016,32 @@ describe('落地回调的「还是不是同一次载入」闸门', () => {
     expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false)
   })
 
+  it('在途的 spec/copyNode 在换工作区之后才落地：同样不回贴', async () => {
+    const bridge = twoWorkspaceBridge()
+    bridge.setHandler('spec/copyNode', ((p: { from: string; toParent: string }) => delayed({
+      tree: tree(withCreated(p.toParent, 'src-copy', true)),
+      dirty: true, groups: [G1], canUndo: true, canRedo: false,
+      path: createdPath(p.toParent, 'src-copy'),
+    }, 40)) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制'))
+    rightClickRow(container, 'docs/')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await waitFor(() => expect(bridge.lastCall('spec/copyNode')).toEqual({ from: 'src', toParent: 'docs' }))
+
+    await switchWorkspace()
+    await waitFor(() => expect(rowByName(container, 'OTHER.md')).toBeTruthy())
+    await act(async () => { await new Promise(r => setTimeout(r, 80)) })
+
+    // 新工作区刚载入：撤销栈空、没有未保存改动。副本那一行更不该出现在这儿。
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+    expect(rowsOf(container).some(r => r.querySelector('.fs-name')?.textContent === 'src-copy/')).toBe(false)
+  })
+
   it('在途的 spec/setLang 在换工作区之后才落地：同样不回贴', async () => {
     const bridge = twoWorkspaceBridge()
     bridge.setHandler('spec/setLang', (() => delayed({
@@ -3341,10 +3397,11 @@ describe('右键菜单：复制路径 / 复制相对路径', () => {
     rightClickRow(container, 'src/')
     expect(Array.from(container.querySelectorAll('[role="menuitem"]')).map(b => b.textContent))
       .toEqual(['新建目录（仅契约）', '新建文件（仅契约）', '重命名（仅契约）', '取消声明',
-        '复制路径', '复制相对路径'])
-    // 两条分隔线：新建/改名之间一条，写操作与复制之间一条。少了第二条，两类语义
-    // 完全不同的菜单项（会改契约的 vs 什么都不改的）就糊成一片。
-    expect(container.querySelectorAll('.fs-context-menu-sep').length).toBe(2)
+        '复制', '粘贴（仅契约）', '复制路径', '复制相对路径'])
+    // 三条分隔线：新建/改名之间一条，改名取消声明与复制粘贴之间一条，复制粘贴与
+    // 「复制路径」之间一条。最后一条不能省：「复制」和「复制路径」名字只差两个字，
+    // 干的却是完全不同的事（一个记契约子树，一个往剪贴板塞一条字符串）。
+    expect(container.querySelectorAll('.fs-context-menu-sep').length).toBe(3)
   })
 
   it('「复制路径」复制的是工作区根 + 相对路径拼出来的绝对路径', async () => {
@@ -3583,5 +3640,327 @@ describe('英文界面下的复制路径', () => {
 
     await waitFor(() => expect(screen.getByRole('alert').textContent)
       .toBe('Copy failed: the browser denied clipboard access. Copy it manually: src'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 本轮：右键菜单加「复制」/「粘贴」。全是**虚拟的**——只往契约里再声明一份，磁盘
+// 一个字节不动（CLAUDE.md 铁律 1）。两项的闸门不一样，这是本轮最容易一刀切的地方：
+// 「复制」只是把源路径记进剪贴板，纯读、不碰 Spec，**不受 readOnly 管辖**；
+// 「粘贴」会往契约里加声明，是写，**必须走 readOnly 闸门**。
+// 剪贴板放 UI、不进 core：它是"上次复制的是哪条路径"，与 hidden 同类的会话内状态。
+// ---------------------------------------------------------------------------
+
+/** 先复制某一行，再在另一行上右键——把"剪贴板里有东西"这个前提摆出来 */
+const copyThen = (container: HTMLElement, fromRow: string, thenRow: string) => {
+  rightClickRow(container, fromRow)
+  fireEvent.click(menuItem('复制'))
+  rightClickRow(container, thenRow)
+}
+
+describe('右键菜单：复制 / 粘贴（虚拟的——只改契约，磁盘一个字节不动）', () => {
+  it('空白区域右键（目标是工作区根）时只出现「粘贴」，不出现「复制」', async () => {
+    // 复制需要一个具体的节点当源；空白区域没有。粘贴的目标是工作区根，成立。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const pane = container.querySelector('.fs-pane-tree') as HTMLElement
+    fireEvent.contextMenu(pane, { clientX: 30, clientY: 400 })
+    expect(screen.queryByRole('menuitem', { name: '复制' })).toBeNull()
+    expect(menuItem('粘贴（仅契约）')).toBeTruthy()
+  })
+
+  it('剪贴板为空时「粘贴」置灰，且 title 写明原因（不是那句只读文案）', async () => {
+    // 摆一个点下去什么都不会发生的菜单项，界面就是在说谎；灰着又不给理由，
+    // 只是把"点了没反应"换成"灰着没理由"（与「取消声明」在未声明时同一条模式）。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('粘贴（仅契约）').disabled).toBe(true)
+    expect(menuItem('粘贴（仅契约）').getAttribute('title'))
+      .toBe('剪贴板是空的：先在某个节点上点「复制」')
+    // 对照组：同一个菜单里的写操作此刻是可点的——没有这半条，"粘贴灰了"可能只是
+    // 因为整个菜单都灰着
+    expect(menuItem('新建目录（仅契约）').disabled).toBe(false)
+  })
+
+  it('「复制」是纯读：一条 bridge 请求都不发、脏标记不动、选中集不动，菜单关掉', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    const before = bridge.calls.length
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制'))
+    await flushChain()
+
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(bridge.calls.length).toBe(before)
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+    // 右键刻意不改选中集，「复制」也不该改：右栏仍是空态
+    expect(screen.getByText('在左侧选中一个文件或目录')).toBeTruthy()
+  })
+
+  it('复制之后「粘贴」可点，title 同时写明源与落点', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    copyThen(container, 'src/', 'docs/')
+    expect(menuItem('粘贴（仅契约）').disabled).toBe(false)
+    expect(menuItem('粘贴（仅契约）').getAttribute('title'))
+      .toBe('把「src」的契约声明粘到「docs」下（不会在磁盘上创建任何东西）')
+  })
+
+  it('右键目录 → 粘进它下面', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    copyThen(container, 'README.md', 'docs/')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await waitFor(() => expect(bridge.lastCall('spec/copyNode'))
+      .toEqual({ from: 'README.md', toParent: 'docs' }))
+  })
+
+  it('右键文件 → 粘进它的父目录（文件不可能有子节点）', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowByName(container, 'src/'))
+    copyThen(container, 'docs/', 'a.ts')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    // 落点是 src，不是 src/a.ts —— 与「新建」完全一致，直接复用 parentPath
+    await waitFor(() => expect(bridge.lastCall('spec/copyNode'))
+      .toEqual({ from: 'docs', toParent: 'src' }))
+  })
+
+  it('右键空白 → 粘到工作区根（toParent 是空串，不是 "/"）', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制'))
+    const pane = container.querySelector('.fs-pane-tree') as HTMLElement
+    fireEvent.contextMenu(pane, { clientX: 30, clientY: 400 })
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await waitFor(() => expect(bridge.lastCall('spec/copyNode'))
+      .toEqual({ from: 'src', toParent: '' }))
+  })
+
+  it('粘贴落地后回填树、脏标记与撤销栈', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+
+    copyThen(container, 'README.md', 'docs/')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+
+    await waitFor(() => expect(rowByName(container, 'README.md')).toBeTruthy())
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('选中的是 core 给的 r.path（带自动后缀的那一条），不是 UI 自己拼的名字', async () => {
+    // 撞名时 core 会自动加后缀，落点名字 UI 根本猜不到——这正是 spec/copyNode 返回
+    // path 的全部理由。自己拼 `${toParent}/${basename(from)}` 会选中一个树上没有的
+    // 路径，右栏退回空态，用户以为粘贴失败了。
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/copyNode', ((p: { from: string; toParent: string }) => ({
+      tree: tree(withCreated(p.toParent, 'docs-copy', true)),
+      dirty: true, groups: [G1], canUndo: true, canRedo: false,
+      path: createdPath(p.toParent, 'docs-copy'),
+    })) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    copyThen(container, 'docs/', 'src/')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+
+    // 右栏落在带后缀的那个副本上，用户能紧接着给它写注释
+    await waitFor(() => expect(screen.getByLabelText('注释')).toBeTruthy())
+    expect(screen.getByText('src/docs-copy')).toBeTruthy()
+  })
+
+  it('剪贴板跨菜单存活：复制一次可以粘很多次', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    copyThen(container, 'README.md', 'docs/')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await waitFor(() => expect(bridge.lastCall('spec/copyNode'))
+      .toEqual({ from: 'README.md', toParent: 'docs' }))
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('粘贴（仅契约）').disabled).toBe(false)
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await waitFor(() => expect(bridge.lastCall('spec/copyNode'))
+      .toEqual({ from: 'README.md', toParent: 'src' }))
+  })
+
+  it('workspace/open 之后剪贴板清空——与 hidden 同类，永不跨越一次载入', async () => {
+    // 重新载入之后契约是从磁盘重读的，剪贴板里那条路径完全可能已经不在了。
+    // 留着它等于让用户拿一条过期的源路径去粘，报错来自 core，看着像功能坏了。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制'))
+
+    fireEvent.keyDown(screen.getByLabelText('工作区路径'), { key: 'Enter' })
+    await waitFor(() => expect(bridge.calls.filter(c => c.method === 'workspace/open').length).toBe(2))
+
+    rightClickRow(container, 'docs/')
+    expect(menuItem('粘贴（仅契约）').disabled).toBe(true)
+    expect(menuItem('粘贴（仅契约）').getAttribute('title'))
+      .toBe('剪贴板是空的：先在某个节点上点「复制」')
+  })
+
+  it('粘贴不产生任何文件系统写入：整条链路只发得出 spec/copyNode 一种写请求', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    copyThen(container, 'README.md', 'docs/')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await waitFor(() => expect(bridge.lastCall('spec/copyNode')).toBeTruthy())
+    await flushChain()
+
+    // 尤其不该顺手 save()：粘贴是一次编辑，落不落盘由用户按保存决定
+    expect(bridge.calls.some(c => c.method === 'spec/save')).toBe(false)
+  })
+})
+
+describe('复制不受只读闸门管辖，粘贴必须受管辖（两个方向各钉一条）', () => {
+  it('契约解析失败的只读态：「复制」可点，「粘贴」灰且 title 是那句只读文案', async () => {
+    const bridge = bridgeWith({
+      parseErrors: [{ line: 7, message: '未知标签 [planned]' }],
+      tree: tree([{ ...SRC, origin: 'both' }, DOCS, README]),
+    })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('复制').disabled).toBe(false)
+    // 复制的 title 也不该被换成那句"当前不可编辑…"：它说的是写操作
+    expect(menuItem('复制').getAttribute('title'))
+      .toBe('把「src」在契约里的声明记进剪贴板，稍后可粘到别处')
+    // **两个禁用理由同时成立时，只读优先。** 此刻剪贴板确实是空的，但说"剪贴板是空的"
+    // 会把用户支去点「复制」，点完发现粘贴照样灰着——真正的原因从头到尾都是不可编辑。
+    // 这是这条 title 的分支顺序唯一能被侦测到的地方：剪贴板非空时两种顺序给出同一个
+    // 答案，只有"两条理由同时成立"这一格分得开。
+    expect(menuItem('粘贴（仅契约）').getAttribute('title'))
+      .toBe('当前不可编辑：契约解析失败，或正处在「原始结构」视图')
+
+    fireEvent.click(menuItem('复制'))
+    // 复制成功了（剪贴板里确实有东西），但粘贴照样灰着——灰的理由是只读，不是空剪贴板
+    rightClickRow(container, 'docs/')
+    expect(menuItem('粘贴（仅契约）').disabled).toBe(true)
+    expect(menuItem('粘贴（仅契约）').getAttribute('title'))
+      .toBe('当前不可编辑：契约解析失败，或正处在「原始结构」视图')
+  })
+
+  it('「原始结构」视图下：同样是复制可点、粘贴灰', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByText('原始结构'))
+    await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('新建目录（仅契约）').disabled).toBe(true)
+    expect(menuItem('复制').disabled).toBe(false)
+    expect(menuItem('粘贴（仅契约）').disabled).toBe(true)
+  })
+
+  it('可写态下复制、切到只读态再粘：请求一条都发不出去', async () => {
+    // 剪贴板不受只读影响（它是纯 UI 状态），但那条写路径必须被闸死。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制'))
+
+    fireEvent.click(screen.getByText('原始结构'))
+    await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+    rightClickRow(container, 'docs/')
+    expect(menuItem('粘贴（仅契约）').disabled).toBe(true)
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await flushChain()
+    expect(bridge.calls.some(c => c.method === 'spec/copyNode')).toBe(false)
+  })
+
+  it('切进只读态时开着的菜单被收掉——这条写入口连屏幕上都不该留着', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    copyThen(container, 'src/', 'docs/')
+    expect(screen.getByRole('menu')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('原始结构'))
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+  })
+})
+
+describe('粘贴：core 的报错必须原样显示在界面上', () => {
+  const failWith = (message: string) => {
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/copyNode', (() => { throw new Error(message) }) as never)
+    return bridge
+  }
+
+  it('粘进自己的子树下被 core 拒绝：那段话一字不改地出现在横幅上', async () => {
+    const msg = '不能把节点粘贴到它自己或它的子树下：那会让这个节点声明自己内部还有一份自己，'
+      + '再粘一次又翻一倍，而契约的消费者是会照着它真去建目录的 Agent'
+    const bridge = failWith(msg)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    copyThen(container, 'src/', 'src/')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(msg))
+  })
+
+  it('目标父级尚未展开：「请先展开该目录再重试」原样出现，UI 不复述一遍规则', async () => {
+    const msg = '`src/deep` 的子项尚未扫描，无法确认磁盘上有没有同名的东西；请先展开该目录再重试'
+    const bridge = failWith(msg)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    copyThen(container, 'README.md', 'docs/')
+    fireEvent.click(menuItem('粘贴（仅契约）'))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(msg))
+  })
+})
+
+describe('英文界面下的复制 / 粘贴', () => {
+  it('两条菜单项与两句 title 都走字典', async () => {
+    const bridge = bridgeWith({ lang: 'en' })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText('Load')).toBeTruthy())
+
+    rightClickRow(container, 'src/')
+    expect(screen.getByRole('menuitem', { name: 'Copy' }).getAttribute('title'))
+      .toBe('Records the contract declaration of "src" to the clipboard, ready to paste elsewhere')
+    expect((screen.getByRole('menuitem', { name: 'Paste (contract only)' }) as HTMLButtonElement).getAttribute('title'))
+      .toBe('Clipboard is empty — click "Copy" on a node first')
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }))
+    rightClickRow(container, 'docs/')
+    expect(screen.getByRole('menuitem', { name: 'Paste (contract only)' }).getAttribute('title'))
+      .toBe('Pastes the contract declaration of "src" under "docs" (nothing is created on disk)')
   })
 })
