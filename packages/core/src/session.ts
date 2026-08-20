@@ -379,6 +379,30 @@ export class Session {
   }
 
   /**
+   * 供不走 save() 的宿主在**它自己**把内容写盘成功之后，补记"磁盘现在是哪个版本"。
+   * 目前只有 VSCode 一家：它不调用 save()（那个方法自己 fs.writeFile），而是拿
+   * session.raw() 的文本走 WorkspaceEdit + document.save()，好让 VSCode 原生的脏
+   * 标记、Ctrl+S、撤销栈正常工作（见 editor.ts 的 spec/save 分支）。这条写路径完全
+   * 绕开了 save()，于是 savedRevision 永远追不上 revision——dirty 语义升级成
+   * "revision 是否等于 savedRevision" 之后，这个宿主里的脏标记会在首次编辑后永远
+   * 亮着，undo 回到刚保存的那一步也摘不掉。
+   *
+   * 这个方法只做记账，跟 save() 末尾那一行做的事完全一样，只是搬出来给调用方在
+   * 自己完成落盘之后触发——它自己不碰文件系统，不构成新的写路径。
+   *
+   * 刻意不挂 assertWritable()：调用它的前提是刚用 raw() 生成的内容已经真实写盘
+   * 成功，而 raw() 内部已经做过 assertWritable() 检查，那一刻状态确实可写。
+   * VSCode 的写入路径中间隔着 WorkspaceEdit / document.save() 两个 await，万一
+   * 期间视图切到「原始结构」，在这里重复挂一次 assertWritable() 只会把一次已经
+   * 真实写盘成功的保存上报成失败、savedRevision 还是没追上去——比现在要修的
+   * bug 更糟。只需要 assertOpened()：没打开就没有意义的 revision 可言。
+   */
+  markSaved(): void {
+    this.assertOpened()
+    this.savedRevision = this.revision
+  }
+
+  /**
    * 注意：'workspace/open' 只重新扫描 **本 Session 自己的 root**，忽略 params.root。
    * 切换工作区意味着换一个 Session——由宿主负责（见 CLI 的 server.ts 与 VSCode 的 editor.ts）。
    */

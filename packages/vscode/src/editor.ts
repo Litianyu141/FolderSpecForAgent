@@ -73,7 +73,12 @@ export class FolderSpecEditorProvider implements vscode.CustomTextEditorProvider
         }
         let result: unknown
         if (msg.method === 'spec/save') {
-          // 不直接写盘：走 WorkspaceEdit，让 VSCode 的脏标记、Ctrl+S 与撤销栈正常工作
+          // 不直接写盘：走 WorkspaceEdit，让 VSCode 的脏标记、Ctrl+S 与撤销栈正常工作。
+          // 下面横跨两个 await；期间若又收到一条把 session 换掉的 workspace/open，
+          // 后面 markSaved() 必须仍然记到"真正被写盘的那个 Session"身上，而不是
+          // 记到新换上来的、跟这次写入毫无关系的会话——所以先钉死引用，不要再读
+          // 外层那个可变的 session 变量。
+          const savingSession = session
           applyingOwnEdit = true
           try {
             const edit = new vscode.WorkspaceEdit()
@@ -81,9 +86,14 @@ export class FolderSpecEditorProvider implements vscode.CustomTextEditorProvider
               document.positionAt(0),
               document.positionAt(document.getText().length),
             )
-            edit.replace(document.uri, whole, session.raw())
+            edit.replace(document.uri, whole, savingSession.raw())
             await vscode.workspace.applyEdit(edit)
             await document.save()
+            // 这条写路径完全绕开 Session.save()（那个方法自己 fs.writeFile），
+            // 磁盘上现在是哪个版本 Session 自己不知道要翻页——不补这一句，
+            // dirty 会在首次编辑后再也灭不掉（哪怕撤销回了刚保存的那一步）。
+            // markSaved() 只改内存里的编号，不产生新的写路径。
+            savingSession.markSaved()
           } finally {
             applyingOwnEdit = false
           }

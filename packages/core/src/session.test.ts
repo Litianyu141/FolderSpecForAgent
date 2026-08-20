@@ -938,3 +938,52 @@ describe('Session 的撤销/重做', () => {
     expect(r.canUndo).toBe(true)
   })
 })
+
+// markSaved 供不走 save() 的宿主（VSCode：自己用 WorkspaceEdit 写盘，见
+// packages/vscode/src/editor.ts 的 spec/save 分支）在写入成功后补记"磁盘现在是
+// 哪个版本"。它只改内存里的 savedRevision，效果等价于 save() 末尾那一行，
+// 但自己不碰文件系统——不然就是新开了一条写路径，违反只读铁律。
+describe('Session.markSaved', () => {
+  it('把 savedRevision 追平当前 revision，dirty 归零，但不落盘', async () => {
+    const specPath = nodePath.join(root, SPEC_FILENAME)
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '只在内存里' })
+    expect(s.isDirty()).toBe(true)
+
+    s.markSaved()
+    expect(s.isDirty()).toBe(false)
+    await expect(fs.access(specPath)).rejects.toThrow() // 从未创建过契约文件——它真的没写盘
+  })
+
+  // 镜像"保存之后再编辑再撤销"那条 save() 回归用例：markSaved 必须提供完全相同的
+  // 记账语义，撤销栈才能在 VSCode 宿主里正确回到"已保存"状态。
+  it('markSaved 之后再编辑再撤销，回到的正是标记过的那一份，dirty 归零', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '第一版' })
+    s.markSaved()
+    s.annotate({ path: 'src', isDir: true, annotation: '第二版' })
+    expect(s.isDirty()).toBe(true)
+
+    expect(s.undo().dirty).toBe(false)
+  })
+
+  it('未 open 时调用会报错，与其它方法共用同一道 assertOpened 闸门', () => {
+    const s = new Session(root)
+    expect(() => s.markSaved()).toThrow('尚未打开')
+  })
+
+  // 刻意不挂 assertWritable()：调用它的前提是宿主刚用 raw() 生成的内容已经真实
+  // 写盘成功，而 raw() 内部已经做过 assertWritable() 检查——那一刻状态确实可写。
+  // VSCode 的写入路径中间隔着两个 await（WorkspaceEdit → document.save()），
+  // 如果这里再挂一次 assertWritable()，中途一旦切到「原始结构」视图，会把一次
+  // 已经真实写盘成功的保存上报成失败、savedRevision 却还是没追上去——比现在要
+  // 修的 bug 更糟。这里只做记账，不判断"现在能不能编辑"。
+  it('不挂 assertWritable：处于「原始结构」视图时 markSaved 仍然生效', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: 'x' })
+    s.setViewMode('disk')
+
+    expect(() => s.markSaved()).not.toThrow()
+    expect(s.isDirty()).toBe(false)
+  })
+})
