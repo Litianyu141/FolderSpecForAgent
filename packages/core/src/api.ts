@@ -4,6 +4,11 @@ import type { FileReadResult } from './file-read.js'
 export type { GitState, Group, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewMode, ViewNode } from './types.js'
 export type { FileReadResult } from './file-read.js'
 
+/**
+ * 没有 canUndo / canRedo：open() 会清空撤销栈（见 Session.open），两者此处恒为
+ * false，不携带信息；加上必填字段还会打红 ui 的 typecheck。接 workspace/open 的
+ * UI 请自行把撤销/重做按钮按 false 复位——理由见 EditResult.canUndo 的字段注释。
+ */
 export interface OpenResult {
   root: string
   rootName: string
