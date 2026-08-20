@@ -72,9 +72,12 @@ export function App({ bridge, initialRoot }: AppProps) {
    *
    * 1. 移除成员是乐观更新：成员立刻从面板上消失，请求随后排队发出。GroupPanel 在那一帧里
    *    会看到"成员少了、groups 还没更新"，matchingGroups 必然失配——所以编辑目标由这里
-   *    给定（`currentGroupId`），不让面板自己去猜。猜错的后果是它按成员键重置的 effect 把
-   *    用户的分组名与注释清成空串，那个空串一提交，core 的「清空 text 即删除」就把分组连同
-   *    注释一起抹掉，正踩在本项目唯一那条红线上。
+   *    给定（`round`），不让面板自己去猜。猜错的后果是它把用户的分组名与注释清成空串，
+   *    那个空串一提交，core 的「清空 text 即删除」就把分组连同注释一起抹掉，正踩在本项目
+   *    唯一那条红线上。**传给面板的必须是"有没有这一轮"这个事实本身**，不能压成
+   *    `pending?.groupId ?? null`：那样一来"还没开始编辑"和"编辑中、只是还没有分组"
+   *    就分不开了，而面板正是靠这个区别判断"成员集变了"到底是换了目标还是用户在收缩
+   *    自己这一组（见 GroupPanel 里那条重置规则）。
    * 2. 连续两次移除不能各自从渲染快照出发，否则第二次会把第一次移掉的成员又加回去。
    *    **新建态同样如此**，所以无论有没有绑定分组都要记。
    * 3. 改名会让 core 把分组 rename 成新 id。缓存的旧 id 从此指向一个不存在的分组，而
@@ -482,7 +485,7 @@ export function App({ bridge, initialRoot }: AppProps) {
             <GroupPanel
               members={shown.selected}
               groups={groups}
-              currentGroupId={pending?.groupId ?? null}
+              round={pending === null ? null : { groupId: pending.groupId }}
               disabled={readOnly}
               onSubmit={handleGroupSubmit}
               onRemoveMember={handleRemoveMember}

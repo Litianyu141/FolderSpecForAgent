@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { Group, Severity } from '@folderspec/core/api'
 import { SEVERITY_BADGE } from './colors.js'
 import { matchingGroups } from './selection.js'
@@ -10,68 +10,116 @@ export interface GroupSubmit {
   severity: Severity | null
 }
 
+/**
+ * 上层已经开启的一轮分组编辑。
+ *
+ * 是个对象而不是一个裸的 id，因为**"有没有轮次"本身就是信息**：`null`（还没有轮次）
+ * 与 `{ groupId: null }`（轮次开着，只是还没有分组——新建态）在面板里走的是两条路，
+ * 一旦被 `pending?.groupId ?? null` 这类写法压成同一个 null，下面那条重置规则就再也
+ * 分不清"用户换了选中集"和"用户在收缩自己正编辑的这一组"。别把它压回一个 id。
+ */
+export interface EditRound {
+  /** 这一轮绑定的分组 id；null = 轮次已开始但还没有分组落地（新建态） */
+  groupId: string | null
+}
+
 export interface GroupPanelProps {
   members: string[]
   groups: Group[]
   /**
-   * 上层已经定下的编辑目标（null / 省略 = 由成员集自行判定）。
+   * 上层已经定下的编辑轮次（null / 省略 = 还没有轮次，编辑目标由成员集自行判定）。
    *
    * 移除成员是乐观更新：members 立刻变少，而 groups 要等宿主往返 20–60ms 才更新。那一帧里
-   * matchingGroups 必然失配成"新建形态"，按成员键重置的 effect 随即把用户的分组名与注释
-   * 清成空串；等 groups 回来 current 虽恢复，成员键却不再变化、effect 不再重跑，字段停在空。
-   * 那个空串一提交，core 的「清空 text 即删除」就把分组连同注释一起抹掉——本项目唯一那条
-   * 红线。所以"在编辑哪个分组"由上层给定，面板不去猜。
+   * matchingGroups 必然失配成"新建形态"，面板若自己猜目标就会猜成"这是另一组东西"，把
+   * 用户的分组名与注释清掉；那个空串一提交，core 的「清空 text 即删除」就把分组连同注释
+   * 一起抹掉——本项目唯一那条红线。所以"在编辑哪个分组"由上层给定，面板不去猜。
    */
-  currentGroupId?: string | null
+  round?: EditRound | null
   disabled: boolean
   onSubmit(p: GroupSubmit): void
   onRemoveMember(path: string): void
   /**
-   * `currentGroupId` 的反方向：用户从"同成员分组"选择器里挑了另一个，把它上抛给上层
+   * `round` 的反方向：用户从"同成员分组"选择器里挑了另一个，把它上抛给上层
    * （设计文档 §5.4.1「面板顶部列出这几个供选择」）。面板不自己改编辑目标——理由同上：
    * 目标由上层那一份 pending 独占，两处各记一份必然发散。
    */
   onEditGroup(id: string): void
 }
 
-/** 选中集的稳定键：排序后拼接。用它作为重置依赖，而不是 text/name —— 理由同
- *  AnnotationPanel：把 text 放进依赖，自己那次提交的回声会冲掉用户失焦后继续输入的内容。 */
+/** 选中集的稳定键：排序后拼接。 */
 const keyOf = (members: readonly string[]) => [...members].sort().join(' ')
 
 export function GroupPanel(
-  { members, groups, currentGroupId, disabled, onSubmit, onRemoveMember, onEditGroup }: GroupPanelProps,
+  { members, groups, round, disabled, onSubmit, onRemoveMember, onEditGroup }: GroupPanelProps,
 ) {
   const matches = matchingGroups(members, groups)
   // 上层指定的目标优先；它指向一个已经不存在的分组（比如注释被清空后 core 把它删了）
   // 时退回按成员集判定，不至于卡在一个空壳上
-  const bound = currentGroupId == null ? null : groups.find(g => g.id === currentGroupId) ?? null
+  const boundId = round?.groupId ?? null
+  const bound = boundId === null ? null : groups.find(g => g.id === boundId) ?? null
   const current = bound ?? matches[0] ?? null
 
-  const [name, setName] = useState('')
-  const [text, setText] = useState('')
   /**
-   * 约束强度也要有本地 state，理由和 name/text 不同，得单说。
+   * 三个字段都是**草稿**：`undefined` 表示"这一轮编辑里用户还没碰过它"。
    *
-   * 它曾经是唯一一个直接读 `current?.severity` 的受控 select。而"选中 ≥2 项、分组还没
-   * 落地"这一格里 `current` 恒为 null，于是用户**先定强度、再写注释**时：那次 submit 带着
-   * 空 text 发出，被 core 的「清空 text 即删除」当成空操作（spec-edit.ts）——分组没建出来，
-   * select 随即被 React 复位；等注释失焦真把分组建出来，severity 取的又是 current 上的 null。
-   * 用户那一次显式输入就这么没了，只留下一次几乎看不见的视觉回弹。
-   * 静默丢弃用户的输入比报错更糟（session.ts 开头那条），所以这里必须自己记住。
+   * 它们曾经是 current 的**快照**（`useState('')` + 一个把 current 的值拍进来的 effect），
+   * 那是本项目唯一那条红线上摔得最重的一次。快照一旦在"宿主还没返回"的那一帧被重拍，
+   * 拍到的就是旧值，而此后没有任何东西会再把它拍新：
    *
-   * 空串代表"（仅注释，不强制）"，提交时再翻译回 null —— DOM 的 select 没有 null 值。
+   *   写注释 → 点某个成员的 ×（mousedown 使输入框失焦，写入派发）→ click 使 members 收缩
+   *   → 重置 effect 跑，此刻 current 仍是旧的 → 文本框被还原成旧注释
+   *   → 此后**仅需一次失焦、无需任何输入**，陈旧的 text 与 current.text 不同，
+   *     旧文本就被写回契约，用户刚写的一大段没了。
+   *
+   * 改成草稿之后，没碰过的字段**实时跟着 current 走**，面板里不再存在任何"旧值的副本"。
+   * 于是：重置最坏也只是让显示回落到 current 的当前值，绝不可能复活一个陈旧值；提交时
+   * 也永远不会对用户没碰过的字段断言一个陈旧快照或空值（severity 那条的根因正是空串
+   * 被翻译成 null，撞上 spec-edit.ts 的 `delete existing.severity`）。
+   *
+   * 别把它们改回"初值取 current"的写法——那等于把快照请回来。
    */
-  const [severity, setSeverity] = useState<Severity | ''>('')
+  const [draftName, setDraftName] = useState<string | undefined>(undefined)
+  const [draftText, setDraftText] = useState<string | undefined>(undefined)
+  // 空串代表"（仅注释，不强制）"，提交时再翻译回 null —— DOM 的 select 没有 null 值。
+  // 它与 undefined 是两回事：空串是用户**显式选了**不强制，undefined 是没碰过。
+  const [draftSeverity, setDraftSeverity] = useState<Severity | '' | undefined>(undefined)
 
-  useEffect(() => {
-    setName(current?.id ?? '')
-    setText(current?.text ?? '')
-    setSeverity(current?.severity ?? '')
-  }, [keyOf(members)])
+  const name = draftName ?? current?.id ?? ''
+  const text = draftText ?? current?.text ?? ''
+  const severity = draftSeverity ?? current?.severity ?? ''
+
+  const dropDrafts = () => {
+    setDraftName(undefined)
+    setDraftText(undefined)
+    setDraftSeverity(undefined)
+  }
+
+  /**
+   * 重置的触发条件：**编辑目标真的换了**，而不是"成员集变了"。
+   *
+   * 这两件事过去被当成同一件，那正是上面那条红线的根因——成员集会因为用户自己的编辑动作
+   * （收缩正在编辑的这一组）而变，此时编辑目标一步没动。
+   *
+   * 判据只有一条：`round == null` 才说明"没有正在进行的编辑轮次"，这时成员集就是编辑
+   * 目标的全部身份，它一变就是用户在树上换了选中集，草稿必须丢掉。App 的每一条导航路径
+   * （handleSelect / handlePickGroup / openRoot）都会先把 pending 清空，所以换目标必然
+   * 经过 round == null 这一态；反过来，轮次开着时成员集怎么变都是同一个目标，绝不重置。
+   *
+   * 写成渲染期的状态调整而不是 useEffect，是为了不让那一帧的旧草稿先渲染出来又被清掉
+   * （React 官方给"prop 变了要重置 state"的写法）。条件收敛，不会循环。
+   */
+  const [targetKey, setTargetKey] = useState(() => keyOf(members))
+  const nextKey = round == null ? keyOf(members) : targetKey
+  if (nextKey !== targetKey) {
+    setTargetKey(nextKey)
+    dropDrafts()
+  }
 
   const submit = (over: Partial<GroupSubmit>) => {
     onSubmit({
       id: current?.id ?? null,
+      // 三个值都已经过 `?? current`，用户没碰过的字段带的就是 current 的**当前**值，
+      // 不是某个时刻的快照，也不是空值
       name: name.trim(),
       text: text.trim(),
       severity: severity === '' ? null : severity,
@@ -80,19 +128,16 @@ export function GroupPanel(
   }
 
   /**
-   * 切到另一个同成员分组：三个字段必须**当场**换成新目标的内容。
+   * 切到另一个同成员分组：丢掉草稿，让三个字段跟着新目标走。
    *
-   * 只上抛 id 而不换字段的话，用户看着 g2 的标题、编辑的却是 g1 遗留在框里的文字，
-   * 一失焦就把 g1 的注释盖到 g2 上——本项目唯一那条红线。
+   * 这里刻意**不**把新目标的值拍进草稿。拍进去就又是一份快照：用户在 g2 上写了注释、
+   * 写入还在途时再点一下选择器里的 g2，快照拍到的是落地前的旧文字，下一次失焦就把它
+   * 写回去——和上面那条红线一模一样，只是触发动作换成了点选择器。
    *
-   * 重置刻意写在这个明确的点击动作里，而**不是**把 current 加进上面那个 effect 的依赖：
-   * 那样一来，宿主往返落地引起的 current 变化（改名后 id 会变）也会触发重置，把用户正在
-   * 输入、还没失焦的内容冲掉——AnnotationPanel 那次"回声冲掉输入"的同类事故。
+   * 显示不会有空档：onEditGroup 会同步改上层的 pending，与这里的 setState 同一批渲染。
    */
   const pick = (g: Group) => {
-    setName(g.id)
-    setText(g.text)
-    setSeverity(g.severity ?? '')
+    dropDrafts()
     onEditGroup(g.id)
   }
 
@@ -123,7 +168,7 @@ export function GroupPanel(
         <input
           aria-label="分组名" type="text" value={name} disabled={disabled}
           placeholder="留空则自动取名"
-          onChange={e => setName(e.target.value)}
+          onChange={e => setDraftName(e.target.value)}
           onBlur={() => { if (name.trim() !== (current?.id ?? '')) submit({ name: name.trim() }) }}
         />
       </label>
@@ -132,7 +177,7 @@ export function GroupPanel(
         <span>分组注释</span>
         <textarea
           aria-label="分组注释" rows={6} value={text} disabled={disabled}
-          onChange={e => setText(e.target.value)}
+          onChange={e => setDraftText(e.target.value)}
           onBlur={() => { if (text.trim() !== (current?.text ?? '')) submit({ text: text.trim() }) }}
         />
       </label>
@@ -143,7 +188,7 @@ export function GroupPanel(
           aria-label="约束强度" value={severity} disabled={disabled}
           onChange={e => {
             const next = e.target.value === '' ? '' : (e.target.value as Severity)
-            setSeverity(next)
+            setDraftSeverity(next)
             submit({ severity: next === '' ? null : next })
           }}
         >

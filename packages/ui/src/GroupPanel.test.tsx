@@ -110,20 +110,76 @@ describe('GroupPanel', () => {
   // groups 要等宿主往返 20–60ms 才更新。那一帧里 matchingGroups 必然失配成新建形态，
   // 重置 effect 随即把用户的分组名与注释清成空串；空串一提交，core 的「清空 text 即删除」
   // 就把分组连同注释一起抹掉——本项目唯一那条红线。
-  it('绑定了 currentGroupId 时，成员集与它不再相等也仍然编辑它', () => {
-    render(<GroupPanel members={['src/a.ts']} groups={G} currentGroupId="parse"
+  it('绑定了 round.groupId 时，成员集与它不再相等也仍然编辑它', () => {
+    render(<GroupPanel members={['src/a.ts']} groups={G} round={{ groupId: 'parse' }}
       disabled={false} {...noop} />)
     expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('parse')
     expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('解析层')
     expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('warning')
   })
 
-  it('currentGroupId 指向一个已不存在的分组时，退回按成员集判定', () => {
+  it('round.groupId 指向一个已不存在的分组时，退回按成员集判定', () => {
     // 注释被清空后 core 会把分组删掉，上层缓存的 id 从此指不到东西。
     // 这时不能卡在一个空壳上，否则选中集明明等于另一个分组也回填不出来。
-    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} currentGroupId="已经没了"
+    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} round={{ groupId: '已经没了' }}
       disabled={false} {...noop} />)
     expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('解析层')
+  })
+
+  // ── 重置的触发条件：编辑目标真的换了，而不是成员集变了 ────────────────────
+  //
+  // 字段过去是 current 的快照，由一个按 keyOf(members) 重置的 effect 重拍。而成员集会因为
+  // 用户自己的编辑动作（收缩正在编辑的这一组）而变，那一拍拍到的是宿主还没返回的旧值；
+  // 成员键此后不再变化、effect 不再重跑，陈旧值就留在框里等下一次失焦写回契约。
+
+  it('编辑目标没换、只是成员集少了一个时，用户写的注释不被还原成旧值', () => {
+    const rest = { groups: G, round: { groupId: 'parse' }, disabled: false, ...noop }
+    const { rerender } = render(<GroupPanel members={['src/a.ts', 'src/b.ts']} {...rest} />)
+    const ta = screen.getByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '用户新写的一大段注释' } })
+
+    // 收缩落地前的那一帧：members 已经少了一个，groups 还是旧的
+    rerender(<GroupPanel members={['src/a.ts']} {...rest} />)
+
+    expect((ta as HTMLTextAreaElement).value).toBe('用户新写的一大段注释')
+  })
+
+  // 新建态（轮次开着但还没有分组）同样不能重置。这一格里 round.groupId 是 null，
+  // 和"根本还没有轮次"在旧的 `currentGroupId?: string | null` 编码下长得一模一样——
+  // 正因如此 round 必须是个对象，把"有没有这一轮"这个事实本身带过来。
+  it('新建态下写了一半注释再移除成员，写的内容不被清掉', () => {
+    const rest = { groups: G, round: { groupId: null }, disabled: false, ...noop }
+    const { rerender } = render(
+      <GroupPanel members={['src/a.ts', 'src/c.ts', 'README.md']} {...rest} />)
+    const ta = screen.getByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '写了一半' } })
+
+    rerender(<GroupPanel members={['src/a.ts', 'src/c.ts']} {...rest} />)
+
+    expect((ta as HTMLTextAreaElement).value).toBe('写了一半')
+  })
+
+  // 提交时不得对用户本次没碰过的字段断言一个值：没碰过就该回落到 current 的**当前**值。
+  // severity 那条缺陷的收口正在这里——它没碰过时的本地值是空串，翻译出来是 null，
+  // 撞上 spec-edit.ts 的 `delete existing.severity`，把用户设好的强度删掉。
+  it('用户没碰过的字段，提交时带的是 current 的当前值而不是陈旧快照', () => {
+    const onSubmit = vi.fn()
+    const BEFORE: Group[] = [{ id: 'parse', members: ['src/a.ts', 'src/b.ts'], text: '解析层' }]
+    const AFTER: Group[] = [{ ...BEFORE[0], severity: 'error' }]
+    const rest = {
+      members: ['src/a.ts', 'src/b.ts'], round: { groupId: 'parse' }, disabled: false,
+      onSubmit, onRemoveMember: vi.fn(), onEditGroup: vi.fn(),
+    }
+    const { rerender } = render(<GroupPanel groups={BEFORE} {...rest} />)
+    // 上一笔写入落地，强度到了契约里；用户这一轮从没碰过这个选择框
+    rerender(<GroupPanel groups={AFTER} {...rest} />)
+
+    const ta = screen.getByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '改一句' } })
+    fireEvent.blur(ta)
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '改一句', severity: 'error' }))
   })
 
   // ── 约束强度：新建形态下的丢弃（发现 1）──────────────────────────────────
@@ -238,18 +294,69 @@ describe('GroupPanel', () => {
 
   // 切换目标必须**同时**把三个字段换成新目标的内容。只上抛 id 而不换字段的话，用户看着
   // g2 的标题、编辑的是 g1 遗留在框里的文字，一失焦就把 g1 的注释盖到 g2 上——本项目
-  // 唯一那条红线（弄丢人写的注释）。这里刻意不依赖 currentGroupId 回流：重置由点击这个
-  // 明确动作直接触发，而不是塞进按成员键重置的 effect —— 那个 effect 一旦跟着 current
-  // 变，宿主往返落地的回声就会冲掉用户正在输入还没失焦的内容（AnnotationPanel 那次事故）。
+  // 唯一那条红线（弄丢人写的注释）。
+  //
+  // "换字段"的做法是**丢掉草稿**、让字段跟着上层回流的新目标走，而不是把新目标的值拍进
+  // 草稿——拍进去就又多一份会陈旧的快照（见 GroupPanel 里 pick 的注释）。上层是同步回流的
+  // （App.handleEditGroup 的 setPending 与这里的 setState 同一批渲染），显示不会有空档；
+  // 那一半由 App.test 的「同成员的两个分组：点选择器切到第二个」在真实接线上盯着。
   it('切到另一个同成员分组时，三个字段立刻换成它的内容', () => {
-    render(<GroupPanel members={['x', 'y']} groups={TWO} disabled={false} {...noop} />)
+    const onEditGroup = vi.fn()
+    const rest = {
+      members: ['x', 'y'], groups: TWO, disabled: false,
+      onSubmit: vi.fn(), onRemoveMember: vi.fn(), onEditGroup,
+    }
+    const { rerender } = render(<GroupPanel round={{ groupId: 'g1' }} {...rest} />)
     expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('第一个')
 
     fireEvent.click(screen.getByRole('button', { name: '改为编辑分组 g2' }))
+    expect(onEditGroup).toHaveBeenCalledWith('g2')
+    rerender(<GroupPanel round={{ groupId: 'g2' }} {...rest} />)
 
     expect((screen.getByLabelText('分组名') as HTMLInputElement).value).toBe('g2')
     expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('第二个')
     expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('')
+  })
+
+  // 切走时框里那些**还没失焦**的字必须一起丢掉。留着的话，用户看着 g2 的标题、框里是
+  // 写给 g1 的半句话，一失焦就把它盖到 g2 原有的注释上——本项目唯一那条红线。
+  it('在 g1 的框里写了字、还没失焦就切到 g2，那些字不会落到 g2 头上', () => {
+    const onSubmit = vi.fn()
+    const rest = {
+      members: ['x', 'y'], groups: TWO, disabled: false,
+      onSubmit, onRemoveMember: vi.fn(), onEditGroup: vi.fn(),
+    }
+    const { rerender } = render(<GroupPanel round={{ groupId: 'g1' }} {...rest} />)
+    fireEvent.change(screen.getByLabelText('分组注释'), { target: { value: '本来要写给 g1 的' } })
+
+    fireEvent.click(screen.getByRole('button', { name: '改为编辑分组 g2' }))
+    rerender(<GroupPanel round={{ groupId: 'g2' }} {...rest} />)
+
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('第二个')
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  // 切过去之后**不留快照**：用户在 g2 上写了注释、写入还在途时再点一下选择器里的 g2，
+  // 若 pick 把当时的值拍进草稿，拍到的就是落地前的旧文字，下一次失焦把它写回去——
+  // 与"收缩成员"那条红线同一个根因，只是触发动作换成了点选择器。
+  it('切过去之后分组内容在宿主侧变了，面板跟着变，不会把旧文字写回去', () => {
+    const onSubmit = vi.fn()
+    const rest = {
+      members: ['x', 'y'], disabled: false,
+      onSubmit, onRemoveMember: vi.fn(), onEditGroup: vi.fn(),
+    }
+    const { rerender } = render(<GroupPanel groups={TWO} round={{ groupId: 'g1' }} {...rest} />)
+    fireEvent.click(screen.getByRole('button', { name: '改为编辑分组 g2' }))
+    rerender(<GroupPanel groups={TWO} round={{ groupId: 'g2' }} {...rest} />)
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('第二个')
+
+    const LANDED: Group[] = [TWO[0], { ...TWO[1], text: '落地后的文字' }]
+    rerender(<GroupPanel groups={LANDED} round={{ groupId: 'g2' }} {...rest} />)
+
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('落地后的文字')
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   it('只有一个分组匹配时不列出选择器', () => {

@@ -94,12 +94,22 @@ const groupBridge = (
         // core 的 setGroup 返回的是**落地后**的 id：给了 name 就是改名后的那个
         // （spec-edit 的 targetId）。桩必须照做，否则改名后的链路根本测不到。
         const landedId = typeof params.name === 'string' && params.name !== '' ? params.name : (id ?? 'group')
-        groups = groups.map(g => g.id !== id ? g : {
-          ...g,
-          members: [...members],
-          ...(typeof params.name === 'string' && params.name !== '' ? { id: params.name } : {}),
-          ...(params.text !== undefined ? { text: params.text as string } : {}),
-          ...(params.severity ? { severity: params.severity as Severity } : {}),
+        groups = groups.map(g => {
+          if (g.id !== id) return g
+          const next: Group = {
+            ...g,
+            members: [...members],
+            ...(typeof params.name === 'string' && params.name !== '' ? { id: params.name } : {}),
+            ...(params.text !== undefined ? { text: params.text as string } : {}),
+          }
+          // severity 是三态，桩必须照 core 来（spec-edit.ts 的 setGroup）：
+          // undefined = 不变、null = `delete existing.severity`、其余 = 设值。
+          // 旧桩写的是 `params.severity ? {...} : {}`——null 被当成"不变"，于是
+          // "面板把一个陈旧的空值提交成 null、把用户设好的强度删掉"这类缺陷
+          // 在桩上完全看不出来，契约断言照样绿。
+          if (params.severity === null) delete next.severity
+          else if (params.severity !== undefined) next.severity = params.severity as Severity
+          return next
         })
         return { tree: tree(nodes), dirty: true, groups, id: landedId }
       }
@@ -1145,5 +1155,72 @@ describe('App', () => {
     await waitFor(() => expect(bridge.groupsNow().find(g => g.id === 'g2')!.members)
       .toEqual(['src']))
     expect(bridge.groupsNow().find(g => g.id === 'g1')!.members).toEqual(['src', 'docs'])
+  })
+  // ── 重置的触发条件错了：成员集变 ≠ 编辑目标变 ─────────────────────────────
+  //
+  // 面板的 name/text/severity 是 current 的**快照**，由一个按 keyOf(members) 重置的
+  // effect 重新拍照。但成员集会因为用户自己的编辑动作（收缩这一组）而变，此时编辑目标
+  // 并没有变——那一拍拍到的是宿主还没返回的**旧值**，快照从此陈旧，而成员键不再变化、
+  // effect 不再重跑，陈旧值就一直留在框里，等下一次失焦把它写回契约。
+
+  // 全程没有任何非常规时序：写注释 → 点某个成员的 ×（mousedown 使输入框失焦、写入派发）
+  // → click 使 members 收缩。断言落在**契约的最终内容**上，而不只是发出去的 params——
+  // 这条缺陷的要害正是"最终写进文件的是旧文本"。本项目唯一那条红线。
+  it('写完注释紧接着移除成员：用户新写的注释不会被旧注释盖回去', async () => {
+    const bridge = groupBridge([G3], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    expect((ta as HTMLTextAreaElement).value).toBe('一体的三个')
+
+    fireEvent.change(ta, { target: { value: '用户新写的一大段注释' } })
+    fireEvent.blur(ta)                                                // × 的 mousedown
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))    // × 的 click
+
+    await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs']))
+    expect(bridge.groupsNow()[0].text).toBe('用户新写的一大段注释')
+
+    // 此后**仅需一次失焦、无需任何输入**
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    await act(async () => { await new Promise(r => setTimeout(r, 60)) })
+
+    expect(bridge.groupsNow()[0].text).toBe('用户新写的一大段注释')
+    // 另一半：框里显示的也必须是新注释。显示与契约一分家，下一次失焦就再写回去一次。
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value)
+      .toBe('用户新写的一大段注释')
+  })
+
+  // 同一个根因，只差一帧：陈旧化的是 severity，而它"没碰过"的值是空串，提交时被翻译成
+  // null —— core 的 `delete existing.severity`（spec-edit.ts）。契约里是 error，
+  // 选择框却显示「（仅注释，不强制）」，下一次注释失焦就把强度删掉。
+  it('改完约束强度紧接着移除成员：强度不会在下一次提交时被删掉', async () => {
+    const bridge = groupBridge([G3], 40)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    await screen.findByLabelText('分组注释')
+
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'error' } })
+    // 宿主往返期间移除一个成员。≥3 个成员才做得到：减到 1 个面板就卸载了。
+    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+
+    await waitFor(() => expect(bridge.groupsNow()[0].severity).toBe('error'))
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs']))
+
+    const ta = screen.getByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '再改一句注释' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(bridge.groupsNow()[0].text).toBe('再改一句注释'))
+    // 契约先断言：这一笔提交里 severity 是陈旧的空串翻译出来的 null 的话，
+    // core 会 `delete existing.severity`，用户设好的强度就此消失
+    expect(bridge.groupsNow()[0].severity).toBe('error')
+    // 显示再断言：契约里是 error、选择框却写着「（仅注释，不强制）」，两者一分家，
+    // 下一次失焦就会再把它删一次
+    expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('error')
   })
 })
