@@ -1,7 +1,19 @@
 {
   "name": "folderspec-vscode",
   "displayName": "FolderSpec",
-  "description": "可视化声明仓库结构意图，产出给 AI Agent 遵守的结构契约",
+  "description": "Declare your repo's intended structure for AI agents · 可视化声明仓库结构意图，产出给 Agent 遵守的契约",
+  "keywords": [
+    "ai agent",
+    "folder structure",
+    "architecture",
+    "claude",
+    "documentation",
+    "monorepo",
+    "cursor",
+    "copilot",
+    "codebase",
+    "convention"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Litianyu141/FolderSpecForAgent.git"
@@ -12,6 +24,7 @@
     "url": "https://github.com/Litianyu141/FolderSpecForAgent/issues"
   },
   "version": "0.6.0",
+  "icon": "icon.png",
   "publisher": "folderspec",
   "engines": {
     "vscode": "^1.90.0"
