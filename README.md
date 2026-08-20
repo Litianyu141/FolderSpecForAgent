@@ -12,11 +12,31 @@ FolderSpec 让你用可视化的方式把这份意图声明出来，产出一个
 
 ## 安装与运行
 
-### 命令行
+### VSCode 扩展（推荐，也是分发给别人的方式）
+
+从 [Releases](https://github.com/Litianyu141/FolderSpecForAgent/releases) 下载
+`folderspec-vscode-<版本>.vsix`，然后任选一种装法：
 
 ```bash
-npx folderspec            # 在当前目录打开
-npx folderspec ./some/dir # 在指定目录打开
+code --install-extension folderspec-vscode-0.5.0.vsix
+```
+
+或者在 VSCode 里：`Ctrl+Shift+P` → **Extensions: Install from VSIX…** → 选那个文件。
+装完重载窗口（`Developer: Reload Window`）即可。
+
+> 尚未上架 VS Code 应用市场，所以搜不到，只能用 `.vsix` 安装；也因此**不会自动更新**，
+> 换版本要重新下载安装一次。
+
+### 命令行
+
+**CLI 还没有发布到 npm**，`npx folderspec` 目前跑不通。要用的话从源码构建：
+
+```bash
+git clone https://github.com/Litianyu141/FolderSpecForAgent.git
+cd FolderSpecForAgent
+pnpm install && pnpm build
+node packages/cli/dist/main.js            # 在当前目录打开
+node packages/cli/dist/main.js ./some/dir # 在指定目录打开
 ```
 
 它会起一个只监听 `127.0.0.1` 的本地服务，并尽量用 Chrome / Edge / Chromium 的
@@ -34,9 +54,9 @@ npx folderspec ./some/dir # 在指定目录打开
 连接必须带上它——浏览器不对 WebSocket 施加同源策略，没有这一层的话，你在 folderspec 运行
 期间打开的任何一个网页都能连上这个本地端口。
 
-### VSCode 扩展
+### VSCode 扩展怎么用
 
-装上扩展后，**打开任意 `.folderspec.md` 文件**就会进入 FolderSpec 的可视化编辑器，而不是
+装好之后，**打开任意 `.folderspec.md` 文件**就会进入 FolderSpec 的可视化编辑器，而不是
 纯文本视图。想看原始文本时用"打开方式 → 文本编辑器"。
 
 命令面板里还有一条 `FolderSpec：打开结构契约`：当前工作区没有 `.folderspec.md` 时它会问你
