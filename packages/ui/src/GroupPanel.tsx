@@ -43,10 +43,24 @@ export function GroupPanel(
 
   const [name, setName] = useState('')
   const [text, setText] = useState('')
+  /**
+   * 约束强度也要有本地 state，理由和 name/text 不同，得单说。
+   *
+   * 它曾经是唯一一个直接读 `current?.severity` 的受控 select。而"选中 ≥2 项、分组还没
+   * 落地"这一格里 `current` 恒为 null，于是用户**先定强度、再写注释**时：那次 submit 带着
+   * 空 text 发出，被 core 的「清空 text 即删除」当成空操作（spec-edit.ts）——分组没建出来，
+   * select 随即被 React 复位；等注释失焦真把分组建出来，severity 取的又是 current 上的 null。
+   * 用户那一次显式输入就这么没了，只留下一次几乎看不见的视觉回弹。
+   * 静默丢弃用户的输入比报错更糟（session.ts 开头那条），所以这里必须自己记住。
+   *
+   * 空串代表"（仅注释，不强制）"，提交时再翻译回 null —— DOM 的 select 没有 null 值。
+   */
+  const [severity, setSeverity] = useState<Severity | ''>('')
 
   useEffect(() => {
     setName(current?.id ?? '')
     setText(current?.text ?? '')
+    setSeverity(current?.severity ?? '')
   }, [keyOf(members)])
 
   const submit = (over: Partial<GroupSubmit>) => {
@@ -54,10 +68,11 @@ export function GroupPanel(
       id: current?.id ?? null,
       name: name.trim(),
       text: text.trim(),
-      severity: current?.severity ?? null,
+      severity: severity === '' ? null : severity,
       ...over,
     })
   }
+
 
   return (
     <div className="fs-panel">
@@ -91,8 +106,12 @@ export function GroupPanel(
       <label className="fs-field">
         <span>约束强度</span>
         <select
-          aria-label="约束强度" value={current?.severity ?? ''} disabled={disabled}
-          onChange={e => submit({ severity: e.target.value === '' ? null : (e.target.value as Severity) })}
+          aria-label="约束强度" value={severity} disabled={disabled}
+          onChange={e => {
+            const next = e.target.value === '' ? '' : (e.target.value as Severity)
+            setSeverity(next)
+            submit({ severity: next === '' ? null : next })
+          }}
         >
           <option value="">（仅注释，不强制）</option>
           <option value="advisory">{SEVERITY_BADGE.advisory} advisory</option>

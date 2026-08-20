@@ -125,4 +125,87 @@ describe('GroupPanel', () => {
       disabled={false} {...noop} />)
     expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('解析层')
   })
+
+  // ── 约束强度：新建形态下的丢弃（发现 1）──────────────────────────────────
+  //
+  // 三个字段里只有约束强度曾经没有本地 state，value 直接读 current?.severity。而
+  // 「选中 ≥2 项、分组还没落地」这一格里 current 恒为 null，于是用户先定强度、再写注释时：
+  //   1. 选 error → submit 带着空 text 发出 → core 的「清空 text 即删除」把它当空操作
+  //      （spec-edit.ts），分组没建出来 → 重渲染时 select 被 React 复位回"（仅注释，不强制）"
+  //   2. 写完注释失焦 → submit 里 severity 取 current?.severity = null → 分组建出来了，没强度
+  // 用户的一次显式输入被丢掉，只留下一次几乎看不见的视觉回弹。这正踩在 session.ts:19-24
+  // 那条上：静默改写或丢弃用户的输入，比报错更糟。
+  //
+  // 触达路径是这个功能的**第一次交互**——只要用户的操作顺序是「先定强度、再写注释」。
+  // 之所以 12 轮任务评审都没抓到：改之前这里 14 条用例，没有一条断言过 severity 被提交。
+
+  it('新建形态下先选约束强度再写注释，建组时带上那个强度', () => {
+    const onSubmit = vi.fn()
+    render(<GroupPanel members={['src/a.ts', 'src/c.ts']} groups={G} disabled={false}
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'error' } })
+    const ta = screen.getByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '新分组' } })
+    fireEvent.blur(ta)
+
+    // 真正把分组建出来的是这一次（带 text 的那次）。它必须捎上先前选好的强度，
+    // 否则用户选的 error 就永远落不进契约。
+    expect(onSubmit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: null, text: '新分组', severity: 'error' }))
+  })
+
+  it('新建形态下选过的约束强度不会被重渲染复位', () => {
+    const { rerender } = render(
+      <GroupPanel members={['src/a.ts', 'src/c.ts']} groups={G} disabled={false} {...noop} />)
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'error' } })
+    // 那次 submit 在 core 侧是空操作，groups 原样回来 —— 面板照样要记得用户选了什么
+    rerender(<GroupPanel members={['src/a.ts', 'src/c.ts']} groups={G} disabled={false} {...noop} />)
+    expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('error')
+  })
+
+  it('改约束强度立即提交，并带上当前分组的 id 与已有注释', () => {
+    const onSubmit = vi.fn()
+    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'advisory' } })
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'parse', text: '解析层', severity: 'advisory' }))
+  })
+
+  it('把约束强度改回"不强制"时提交 null，而不是空串', () => {
+    const onSubmit = vi.fn()
+    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: '' } })
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ id: 'parse', severity: null }))
+  })
+
+  it('切换选中集时约束强度与名字、注释一起重置', () => {
+    const { rerender } = render(
+      <GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false} {...noop} />)
+    expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('warning')
+    rerender(<GroupPanel members={['src/a.ts', 'src/c.ts']} groups={G} disabled={false} {...noop} />)
+    expect((screen.getByLabelText('约束强度') as HTMLSelectElement).value).toBe('')
+  })
+
+  // 分组注释那条守卫有用例（"内容未变时不提交"），分组名这条一直没有。两条是同一个约定
+  // 的两半：失焦不等于修改过，任何一半失守都会在用户只是切走焦点时白发一次写入。
+  it('分组名未变时失焦不提交', () => {
+    const onSubmit = vi.fn()
+    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+    fireEvent.blur(screen.getByLabelText('分组名'))
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('分组名改过之后失焦才提交', () => {
+    const onSubmit = vi.fn()
+    render(<GroupPanel members={['src/a.ts', 'src/b.ts']} groups={G} disabled={false}
+      onSubmit={onSubmit} onRemoveMember={vi.fn()} />)
+    const input = screen.getByLabelText('分组名')
+    fireEvent.change(input, { target: { value: 'parser' } })
+    fireEvent.blur(input)
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ id: 'parse', name: 'parser' }))
+  })
 })
