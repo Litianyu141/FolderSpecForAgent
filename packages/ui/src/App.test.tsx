@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { App } from './App.js'
 import { FakeBridge } from './test-bridge.js'
 import type { Bridge, FileReadResult, Group, OpenResult, Severity, ViewNode } from '@folderspec/core/api'
@@ -58,11 +58,44 @@ const rowsOf = (container: HTMLElement) => Array.from(container.querySelectorAll
 
 const G3: Group = { id: 'g1', members: ['src', 'docs', 'README.md'], text: '一体的三个' }
 
+/** core 的 uniqueId（spec-edit.ts）：冲突时追加 -2、-3。改名与自动取名共用同一条规则。 */
+const uniqueId = (base: string, taken: ReadonlySet<string>): string => {
+  if (!taken.has(base)) return base
+  for (let i = 2; ; i++) if (!taken.has(`${base}-${i}`)) return `${base}-${i}`
+}
+
+/** core 的 deriveGroupId：取成员的最长公共父目录 basename，没有就退回 group。 */
+const deriveId = (members: readonly string[], taken: ReadonlySet<string>): string => {
+  if (members.length === 0) return uniqueId('group', taken)
+  const parents = members.map(m => m.split('/').filter(s => s !== '').slice(0, -1))
+  let common = parents[0]
+  for (const p of parents.slice(1)) {
+    let i = 0
+    while (i < common.length && i < p.length && common[i] === p[i]) i++
+    common = common.slice(0, i)
+  }
+  const last = common[common.length - 1]
+  return uniqueId(last && last !== '..' ? last : 'group', taken)
+}
+
 /**
  * 会真的按参数收缩分组、且响应带非零延迟的桩。两点缺一不可：
  * 上一轮 bridgeWith 的 spec/setGroup 恒返回未收缩的 G1，把一个会销毁用户注释的缺陷
  * 完全掩盖住了；而零延迟的桩测不出"请求在途的那一帧"——真实宿主的响应必然晚于本次
  * 点击引发的渲染，缺陷就长在那一帧里。
+ *
+ * `spec/setGroup` 这一段是照着 `core/src/spec-edit.ts` 的 `setGroup` 抄的**同构实现**，
+ * 不是"够用就行"的近似。此前它缺了两条语义，各掩盖了一整类缺陷：
+ *
+ * - **`id: null` 的建组是空实现**。于是"新建态下的草稿最后建出了一个凭空多出来的
+ *   重复分组"这种结果，在断言 `groupsNow()` 时完全看不见——桩里压根没有那个分组。
+ * - **不实现「text 清空即删除」**。而这条正是本项目那条红线的执行者：面板一旦把空串
+ *   提交上去，core 就把分组连同用户写的注释一起抹掉。桩不照做，任何"注释被清空"的
+ *   缺陷在契约断言上都是绿的。
+ *
+ * 仍未建模的一条：core 会把 members 排序（`sort(localeCompare)`），这里保持点击顺序。
+ * 排序与本文件任何一条用例要防的缺陷都无关，而改掉它会让十几处断言变成噪声；
+ * "顺序也照做"那一半由 lock-members 的双树探针用真实 `Session` 覆盖。
  */
 const groupBridge = (
   initial: Group[], delayMs = 20, failNth: number | null = null, nodes: ViewNode[] = FIXTURE,
@@ -90,27 +123,49 @@ const groupBridge = (
           throw new Error('写失败了')
         }
         const id = params.id as string | null
-        const members = params.members as string[]
+        const members = params.members as string[] | undefined
+        const wanted = typeof params.name === 'string' ? params.name.trim() : ''
+        const current = id === null ? undefined : groups.find(g => g.id === id)
+        // 改名时自身的旧 id 不算冲突，否则每改一次名字就多一个 -2 后缀
+        const others = new Set(groups.filter(g => g !== current).map(g => g.id))
         // core 的 setGroup 返回的是**落地后**的 id：给了 name 就是改名后的那个
         // （spec-edit 的 targetId）。桩必须照做，否则改名后的链路根本测不到。
-        const landedId = typeof params.name === 'string' && params.name !== '' ? params.name : (id ?? 'group')
-        groups = groups.map(g => {
-          if (g.id !== id) return g
-          const next: Group = {
-            ...g,
-            members: [...members],
-            ...(typeof params.name === 'string' && params.name !== '' ? { id: params.name } : {}),
-            ...(params.text !== undefined ? { text: params.text as string } : {}),
-          }
-          // severity 是三态，桩必须照 core 来（spec-edit.ts 的 setGroup）：
-          // undefined = 不变、null = `delete existing.severity`、其余 = 设值。
-          // 旧桩写的是 `params.severity ? {...} : {}`——null 被当成"不变"，于是
-          // "面板把一个陈旧的空值提交成 null、把用户设好的强度删掉"这类缺陷
-          // 在桩上完全看不出来，契约断言照样绿。
-          if (params.severity === null) delete next.severity
-          else if (params.severity !== undefined) next.severity = params.severity as Severity
-          return next
-        })
+        const landedId = wanted
+          ? uniqueId(wanted, others)
+          : (id ?? deriveId(members ?? [], new Set(groups.map(g => g.id))))
+        // 给了 name 却撞上另一个分组时，core 编辑的是**那一个**，不是新建
+        const existing = current ?? groups.find(g => g.id === landedId)
+        const text = params.text === undefined
+          ? existing?.text
+          : String(params.text ?? '').trim()
+
+        // 清空 text 即删除该分组；对尚不存在的分组是空操作（spec-edit.ts 同款早退）
+        if (text === undefined || text === '') {
+          if (existing) groups = groups.filter(g => g !== existing)
+          return { tree: tree(nodes), dirty: true, groups, id: landedId }
+        }
+
+        if (existing) {
+          groups = groups.map(g => {
+            if (g !== existing) return g
+            const next: Group = {
+              ...g, id: landedId, text,
+              members: members ? [...members] : [...g.members],
+            }
+            // severity 是三态，桩必须照 core 来（spec-edit.ts 的 setGroup）：
+            // undefined = 不变、null = `delete existing.severity`、其余 = 设值。
+            // 旧桩写的是 `params.severity ? {...} : {}`——null 被当成"不变"，于是
+            // "面板把一个陈旧的空值提交成 null、把用户设好的强度删掉"这类缺陷
+            // 在桩上完全看不出来，契约断言照样绿。
+            if (params.severity === null) delete next.severity
+            else if (params.severity !== undefined) next.severity = params.severity as Severity
+            return next
+          })
+        } else {
+          const created: Group = { id: landedId, members: [...(members ?? [])], text }
+          if (params.severity) created.severity = params.severity as Severity
+          groups = [...groups, created]
+        }
         return { tree: tree(nodes), dirty: true, groups, id: landedId }
       }
       throw new Error(`本用例未配置 ${method}`)
@@ -140,6 +195,20 @@ const selectAllThree = (container: HTMLElement) => {
   fireEvent.click(rows[1], { ctrlKey: true })
   fireEvent.click(rows[2], { ctrlKey: true })
 }
+
+/**
+ * 按显示名取行。点 src 会把它展开，行数与下标从此错位，缓存的下标就指到别处去了；
+ * 名字是稳定的（`.fs-name` 里目录带尾斜杠）。
+ */
+const rowByName = (container: HTMLElement, name: string): HTMLElement => {
+  const row = rowsOf(container).find(r => r.querySelector('.fs-name')?.textContent === name)
+  expect(row, `树上没有名为 ${name} 的行`).toBeTruthy()
+  return row as HTMLElement
+}
+
+/** 某个成员的 × 按钮。锁定态下它必须是禁用的 */
+const removeBtn = (path: string) =>
+  screen.getByLabelText(`从选中集移除 ${path}`) as HTMLButtonElement
 
 
 const clickFirstRow = (container: HTMLElement) => {
@@ -1133,6 +1202,32 @@ describe('App', () => {
     expect(bridge.groupsNow().find(g => g.id === 'g1')!.severity).toBeUndefined()
   })
 
+  // 从 GroupPanel.test 搬过来的：切换编辑目标时丢草稿的动作已经从面板移到了 App
+  // （草稿归上层所有），继续在组件级测就只能测桩自己。这条守的还是同一件事：
+  // 用户看着 g2 的标题、框里却是写给 g1 的半句话，一失焦就把它盖到 g2 原有的注释上。
+  it('在 g1 的框里写了字、还没失焦就切到 g2，那些字不会落到 g2 头上', async () => {
+    const SAME: Group = { id: 'g2', members: ['src', 'docs'], text: '第二个' }
+    const bridge = groupBridge([G1, SAME], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])
+    fireEvent.click(rows[1], { ctrlKey: true })
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '本来要写给 g1 的' } })
+
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g2'))
+
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('第二个')
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    await act(async () => { await new Promise(r => setTimeout(r, 60)) })
+
+    expect(bridge.groupsNow().find(g => g.id === 'g2')!.text).toBe('第二个')
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('一体的两个目录')
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(0)
+  })
+
   it('切到另一个同成员分组后再移除成员，收缩的是切过去的那个', async () => {
     // 切换编辑目标必须换掉上层那份 pending.groupId，而不只是面板自己的显示。
     // 只换显示的话，下一次写入仍打在 g1 上：界面显示 g2 收缩了，契约里动的是 g1。
@@ -1166,6 +1261,10 @@ describe('App', () => {
   // 全程没有任何非常规时序：写注释 → 点某个成员的 ×（mousedown 使输入框失焦、写入派发）
   // → click 使 members 收缩。断言落在**契约的最终内容**上，而不只是发出去的 params——
   // 这条缺陷的要害正是"最终写进文件的是旧文本"。本项目唯一那条红线。
+  //
+  // 序列里多出的那一次"点了没反应"不是凑数：草稿落地之前成员集是锁着的（见
+  // PendingGroup.draft），这一下 × 本来就该被挡回去。别把它删成一次点击——那样这条
+  // 用例会绕开锁，而锁正是同一条红线上另外两条 Critical 的收口。
   it('写完注释紧接着移除成员：用户新写的注释不会被旧注释盖回去', async () => {
     const bridge = groupBridge([G3], 20)
     const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
@@ -1177,7 +1276,13 @@ describe('App', () => {
 
     fireEvent.change(ta, { target: { value: '用户新写的一大段注释' } })
     fireEvent.blur(ta)                                                // × 的 mousedown
-    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))    // × 的 click
+    expect(removeBtn('README.md').disabled).toBe(true)                // 草稿在途，锁着
+    fireEvent.click(removeBtn('README.md'))                           // × 的 click，被挡下
+    expect(memberPathsOf(container)).toEqual(['src', 'docs', 'README.md'])
+
+    await waitFor(() => expect(bridge.groupsNow()[0].text).toBe('用户新写的一大段注释'))
+    await waitFor(() => expect(removeBtn('README.md').disabled).toBe(false))
+    fireEvent.click(removeBtn('README.md'))                           // 落地解锁后再点
 
     await waitFor(() => expect(screen.getByText(/已选中 2 项/)).toBeTruthy())
     await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs']))
@@ -1205,10 +1310,15 @@ describe('App', () => {
     await screen.findByLabelText('分组注释')
 
     fireEvent.change(screen.getByLabelText('约束强度'), { target: { value: 'error' } })
-    // 宿主往返期间移除一个成员。≥3 个成员才做得到：减到 1 个面板就卸载了。
-    fireEvent.click(screen.getByLabelText('从选中集移除 README.md'))
+    // 改强度也是一次草稿，宿主往返期间成员集锁着——这一下点不动（见 PendingGroup.draft）
+    expect(removeBtn('README.md').disabled).toBe(true)
+    fireEvent.click(removeBtn('README.md'))
+    expect(memberPathsOf(container)).toEqual(['src', 'docs', 'README.md'])
 
     await waitFor(() => expect(bridge.groupsNow()[0].severity).toBe('error'))
+    // 落地解锁后再移除。≥3 个成员才做得到：减到 1 个面板就卸载了。
+    await waitFor(() => expect(removeBtn('README.md').disabled).toBe(false))
+    fireEvent.click(removeBtn('README.md'))
     await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs']))
 
     const ta = screen.getByLabelText('分组注释')
@@ -1228,6 +1338,31 @@ describe('App', () => {
   // `setPending({ ...now, groupId: id })`——那句正是"改名后把 groupId 换成新 id"的地方。
   // 于是 pending.groupId 停在一个已被改名掉的旧 id 上，此后的写入全打在幽灵分组上：
   // 没有丢文字，但用户以为在编辑 parser，实际每次都在新建一个重复的 g2。
+  // 草稿搬到上层之后顺带修好的一处：点选择器里**已经是当前目标**的那一项，从前会连带把
+  // 框里没提交的字一起丢掉（面板的 pick 无条件 dropDrafts）。目标一步没动，没有任何理由
+  // 丢用户打的字——这是本项目那条红线的正方向，钉在这里免得后人"修回去"。
+  it('点选择器里已经在编辑的那一项，框里没提交的字不会被丢掉', async () => {
+    const SAME: Group = { id: 'g2', members: ['src', 'docs'], text: '第二个' }
+    const bridge = groupBridge([G1, SAME], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])
+    fireEvent.click(rows[1], { ctrlKey: true })
+    await screen.findByLabelText('分组注释')
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g2'))
+
+    fireEvent.change(screen.getByLabelText('分组注释'), { target: { value: '写给 g2 的半句话' } })
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g2'))          // 点的就是当前目标
+
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('写给 g2 的半句话')
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    await waitFor(() => expect(bridge.groupsNow().find(g => g.id === 'g2')!.text)
+      .toBe('写给 g2 的半句话'))
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('一体的两个目录')
+  })
+
   it('点选择器里已经在编辑的那一项，不会把在途改名的结果拨丢', async () => {
     const SAME: Group = { id: 'g2', members: ['src', 'docs'], text: '第二个' }
     const bridge = groupBridge([G1, SAME], 60)
@@ -1260,5 +1395,227 @@ describe('App', () => {
     // lastCall 是**发出时**记的，桩还压着 60ms 才落地——契约那一半必须自己等
     await waitFor(() => expect(bridge.groupsNow().find(g => g.id === 'parser')!.text)
       .toBe('改名之后写的注释'))
+  })
+
+  // ── 草稿的生命周期，以及"草稿活着时成员集锁定" ─────────────────────────────
+  //
+  // 前四轮把"显示"与"写入"统一到了一份 pending 上，唯独**草稿**（用户打了字还没提交的
+  // 那一份）留在面板自己的 state 里，与"它是写给谁的"分家。两条 Critical 由此而来，
+  // 机制同源：草稿还活着的时候成员集变了，编辑目标跟着换，草稿却原地不动。
+  //
+  //   N1：落地之后草稿没清空 → 成员移走又加回来 → 目标已换成同成员的另一个分组
+  //   N2：新建态下写了一半 → 点 × 让剩下两项恰好等于某个既有分组 → 目标凭空变成它
+  //
+  // 修法两条，缺一不可：草稿**落地即清空**（治 N1），草稿**活着时成员集锁定**（治 N2）。
+  // 下面每一条的断言都尽量落在契约的最终内容上——"另一个分组的注释被覆盖"这件事，
+  // 在发出去的 params 上是看不出来的：那笔请求本身完全合法。
+
+  it('注释落地后把成员移走又加回来，成员集相同的另一个分组的注释不被覆盖', async () => {
+    // N1 的完整序列。全程没有任何非常规时序，每一步都等到落地。
+    const g9: Group = { id: 'g9', members: ['src', 'docs', 'README.md'], text: 'g9 原有的注释' }
+    const g1: Group = { id: 'g1', members: ['src', 'docs', 'README.md'], text: 'g1 原有的注释' }
+    const bridge = groupBridge([g9, g1], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    expect((ta as HTMLTextAreaElement).value).toBe('g9 原有的注释')   // 默认取文件里靠前那个
+
+    fireEvent.click(screen.getByLabelText('改为编辑分组 g1'))
+    fireEvent.change(screen.getByLabelText('分组注释'), { target: { value: '写给 g1 的新注释' } })
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    await waitFor(() =>
+      expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('写给 g1 的新注释'))
+
+    // 落地了，草稿该没了，锁也该开了——否则下面这一点根本点不动
+    fireEvent.click(removeBtn('README.md'))
+    await waitFor(() =>
+      expect(bridge.groupsNow().find(g => g.id === 'g1')!.members).toEqual(['src', 'docs']))
+
+    // 反悔：没有撤销按钮，ctrl 点一下把它加回来是最自然的动作
+    fireEvent.click(rowByName(container, 'README.md'), { ctrlKey: true })
+    await waitFor(() => expect(screen.getByText(/已选中 3 项/)).toBeTruthy())
+    // 此刻编辑目标已经是 g9（只有它的成员集还等于这三项），框里必须是 g9 的注释
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('g9 原有的注释')
+
+    // 此后**仅需一次失焦、无需任何输入**
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    await act(async () => { await new Promise(r => setTimeout(r, 60)) })
+
+    expect(bridge.groupsNow().find(g => g.id === 'g9')!.text).toBe('g9 原有的注释')
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('写给 g1 的新注释')
+  })
+
+  it('新建态下写了一半注释再点 ×：成员集不动，既有分组的注释不被覆盖', async () => {
+    // N2 的完整序列。**确定性的，没有任何往返窗口**：用户从头到尾没见过 g1 原有的注释，
+    // 唯一的信号是「分组名」栏悄悄从空变成 g1。
+    const g1: Group = { id: 'g1', members: ['src', 'docs'], text: 'g1 原有的注释' }
+    const bridge = groupBridge([g1], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)                       // 三项，不构成任何分组
+    const ta = await screen.findByLabelText('分组注释')
+    expect((ta as HTMLTextAreaElement).value).toBe('')
+
+    fireEvent.change(ta, { target: { value: '写给这三个的注释' } })
+    fireEvent.click(removeBtn('README.md'))         // 锁着，点了也不该有反应
+
+    expect(memberPathsOf(container)).toEqual(['src', 'docs', 'README.md'])
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    await act(async () => { await new Promise(r => setTimeout(r, 60)) })
+
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('g1 原有的注释')
+    // 另一半：这一笔该建的是一个新分组，成员是用户看着的那三项
+    expect(bridge.groupsNow().find(g => g.text === '写给这三个的注释')!.members)
+      .toEqual(['src', 'docs', 'README.md'])
+  })
+
+  it('草稿未提交时 ctrl 改选不动本轮成员集，另一个分组的注释不被覆盖', async () => {
+    // 与 N2 同一个洞，入口换成树上的 ctrl 加选：加完之后选中集恰好等于 g1。
+    const g1: Group = { id: 'g1', members: ['src', 'docs', 'README.md'], text: '三个一体' }
+    const bridge = groupBridge([g1], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const rows = rowsOf(container)
+    fireEvent.click(rows[0])                        // src
+    fireEvent.click(rows[1], { ctrlKey: true })     // docs —— 两项，不等于 g1
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '写给这两个的' } })
+
+    fireEvent.click(rowByName(container, 'README.md'), { ctrlKey: true })
+
+    expect(memberPathsOf(container)).toEqual(['src', 'docs'])
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('写给这两个的')
+
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    await act(async () => { await new Promise(r => setTimeout(r, 60)) })
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('三个一体')
+  })
+
+  it('草稿未提交时点分组色点不动本轮成员集', async () => {
+    // 第三个入口：§5.5 的色点，点一下就把选中集换成该分组的全部成员。
+    const g1: Group = { id: 'g1', members: ['src', 'docs'], text: 'g1 原有的注释' }
+    const bridge = groupBridge([g1], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectTwoUnrelated(container)                   // src + README.md，不等于 g1
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '写给 src 与 README 的' } })
+
+    // src 与 docs 行尾都挂着 g1 的色点，取 src 那一个
+    fireEvent.click(within(rowByName(container, 'src/')).getByLabelText('选中分组 g1 的全部成员'))
+
+    expect(memberPathsOf(container)).toEqual(['src', 'README.md'])
+    fireEvent.blur(screen.getByLabelText('分组注释'))
+    await act(async () => { await new Promise(r => setTimeout(r, 60)) })
+    expect(bridge.groupsNow().find(g => g.id === 'g1')!.text).toBe('g1 原有的注释')
+  })
+
+  it('写入落地后草稿清空，成员集随之解锁', async () => {
+    // 锁与"落地即清空"是配套的：草稿若永不清空，"草稿存在期间锁定"就等于永久锁定。
+    const bridge = groupBridge([G3], 30)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    expect(removeBtn('README.md').disabled).toBe(false)
+
+    fireEvent.change(ta, { target: { value: '新注释' } })
+    expect(removeBtn('README.md').disabled).toBe(true)      // 草稿一出现就锁
+
+    fireEvent.blur(ta)
+    await waitFor(() => expect(bridge.groupsNow()[0].text).toBe('新注释'))
+    await waitFor(() => expect(removeBtn('README.md').disabled).toBe(false))
+  })
+
+  it('写入在途时继续输入，落地不会把新打的字清掉', async () => {
+    // "落地即清空"只能清**这一笔写出去的那一份**。一律清空的话，用户在宿主往返的
+    // 20–60ms 里补的半句话会被无声抹掉——同样是弄丢人写的字。
+    const bridge = groupBridge([G3], 60)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '第一版' } })
+    fireEvent.blur(ta)
+    await flushChain()
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+
+    fireEvent.change(ta, { target: { value: '第一版加了后半句' } })
+    await waitFor(() => expect(bridge.groupsNow()[0].text).toBe('第一版'))
+    await act(async () => { await new Promise(r => setTimeout(r, 20)) })
+
+    expect((ta as HTMLTextAreaElement).value).toBe('第一版加了后半句')
+    fireEvent.blur(ta)
+    await waitFor(() => expect(bridge.groupsNow()[0].text).toBe('第一版加了后半句'))
+  })
+
+  it('收缩在途时开始写注释：收缩落地不会把这段新草稿清掉，锁也立刻生效', async () => {
+    // 这是"重置/落地发生在写入在途的那一帧"那个组合，此前 216 条里没有一条走到过它：
+    // 收缩派发时还没有草稿，草稿是在宿主往返的那 60ms 里冒出来的。落地回调若一律
+    // 清草稿，用户在这段窗口里打的字就被无声抹掉。
+    const bridge = groupBridge([G3], 60)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.click(removeBtn('README.md'))            // 此刻没有草稿，收缩是允许的
+    await flushChain()
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+
+    fireEvent.change(ta, { target: { value: '收缩在途时写的' } })
+    expect(removeBtn('docs').disabled).toBe(true)      // 草稿一冒出来就锁上
+
+    await waitFor(() => expect(bridge.groupsNow()[0].members).toEqual(['src', 'docs']))
+    await act(async () => { await new Promise(r => setTimeout(r, 20)) })
+
+    expect((ta as HTMLTextAreaElement).value).toBe('收缩在途时写的')
+    fireEvent.blur(ta)
+    await waitFor(() => expect(bridge.groupsNow()[0].text).toBe('收缩在途时写的'))
+  })
+
+  it('分组写入失败时草稿与锁都留着，用户不必白打一遍', async () => {
+    const bridge = groupBridge([G3], 20, 1)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '很长的一段注释' } })
+    fireEvent.blur(ta)
+
+    await waitFor(() => expect(screen.getByText(/写失败了/)).toBeTruthy())
+    expect((screen.getByLabelText('分组注释') as HTMLTextAreaElement).value).toBe('很长的一段注释')
+    expect(removeBtn('README.md').disabled).toBe(true)
+  })
+
+  it('草稿未提交时普通单击树上另一个节点：离开本轮，草稿丢弃且什么都没写', async () => {
+    // 锁不能把用户困住。普通单击本来就有"放弃多选"的语义，它必然把选中集收成 1 项，
+    // 分组面板随之卸载——这就是留出来的那条出路，不需要新按钮。
+    const bridge = groupBridge([G3], 20)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    selectAllThree(container)
+    const ta = await screen.findByLabelText('分组注释')
+    fireEvent.change(ta, { target: { value: '还没提交就走了' } })
+
+    fireEvent.click(rowByName(container, 'docs/'))
+    expect(screen.queryByLabelText('分组注释')).toBeNull()
+
+    // 再凑回同样这三项：框里必须是契约里的注释，不能还留着上一轮那半句
+    fireEvent.click(rowByName(container, 'src/'), { ctrlKey: true })
+    fireEvent.click(rowByName(container, 'README.md'), { ctrlKey: true })
+    const back = await screen.findByLabelText('分组注释')
+    expect((back as HTMLTextAreaElement).value).toBe('一体的三个')
+    await act(async () => { await new Promise(r => setTimeout(r, 40)) })
+    expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(0)
   })
 })

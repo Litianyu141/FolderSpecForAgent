@@ -55,12 +55,23 @@
    之前这份列表没有标题，直接浮在「约束强度」下拉框下面，用户反馈看不出那几行是什么 */
 .fs-member-list-wrap { margin-top: 4px; }
 
+/* 锁定态的说明。判据是"用户点了 × 没反应时，能一眼明白为什么"——所以它不能只是
+   把按钮变淡，必须有一句写着原因的话。样式蹭 .fs-panel-note 的形状但独立一条：
+   那一条挂在面板顶部的多分组提示上，两处将来很可能各自演化。 */
+.fs-lock-hint {
+  margin: 4px 0 0; padding: 6px 8px; font-size: 12px; line-height: 1.5; opacity: 0.85;
+  background: var(--fs-row-hover-bg); border-radius: 3px;
+}
+
 /* 分组面板底部：当前选中集的成员列表，每项可单独移出选中集 */
 .fs-member-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .fs-member-list li { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 0; }
 .fs-member-path { font-size: 12px; word-break: break-all; }
 .fs-member-list button { flex-shrink: 0; border: none; background: transparent; cursor: pointer; opacity: 0.6; }
 .fs-member-list button:hover { opacity: 1; }
+/* 锁定态：置灰且连 hover 反馈一起收掉，否则鼠标划过去还像能点 */
+.fs-member-list button:disabled { opacity: 0.25; cursor: default; }
+.fs-member-list button:disabled:hover { opacity: 0.25; }
 
 /* AnnotationPanel 底部：单选节点所属的全部分组，只读、可点击跳转 */
 .fs-owning-groups { margin-top: 4px; }

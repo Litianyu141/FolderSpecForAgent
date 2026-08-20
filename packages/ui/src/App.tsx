@@ -7,7 +7,7 @@ import { AnnotationPanel } from './AnnotationPanel.js'
 import type { PanelPatch } from './AnnotationPanel.js'
 import { ContentPane } from './ContentPane.js'
 import { GroupPanel } from './GroupPanel.js'
-import type { GroupSubmit } from './GroupPanel.js'
+import type { GroupDraft, GroupSubmit } from './GroupPanel.js'
 import { applyClick, matchingGroups } from './selection.js'
 import type { ClickMods, SelectionState } from './selection.js'
 import type { TreeApi } from 'react-arborist'
@@ -41,6 +41,30 @@ interface PendingGroup {
   members: string[]
   anchor: string | null
   groupId: string | null
+  /**
+   * 面板里尚未提交的那一份编辑（null = 用户这一轮还没碰过任何字段）。
+   *
+   * **它必须和 groupId、members 待在同一个对象里**，这是本轮两条 Critical 的收口。
+   * 草稿曾经只活在 GroupPanel 自己的 state 里，与"它是写给谁的"分家：
+   *
+   *   N1：写注释、失焦、**落地** → 点某个成员的 × → ctrl 点把它加回来 → 一次失焦。
+   *       落地后草稿没人清，成员集绕一圈回到原样，编辑目标却已经换成成员集相同的
+   *       **另一个**分组，那段草稿于是盖掉了它的注释。
+   *   N2：ctrl 选三项（不构成分组）→ 写字 → 点 × 去掉一项 → 剩下两项恰好等于某个既有
+   *       分组 → 一次失焦，它的注释被草稿覆盖。确定性的，没有任何往返窗口；用户从头到尾
+   *       没见过那段被盖掉的注释，唯一的信号是「分组名」栏悄悄从空变成那个 id。
+   *
+   * 两条同源，收口也只有两条，写在这里以免后人只捡其中一条：
+   *
+   * 1. **草稿活着时成员集锁定**（× 置灰、ctrl/shift 改选与色点点击都不改成员集）。
+   *    出路是普通单击——它必然把选中集收成 1 项，分组面板随之卸载，草稿一起消失。
+   * 2. **写入落地即清空草稿**，且只清"这一笔写出去的那一份"（用户可能在宿主往返的
+   *    20–60ms 里补了半句话，一律清空就把它抹了）。写**失败**则留着草稿，别让用户
+   *    白打一遍字；锁跟着留着，他直接再失焦就是重试。
+   *
+   * 少了第 2 条，第 1 条就等于永久锁定；少了第 1 条，第 2 条挡不住 N2。
+   */
+  draft: GroupDraft | null
 }
 
 export function App({ bridge, initialRoot }: AppProps) {
@@ -72,12 +96,9 @@ export function App({ bridge, initialRoot }: AppProps) {
    *
    * 1. 移除成员是乐观更新：成员立刻从面板上消失，请求随后排队发出。GroupPanel 在那一帧里
    *    会看到"成员少了、groups 还没更新"，matchingGroups 必然失配——所以编辑目标由这里
-   *    给定（`round`），不让面板自己去猜。猜错的后果是它把用户的分组名与注释清成空串，
-   *    那个空串一提交，core 的「清空 text 即删除」就把分组连同注释一起抹掉，正踩在本项目
-   *    唯一那条红线上。**传给面板的必须是"有没有这一轮"这个事实本身**，不能压成
-   *    `pending?.groupId ?? null`：那样一来"还没开始编辑"和"编辑中、只是还没有分组"
-   *    就分不开了，而面板正是靠这个区别判断"成员集变了"到底是换了目标还是用户在收缩
-   *    自己这一组（见 GroupPanel 里那条重置规则）。
+   *    给定（`currentGroupId`），不让面板自己去猜。猜错的后果是它把用户的分组名与注释
+   *    清成空串，那个空串一提交，core 的「清空 text 即删除」就把分组连同注释一起抹掉，
+   *    正踩在本项目唯一那条红线上。
    * 2. 连续两次移除不能各自从渲染快照出发，否则第二次会把第一次移掉的成员又加回去。
    *    **新建态同样如此**，所以无论有没有绑定分组都要记。
    * 3. 改名会让 core 把分组 rename 成新 id。缓存的旧 id 从此指向一个不存在的分组，而
@@ -206,20 +227,33 @@ export function App({ bridge, initialRoot }: AppProps) {
 
   const handleSelect = useCallback((path: string, mods: ClickMods) => {
     if (tree === null) return
-    // Shift 区间的顺序直接取 react-arborist 算好的可见行，不在外面复算一份：
-    // 那份顺序同时受展开态、搜索过滤、以及"过滤态下目录一律默认展开"三者影响，
-    // 外面复算已经错过两次，每次都把屏幕上没有的路径塞进选中集——而选中集会经
-    // spec/setGroup 写进用户的 .folderspec.md（spec §5.3 的"所见即所选"）。
-    const order = treeApiRef.current?.visibleNodes.map(n => n.id) ?? []
-    // 扩选是在**面板上此刻那一份**的基础上扩，不是在尚未落地的 selection 上扩，
-    // 否则收缩在途时 ctrl 加选会把刚被移除的成员一起带回来。
-    // base 必须在 setPending(null) 之前取：setSelection 的更新函数要等到渲染时才跑，
-    // 那时 pendingRef 早就被清空了。
     const p = pendingRef.current
-    const base = p === null ? null : { selected: p.members, anchor: p.anchor }
-    setPending(null)
-    setSelection(prev => applyClick(base ?? prev, path, order, mods))
+    /**
+     * 草稿未提交时，带修饰键的改选**不动本轮成员集**（见 PendingGroup.draft）。
+     *
+     * 普通单击刻意不锁：它本来就有"放弃多选"的语义，必然把选中集收成 1 项，分组面板
+     * 随之卸载、草稿一起消失——这就是留给用户的那条出路，不需要新按钮。真实浏览器里
+     * 这一下还会先让输入框失焦、把草稿提交出去（mousedown → blur → click），所以
+     * "离开即丢弃"丢的是一份已经写出去的草稿，不是用户白打的字。
+     */
+    const lockedOut = p !== null && p.draft !== null && (mods.ctrl || mods.shift)
+    if (!lockedOut) {
+      // Shift 区间的顺序直接取 react-arborist 算好的可见行，不在外面复算一份：
+      // 那份顺序同时受展开态、搜索过滤、以及"过滤态下目录一律默认展开"三者影响，
+      // 外面复算已经错过两次，每次都把屏幕上没有的路径塞进选中集——而选中集会经
+      // spec/setGroup 写进用户的 .folderspec.md（spec §5.3 的"所见即所选"）。
+      const order = treeApiRef.current?.visibleNodes.map(n => n.id) ?? []
+      // 扩选是在**面板上此刻那一份**的基础上扩，不是在尚未落地的 selection 上扩，
+      // 否则收缩在途时 ctrl 加选会把刚被移除的成员一起带回来。
+      // base 必须在 setPending(null) 之前取：setSelection 的更新函数要等到渲染时才跑，
+      // 那时 pendingRef 早就被清空了。
+      const base = p === null ? null : { selected: p.members, anchor: p.anchor }
+      setPending(null)
+      setSelection(prev => applyClick(base ?? prev, path, order, mods))
+    }
 
+    // 中间栏跟的是"最后点击的那个文件"（设计文档 §5.6），与选中集无关，
+    // 所以锁住成员集的那一下照样换预览——否则点下去毫无反应，像是界面卡了
     const node = flatten(tree.children ?? []).get(path)
     if (!node) return
     setContentPath(path)
@@ -289,10 +323,21 @@ export function App({ bridge, initialRoot }: AppProps) {
       members: selection.selected,
       anchor: selection.anchor,
       groupId: matchingGroups(selection.selected, groups)[0]?.id ?? null,
+      draft: null,
     }
     setPending(next)
     return next
   }, [selection.selected, selection.anchor, groups, setPending])
+
+  /**
+   * 用户在面板里改了某个字段。**第一次改就开一轮编辑**——草稿必须从诞生那一刻起就
+   * 和"这一轮在编辑谁"绑在同一份状态里（见 PendingGroup.draft），而不是等到第一次
+   * 写入才补记；等到那时，中间任何一次成员集变化都会把目标换掉而草稿浑然不觉。
+   */
+  const handleGroupDraft = useCallback((next: GroupDraft) => {
+    const p = takePending()
+    setPending({ ...p, draft: next })
+  }, [takePending, setPending])
 
   /**
    * 分组的所有写入走同一条串行链。串行不只是为了落地顺序：两次写并发时，后发的那次
@@ -308,6 +353,8 @@ export function App({ bridge, initialRoot }: AppProps) {
   const runGroupWrite = useCallback((
     build: (p: PendingGroup) => SetGroupParams | null,
     after?: () => void,
+    /** 写失败时成员集要退回的那一份（省略 = 这一步没动成员集，不必退） */
+    revert?: { members: string[]; anchor: string | null },
   ) => {
     const session = pendingRef.current?.session ?? -1
     chainRef.current = chainRef.current.then(async () => {
@@ -315,18 +362,35 @@ export function App({ bridge, initialRoot }: AppProps) {
       if (p === null || p.session !== session) return
       const params = build(p)
       if (params !== null) {
+        // 这一笔写出去的是**哪一份**草稿。落地后只清掉它，不清用户在宿主往返期间
+        // 补进来的新草稿——一律清空等于把那半句话无声抹掉。草稿每次改都是新对象，
+        // 按引用比就够，不必再造一个版本号（上一轮的代次号正是因为没人判得到而被删）。
+        const submitted = p.draft
         const id = await sendSetGroup(params)
         const now = pendingRef.current
         if (now === null || now.session !== session) return
         if (id === null) {
-          // 写失败：丢掉乐观覆盖层，显示退回上一次落地的那份（用户会看到被移除的成员
-          // 回到列表上），排在后面的步骤则在开头那道闸口一起作废。
-          setPending(null)
+          // 写失败：把这一步的乐观改动退回去（用户会看到被移除的成员回到列表上），
+          // 但**草稿留着**——别让用户为一次写入失败白打一遍字，锁也跟着留着，
+          // 他直接再失焦就是重试。换一个会话号，把排在后面、依据"这一步已经成功"
+          // 算出来的步骤在开头那道闸口一起作废。
+          setPending({
+            ...now,
+            session: ++sessionRef.current,
+            members: revert ? revert.members : now.members,
+            anchor: revert ? revert.anchor : now.anchor,
+          })
           return
         }
-        // core 可能把分组改了名，缓存的 id 必须跟着走，否则下一次写会打在一个
-        // 不存在的分组上——那是一次静默的空操作，不会报错
-        setPending({ ...now, groupId: id })
+        setPending({
+          ...now,
+          // core 可能把分组改了名，缓存的 id 必须跟着走，否则下一次写会打在一个
+          // 不存在的分组上——那是一次静默的空操作，不会报错
+          groupId: id,
+          // 落地即清空草稿：显示随之回落到已经更新的 current，与落地结果一致，
+          // 成员集也就此解锁。草稿若永不清空，"草稿存在期间锁定"等于永久锁定。
+          draft: now.draft === submitted ? null : now.draft,
+        })
       }
       after?.()
     }).catch(e => {
@@ -358,6 +422,10 @@ export function App({ bridge, initialRoot }: AppProps) {
   groupsRef.current = groups
 
   const handlePickGroup = useCallback((id: string) => {
+    // 草稿未提交时色点点击不动本轮成员集，与树上的 ctrl/shift 改选同一条规则
+    // （见 PendingGroup.draft）。它换的是整个选中集，不锁住就是 N2 的第三个入口。
+    const p = pendingRef.current
+    if (p !== null && p.draft !== null) return
     const g = groupsRef.current.find(x => x.id === id)
     if (!g) return
     setPending(null)
@@ -385,6 +453,10 @@ export function App({ bridge, initialRoot }: AppProps) {
       members: p?.members ?? selection.selected,
       anchor: p?.anchor ?? selection.anchor,
       groupId: id,
+      // 换目标就丢草稿：框里那半句是写给上一个分组的，跟过去一失焦就盖掉新目标原有的
+      // 注释。这里刻意**不**把新目标的值拍进草稿——拍进去就又是一份会陈旧的快照，
+      // 显示也不会有空档：面板没碰过的字段实时跟着 current 走。
+      draft: null,
     })
   }, [selection.selected, selection.anchor, setPending])
 
@@ -405,6 +477,10 @@ export function App({ bridge, initialRoot }: AppProps) {
       // 落地了才把这一份提交进 selection —— selection 是"上一次落地的那份"，
       // 也就是写失败时显示要退回去的地方
       () => setSelection({ selected: rest, anchor }),
+      // 写失败要退回的正是这一步动手之前的那一份。取 p 而不是当时的 selection：
+      // 前面若还有已落地的步骤，selection 已经等于 p.members；若前面那步失败了，
+      // 这一步在闸口就被作废，根本轮不到回滚。
+      { members: p.members, anchor: p.anchor },
     )
   }, [takePending, runGroupWrite, setPending])
 
@@ -491,9 +567,16 @@ export function App({ bridge, initialRoot }: AppProps) {
             <GroupPanel
               members={shown.selected}
               groups={groups}
-              round={pending === null ? null : { groupId: pending.groupId }}
+              // 两个 `?? null` 都是**语义精确**的压缩，不是把两种状态揉成一种：草稿与
+              // 绑定目标只可能存在于一轮编辑里（handleGroupDraft 一定先 takePending），
+              // 没有轮次就必然两者皆无。面板也不再有任何按"有没有轮次"分岔的本地状态——
+              // 那条按成员键重置草稿的规则连同它冻结的身份拷贝已经删掉了，草稿的生死
+              // 全在上面这份 pending 里决定。
+              currentGroupId={pending?.groupId ?? null}
+              draft={pending?.draft ?? null}
               disabled={readOnly}
               onSubmit={handleGroupSubmit}
+              onDraftChange={handleGroupDraft}
               onRemoveMember={handleRemoveMember}
               onEditGroup={handleEditGroup}
             />
