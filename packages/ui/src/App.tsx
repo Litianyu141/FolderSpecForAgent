@@ -16,6 +16,7 @@ import { useElementSize } from './useElementSize.js'
 import { Toolbar } from './Toolbar.js'
 import { ContextMenu } from './ContextMenu.js'
 import type { ContextMenuTarget } from './ContextMenu.js'
+import { copyText } from './clipboard.js'
 import { NewNodeDialog } from './NewNodeDialog.js'
 import type { NewNodeDraft } from './NewNodeDialog.js'
 import { I18nContext, translate } from './i18n.js'
@@ -91,6 +92,15 @@ interface PendingGroup {
 
 export function App({ bridge, initialRoot }: AppProps) {
   const [root, setRoot] = useState(initialRoot)
+  /**
+   * 本平台的路径分隔符，由 core 在 `OpenResult.sep` 里如实给出（UI 零 node 依赖，
+   * 自己算不出来）。只用于「复制路径」把 root 与 ViewNode.path 拼成一条绝对路径。
+   *
+   * 初值给 '/'：workspace/open 落地之前树是空的，右键菜单根本开不出来，这个值到不了
+   * 任何用户可见的地方；给一个确定的字面量只是为了让类型是 string 而不是 string | null，
+   * 省掉一处永远走不到的分支。
+   */
+  const [sep, setSep] = useState('/')
   const [tree, setTree] = useState<ViewNode | null>(null)
   const [groups, setGroups] = useState<Group[]>([])
   const [parseErrors, setParseErrors] = useState<ParseError[] | null>(null)
@@ -261,6 +271,9 @@ export function App({ bridge, initialRoot }: AppProps) {
       const isSameWorkspace = r.root === openedRootRef.current
       openedRootRef.current = r.root
       setRoot(r.root)
+      // 与 root 同一笔落地：两者必须来自**同一次** open()，分开更新会在换工作区
+      // （尤其是跨平台的远程场景）那一帧里拿旧 sep 去拼新 root。
+      setSep(r.sep)
       setTree(r.tree)
       setGroups(r.groups)
       setParseErrors(r.parseErrors)
@@ -789,6 +802,27 @@ export function App({ bridge, initialRoot }: AppProps) {
     setMenu({ path: null, parentPath: '', declared: false, isDir: true, x: e.clientX, y: e.clientY })
   }, [])
 
+  /**
+   * 菜单里点了「复制路径」/「复制相对路径」。**纯读**：不碰 Spec、不发任何 bridge
+   * 请求、不置脏、不进撤销栈（CLAUDE.md 铁律 1 的题中之义——它连 .folderspec.md
+   * 都不写）。要复制什么由菜单算好传进来，这里只管送进剪贴板并处理失败。
+   *
+   * 先关菜单再复制：从用户视角"点一下菜单就该收起"，而剪贴板那一步横跨一次 await，
+   * 等它回来再关会让菜单在屏幕上多挂几十毫秒，看着像卡住。
+   *
+   * 失败必须弹横幅。这是 brief 里点名的那条：静默失败最糟——用户以为复制成功了，
+   * 粘出去的是上一次的内容，而这中间没有任何信号。横幅里带上那条路径本身，
+   * 让他至少能手动选中复制（文案见 i18n 的 banner.copyFailed）。
+   */
+  const handleCopy = useCallback((text: string) => {
+    setMenu(null)
+    void (async () => {
+      // copyText 自己不抛（见 clipboard.ts 顶部：抛出去就是一次没人接的 rejection，
+      // 症状退化成"点了没反应"）。它返回 false 是这里弹横幅的唯一依据。
+      if (!await copyText(text)) setError(t('banner.copyFailed', { text }))
+    })()
+  }, [t])
+
   /** 顶栏「新建」按钮：与空白区域右键完全同一条路径，只是位置换到按钮下方。 */
   const handleToolbarNewNode = useCallback((x: number, y: number) => {
     setNewNode(null)
@@ -1188,9 +1222,14 @@ export function App({ bridge, initialRoot }: AppProps) {
           <ContextMenu
             target={menu}
             disabled={readOnly}
+            // 只给复制那两项用：把 target.path 拼成一条平台原生的绝对路径。
+            // 两者都来自同一次 workspace/open（见 openRoot 里 setSep 那一句）。
+            root={root}
+            sep={sep}
             onNew={openNewNodeDraft}
             onRename={openRenameDraft}
             onRemove={path => void handleRemoveNode(path)}
+            onCopy={handleCopy}
             onClose={() => setMenu(null)}
           />
         )}

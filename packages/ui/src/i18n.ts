@@ -50,6 +50,12 @@ export const zh = {
   'banner.diskViewSuffix':
     '视图：只按磁盘扫描结果显示，忽略契约里的结构性调整，因此暂时无法编辑。 点击顶栏「我的结构」切换回可编辑视图。',
   'banner.externalChange': '契约文件已在外部修改。',
+  /**
+   * {text} 是那条本该进剪贴板的路径（数据，不翻译）。**必须原样摆在横幅里**：
+   * 复制失败时用户唯一的出路就是从横幅上选中它手动复制，只说"失败了"等于把人
+   * 扔在原地。而静默失败更糟——用户以为复制成功，粘出来是上一次的内容。
+   */
+  'banner.copyFailed': '复制失败：浏览器拒绝了剪贴板写入。请手动复制：{text}',
   'banner.reload': '重新载入',
   'dialog.reloadConfirm': '有未保存的改动，重新载入会丢弃它们。确定要继续吗？',
 
@@ -132,6 +138,15 @@ export const zh = {
    *  依旧在树上，只是不再带任何标注 */
   'contextMenu.removeDisabledNotDeclared': '这个节点在契约里还没有任何声明，没有可取消的东西',
   'contextMenu.disabledReadOnly': '当前不可编辑：契约解析失败，或正处在「原始结构」视图',
+  /**
+   * 复制那两项**不带「仅契约」**，也不该带：上面四项都会改写契约，那三个字是在
+   * 提醒"磁盘不会跟着变"；复制什么都不改，加上反而在暗示它跟契约有关系。
+   * 文案逐字对齐 VSCode 资源管理器的 Copy Path / Copy Relative Path——用户是拿
+   * 那个菜单来要这条功能的，换个说法只会让人怀疑是不是同一件事。
+   * 两项的 title 是将被复制的那条路径本身（数据，不进字典）。
+   */
+  'contextMenu.copyPath': '复制路径',
+  'contextMenu.copyRelPath': '复制相对路径',
 
   // ---- NewNodeDialog：新建节点（仅契约） ----
   /** {parent} 是父目录路径，或 common.workspaceRoot */
@@ -189,6 +204,7 @@ export const en: Record<TranslationKey, string> = {
   'banner.diskViewSuffix':
     ' view — showing only the raw disk scan and ignoring structural changes from the contract, so editing is disabled for now. Click "My Structure" in the toolbar to switch back to the editable view.',
   'banner.externalChange': 'The contract file was modified outside this app.',
+  'banner.copyFailed': 'Copy failed: the browser denied clipboard access. Copy it manually: {text}',
   'banner.reload': 'Reload',
   'dialog.reloadConfirm': 'You have unsaved changes — reloading will discard them. Continue anyway?',
 
@@ -249,6 +265,8 @@ export const en: Record<TranslationKey, string> = {
     'This node has no declaration in the contract yet — there is nothing to remove',
   'contextMenu.disabledReadOnly':
     'Editing is disabled right now: the contract failed to parse, or you are in the "Disk Structure" view',
+  'contextMenu.copyPath': 'Copy Path',
+  'contextMenu.copyRelPath': 'Copy Relative Path',
 
   'newNode.titleDir': 'New directory under "{parent}" (contract only)',
   'newNode.titleFile': 'New file under "{parent}" (contract only)',

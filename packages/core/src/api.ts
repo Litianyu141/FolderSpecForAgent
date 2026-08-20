@@ -12,6 +12,23 @@ export type { FileReadResult } from './file-read.js'
 export interface OpenResult {
   root: string
   rootName: string
+  /**
+   * 本平台的路径分隔符（`nodePath.sep`）：POSIX 是 `'/'`，Windows 是 `'\'`。
+   *
+   * 存在的唯一理由是 UI 要把 `root`（平台原生的绝对路径）和 `ViewNode.path`
+   * （**恒用 `'/'`**，不随平台变）拼成一条能粘进终端的绝对路径——右键菜单的
+   * 「复制路径」。直接拼会在 Windows 上得到 `C:\repo/src/a.ts` 这种混合物。
+   *
+   * 由 core 如实告知，而不是让 UI 从 root 里"含不含 `\` "反推：那是个启发式，
+   * 而 POSIX 完全允许目录名里带反斜杠（`mkdir 'we\ird'`），这种目录一旦出现在
+   * root 里，反推就会把整条路径的分隔符判错。判错的代价是**静默**的——复制出去
+   * 的是一条看着像模像样、实际不存在的路径，用户粘到终端里才发现，而那时他早已
+   * 认定"复制成功了"。一个平台事实只有 node 侧知道，就由 node 侧说出来。
+   *
+   * 只描述"绝对路径怎么拼"。契约里的相对路径**永远是 `'/'` 分隔**，与这个字段无关——
+   * 那是 .folderspec.md 自己的书写规范，不是操作系统的事。
+   */
+  sep: string
   hasSpec: boolean
   specPath: string
   /** 非 null 表示契约文件解析失败，当前处于只读模式 */

@@ -242,6 +242,8 @@ export class Session {
     return {
       root: this.root,
       rootName: this.actual.name,
+      // 平台事实，不是从 root 的字面量里猜出来的——完整推导见 api.ts 的 OpenResult.sep
+      sep: nodePath.sep,
       hasSpec,
       specPath: this.specPath,
       parseErrors: this.parseErrors,

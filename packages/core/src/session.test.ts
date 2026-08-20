@@ -142,6 +142,21 @@ describe('OpenResult.lang', () => {
   })
 })
 
+// OpenResult.sep 回归：UI 靠这个字段把 ViewNode.path（恒用 '/'）拼回一条平台原生的
+// 绝对路径（右键菜单的「复制路径」）。UI 零 node 依赖，拿不到 nodePath.sep，只能由这里
+// 如实告知——UI 侧任何"从 root 里含不含 '\\' 反推"的启发式都会在 POSIX 下遇到名字里
+// 真的带反斜杠的目录时给出错误分隔符，而错误的绝对路径是**静默**的：粘出来才发现。
+describe('OpenResult.sep', () => {
+  it('如实给出本平台的路径分隔符', async () => {
+    const r = await new Session(root).open()
+    expect(r.sep).toBe(nodePath.sep)
+    // 上面那条在 POSIX 上等价于 '/'，单独写死一个字面量才能让"把 sep 错写成
+    // nodePath.posix.sep / '/' 硬编码"这类变异在本平台上也现形——两条一起才既
+    // 跨平台正确、又在本平台有区分力。
+    expect(r.sep).toBe(process.platform === 'win32' ? '\\' : '/')
+  })
+})
+
 describe('Session 未 open 时的防御性检查', () => {
   it('save 在未 open 时抛错，且绝不覆盖磁盘上已有的契约文件', async () => {
     const original = [

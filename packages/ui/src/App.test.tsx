@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { App } from './App.js'
@@ -33,6 +33,10 @@ const UNSCANNED: ViewNode = { name: 'lib', path: 'lib', isDir: true, origin: 'un
 const openResult = (over: Partial<OpenResult> = {}): OpenResult => ({
   root: '/tmp/repo',
   rootName: 'repo',
+  // 平台路径分隔符（core 侧 OpenResult.sep）。UI 只用它拼「复制路径」那条绝对路径；
+  // 与它无关的既有用例不必关心，所以放在前面、可被 `over` 覆盖（Windows 那条用例
+  // 就是靠覆盖它来造出 'C:\\repo' + '\\' 的组合）。
+  sep: '/',
   hasSpec: false,
   specPath: '/tmp/repo/.folderspec.md',
   parseErrors: null,
@@ -2478,8 +2482,13 @@ describe('右键菜单：重命名（仅契约）', () => {
     await waitFor(() => screen.getByLabelText('工作区路径'))
 
     rightClickRow(container, 'src/') // SRC 在 FIXTURE 里是 actual-only
+    // 本轮在末尾追加了「复制路径」「复制相对路径」两项。这条断言是**穷举**的
+    // （querySelectorAll 全取），加菜单项就必然要跟着补——这正是它的价值：
+    // 菜单里多出/少掉任何一项都瞒不过去。它钉的"改名排在新建与取消声明之间"
+    // 这层语义一个字没变。
     expect(Array.from(container.querySelectorAll('[role="menuitem"]')).map(b => b.textContent))
-      .toEqual(['新建目录（仅契约）', '新建文件（仅契约）', '重命名（仅契约）', '取消声明'])
+      .toEqual(['新建目录（仅契约）', '新建文件（仅契约）', '重命名（仅契约）', '取消声明',
+        '复制路径', '复制相对路径'])
     // 同一个节点上：改名可点、取消声明是灰的——两条菜单项用的**不是**同一条判据。
     // 少了这半条对照，"改名故意不看 declared"这件事就没有任何用例能侦测到。
     expect(menuItem('重命名（仅契约）').disabled).toBe(false)
@@ -3289,5 +3298,290 @@ describe('语言开关接上 core', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'New directory (contract only)' }))
     expect(screen.getByText('New directory under "src" (contract only)')).toBeTruthy()
     expect(screen.getByLabelText('Name')).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 本轮：右键菜单加「复制路径」/「复制相对路径」（对标 VSCode 的 Copy Path /
+// Copy Relative Path）。与菜单里既有的四项有一条根本区别：那四项全是写操作，
+// 只读态整片禁用；这两项是**纯读**，只读态照样可用——契约解析失败或身处
+// 「原始结构」视图时，用户反而更需要把路径复制到终端里去看那个文件。
+// ---------------------------------------------------------------------------
+
+/** 装一个假的 navigator.clipboard 并交回它的 writeText spy。
+ *  jsdom 默认没有 navigator.clipboard（真实浏览器的非安全上下文同样没有）。 */
+const stubClipboard = (impl: (text: string) => Promise<void> = async () => {}) => {
+  const writeText = vi.fn(impl)
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true, writable: true })
+  return writeText
+}
+
+/** 卸掉假剪贴板 + 顺带把降级路径也堵死，让"两条路都不通"这一情形可造。 */
+const breakClipboard = () => {
+  Object.defineProperty(navigator, 'clipboard', {
+    value: { writeText: vi.fn(async () => { throw new DOMException('denied', 'NotAllowedError') }) },
+    configurable: true, writable: true,
+  })
+  Object.defineProperty(document, 'execCommand', {
+    value: vi.fn(() => false), configurable: true, writable: true,
+  })
+}
+
+afterEach(() => {
+  Reflect.deleteProperty(navigator, 'clipboard')
+  Reflect.deleteProperty(document, 'execCommand')
+})
+
+describe('右键菜单：复制路径 / 复制相对路径', () => {
+  it('两项排在菜单最底部，与写操作之间隔一条分隔线', async () => {
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    expect(Array.from(container.querySelectorAll('[role="menuitem"]')).map(b => b.textContent))
+      .toEqual(['新建目录（仅契约）', '新建文件（仅契约）', '重命名（仅契约）', '取消声明',
+        '复制路径', '复制相对路径'])
+    // 两条分隔线：新建/改名之间一条，写操作与复制之间一条。少了第二条，两类语义
+    // 完全不同的菜单项（会改契约的 vs 什么都不改的）就糊成一片。
+    expect(container.querySelectorAll('.fs-context-menu-sep').length).toBe(2)
+  })
+
+  it('「复制路径」复制的是工作区根 + 相对路径拼出来的绝对路径', async () => {
+    const writeText = stubClipboard()
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    // 必须用**嵌套**节点：顶层节点的相对路径等于它的文件名，绝对路径又只比 root 多
+    // 一段，三种可能的错误取值（文件名 / 相对路径 / 绝对路径）会有两种撞在一起，
+    // 用例就分不出实现到底取了哪一个——本项目记录里那类"验证了管道通不通、
+    // 没验证真实取值是多少"的形状。
+    fireEvent.click(rowByName(container, 'src/'))
+    rightClickRow(container, 'a.ts')
+    fireEvent.click(menuItem('复制路径'))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('/tmp/repo/src/a.ts'))
+  })
+
+  it('「复制相对路径」复制的是工作区相对路径原样，不是绝对路径、也不是文件名', async () => {
+    const writeText = stubClipboard()
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowByName(container, 'src/'))
+    rightClickRow(container, 'a.ts')
+    fireEvent.click(menuItem('复制相对路径'))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('src/a.ts'))
+  })
+
+  it('菜单项的 title 逐字等于它将要复制的那条字符串', async () => {
+    // 所见即所复制：title 与写进剪贴板的值必须由同一个表达式产生。两处各算一遍的话，
+    // 用户悬停看到的和粘出来的可以是两条不同的路径，而这种分歧没有任何别的信号。
+    const writeText = stubClipboard()
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowByName(container, 'src/'))
+    rightClickRow(container, 'a.ts')
+    const abs = menuItem('复制路径').getAttribute('title')
+    const rel = menuItem('复制相对路径').getAttribute('title')
+    expect(abs).toBe('/tmp/repo/src/a.ts')
+    expect(rel).toBe('src/a.ts')
+
+    fireEvent.click(menuItem('复制路径'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(abs))
+  })
+
+  it('Windows：绝对路径用 OpenResult.sep 拼，相对路径仍是 "/" 分隔', async () => {
+    // 相对路径是**契约自己的**标识符（.folderspec.md 里逐字就是这个串，Agent 拿它
+    // 匹配节点），换成 "\" 会得到一条在我们自己的产物里根本不存在的字符串。
+    // 绝对路径的消费者是操作系统，必须原生。两者服务的对象不同，分隔符因此不同。
+    const writeText = stubClipboard()
+    const bridge = bridgeWith({ root: 'C:\\repo', sep: '\\' })
+    const { container } = render(<App bridge={bridge} initialRoot="C:\\repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(rowByName(container, 'src/'))
+    rightClickRow(container, 'a.ts')
+    fireEvent.click(menuItem('复制路径'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('C:\\repo\\src\\a.ts'))
+
+    rightClickRow(container, 'a.ts')
+    fireEvent.click(menuItem('复制相对路径'))
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('src/a.ts'))
+  })
+
+  it('拼绝对路径用的是 core 回来的 root，不是 initialRoot 那个占位值', async () => {
+    // VSCode 宿主注入失败时 initialRoot 会退回字面量 '.'（见 editor.ts 的
+    // shouldSwitchSession 注释）。若这里读的是它，复制出来的会是 './src/a.ts'。
+    const writeText = stubClipboard()
+    const bridge = bridgeWith({ root: '/real/workspace' })
+    const { container } = render(<App bridge={bridge} initialRoot="." />)
+    await waitFor(() => expect((screen.getByLabelText('工作区路径') as HTMLInputElement).value)
+      .toBe('/real/workspace'))
+
+    fireEvent.click(rowByName(container, 'src/'))
+    rightClickRow(container, 'a.ts')
+    fireEvent.click(menuItem('复制路径'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('/real/workspace/src/a.ts'))
+  })
+
+  it('spec-only 节点（磁盘上还不存在）照样能复制——那是"它应该在的位置"', async () => {
+    const writeText = stubClipboard()
+    const bridge = bridgeWith({
+      tree: tree([...FIXTURE, { name: 'cases', path: 'cases', isDir: true, origin: 'spec-only', children: [] }]),
+    })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'cases/')
+    expect(menuItem('复制路径').disabled).toBe(false)
+    fireEvent.click(menuItem('复制路径'))
+    // 用户完全可能拿它去 mkdir。磁盘上没有不是禁用的理由。
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('/tmp/repo/cases'))
+  })
+
+  it('空白区域右键（目标是工作区根）时这两项整个不出现', async () => {
+    // 根的相对路径是空串——复制它等于**清空剪贴板**，用户粘出来是空的，
+    // 与"复制失败"在可观测状态上无法区分，正是本功能最该防的那种静默错误。
+    // 而根的绝对路径顶栏那个「工作区路径」输入框里就摆着，选中即可复制，没有损失。
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const pane = container.querySelector('.fs-pane-tree') as HTMLElement
+    fireEvent.contextMenu(pane, { clientX: 30, clientY: 400 })
+    expect(container.querySelector('.fs-context-menu-header')?.textContent).toBe('工作区根')
+    expect(screen.queryByRole('menuitem', { name: '复制路径' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: '复制相对路径' })).toBeNull()
+  })
+
+  it('复制之后菜单关掉，且一条 bridge 请求都不发、脏标记不动', async () => {
+    // 只读铁律：本功能纯读，不碰 Spec，因此不进撤销栈、不置脏、不写任何文件。
+    const writeText = stubClipboard()
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    const before = bridge.calls.length
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制路径'))
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(bridge.calls.length).toBe(before)
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('复制路径不受只读闸门管辖', () => {
+  // 菜单里既有的四项全是写操作，只读态整片禁用。复制是纯读——契约解析失败、
+  // 或身处「原始结构」视图时，用户照样（其实是更）需要把路径复制到终端里去。
+  // 两条只读来源（App.tsx：`parseErrors !== null || viewMode === 'disk'`）各钉一条。
+
+  it('契约解析失败的只读态：四条写操作全灰，两条复制照样可点且复制的值正确', async () => {
+    const writeText = stubClipboard()
+    const bridge = bridgeWith({
+      parseErrors: [{ line: 7, message: '未知标签 [planned]' }],
+      tree: tree([{ ...SRC, origin: 'both' }, DOCS, README]),
+    })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText(/只读模式/)).toBeTruthy())
+
+    fireEvent.click(rowByName(container, 'src/'))
+    rightClickRow(container, 'a.ts')
+    // 对照组：同一个菜单里写操作确实是灰的——没有这半条，"复制没跟着禁用"就可能
+    // 只是因为整个闸门根本没生效
+    expect(menuItem('新建目录（仅契约）').disabled).toBe(true)
+    expect(menuItem('重命名（仅契约）').disabled).toBe(true)
+    expect(menuItem('取消声明').disabled).toBe(true)
+
+    expect(menuItem('复制路径').disabled).toBe(false)
+    expect(menuItem('复制相对路径').disabled).toBe(false)
+    // 只读态下 title 也不该被换成那句"当前不可编辑…"——它说的是写操作，
+    // 对一次复制而言是纯误导
+    expect(menuItem('复制路径').getAttribute('title')).toBe('/tmp/repo/src/a.ts')
+
+    fireEvent.click(menuItem('复制路径'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('/tmp/repo/src/a.ts'))
+  })
+
+  it('「原始结构」视图下：同样可点，且复制的值正确', async () => {
+    const writeText = stubClipboard()
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByText('原始结构'))
+    await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('新建目录（仅契约）').disabled).toBe(true)
+    expect(menuItem('复制相对路径').disabled).toBe(false)
+
+    fireEvent.click(menuItem('复制相对路径'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('src'))
+  })
+})
+
+describe('复制失败必须让用户看见', () => {
+  it('两条剪贴板路都不通时弹错误横幅，并把那条路径原样摆出来给人手动复制', async () => {
+    // 静默失败是这条功能最坏的结局：用户以为复制了，粘出来是上一次的内容。
+    breakClipboard()
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制路径'))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
+    // 横幅里必须带上那条路径本身：失败时唯一的出路就是让用户从横幅里选中它手动复制，
+    // 只说"复制失败"等于把人扔在原地
+    expect(screen.getByRole('alert').textContent)
+      .toBe('复制失败：浏览器拒绝了剪贴板写入。请手动复制：/tmp/repo/src')
+  })
+
+  it('降级路径成功时不弹横幅——它是成功，不是失败', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn(async () => { throw new DOMException('denied', 'NotAllowedError') }) },
+      configurable: true, writable: true,
+    })
+    let seen: string | null = null
+    Object.defineProperty(document, 'execCommand', {
+      value: vi.fn(() => { seen = document.querySelector('textarea')?.value ?? null; return true }),
+      configurable: true, writable: true,
+    })
+    const bridge = bridgeWith()
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('复制路径'))
+
+    await waitFor(() => expect(seen).toBe('/tmp/repo/src'))
+    await flushChain()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('英文界面下的复制路径', () => {
+  it('两条菜单项与失败横幅都走字典', async () => {
+    breakClipboard()
+    const bridge = bridgeWith({ lang: 'en' })
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => expect(screen.getByText('Load')).toBeTruthy())
+
+    rightClickRow(container, 'src/')
+    expect(screen.getByRole('menuitem', { name: 'Copy Path' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy Relative Path' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toBe('Copy failed: the browser denied clipboard access. Copy it manually: src'))
   })
 })

@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useT } from './i18n.js'
+import { absolutePathOf } from './clipboard.js'
 
 /**
  * 右键菜单这一次要作用在谁身上。**在右键按下的那一刻定死，此后不再重算**——
@@ -49,15 +50,35 @@ export interface ContextMenuTarget {
 
 export interface ContextMenuProps {
   target: ContextMenuTarget
-  /** 只读态（契约解析失败 / 「原始结构」视图）：四条菜单项全部禁用 */
+  /**
+   * 只读态（契约解析失败 /「原始结构」视图）：**四条写操作**菜单项全部禁用。
+   *
+   * 管辖范围到此为止——「复制路径」「复制相对路径」两项**不看这个值**。它俩是纯读，
+   * 一个字节都不碰 Spec，跟"现在允不允许写"没有任何关系；而只读态恰恰是最需要它们的
+   * 时候：契约解析失败时用户要把那个文件的路径复制到终端里去修，「原始结构」视图的
+   * 意义是"让你对比"，对比的下一步往往就是把路径贴到别处。跟着一起灰掉，等于因为
+   * 写不了就连看都不让看。
+   */
   disabled: boolean
+  /**
+   * 工作区根的绝对路径（平台原生写法）与本平台的路径分隔符，来自 `OpenResult.root`
+   * / `OpenResult.sep`。只用于把 `target.path`（工作区相对、恒 `/` 分隔）拼成
+   * 「复制路径」那条绝对路径——分隔符为什么必须由 core 给、不能从 root 反推，
+   * 见 api.ts 的 OpenResult.sep。
+   */
+  root: string
+  sep: string
   onNew(isDir: boolean): void
   onRename(path: string): void
   onRemove(path: string): void
+  /** 把这段文字送进剪贴板。菜单只负责算出"复制什么"，怎么复制、失败了怎么报是 App 的事 */
+  onCopy(text: string): void
   onClose(): void
 }
 
-export function ContextMenu({ target, disabled, onNew, onRename, onRemove, onClose }: ContextMenuProps) {
+export function ContextMenu(
+  { target, disabled, root, sep, onNew, onRename, onRemove, onCopy, onClose }: ContextMenuProps,
+) {
   const t = useT()
 
   // Esc 关菜单。挂在 window 上而不是菜单自己的 onKeyDown：菜单打开时焦点大概率还留在
@@ -71,6 +92,15 @@ export function ContextMenu({ target, disabled, onNew, onRename, onRemove, onClo
 
   const parentLabel = target.parentPath === '' ? t('common.workspaceRoot') : target.parentPath
   const newTitle = disabled ? t('contextMenu.disabledReadOnly') : t('contextMenu.newTarget', { parent: parentLabel })
+
+  // 绝对路径**只算这一次**，title 与 onCopy 用的是同一个变量。两处各算一遍的话，
+  // 用户悬停看到的和真正进剪贴板的可以是两条不同的路径，而这种分歧没有任何别的信号——
+  // 唯一的发现方式是他粘出去之后发现指错了地方（与 App.tsx 里 PendingGroup
+  // "显示与写入共用同一个真源"是同一条判据）。
+  // path === null（空白区域/顶栏按钮，目标是工作区根）时这两项根本不渲染，见下方
+  // 那个 `target.path !== null &&`；这里的 null 分支只是为了不把 null 传进去，
+  // 不代表"复制工作区根"是一条可达的路径。
+  const absPath = target.path === null ? root : absolutePathOf(root, sep, target.path)
 
   return (
     <>
@@ -137,6 +167,35 @@ export function ContextMenu({ target, disabled, onNew, onRename, onRemove, onClo
               onClick={() => onRemove(target.path as string)}
             >
               {t('contextMenu.removeNode')}
+            </button>
+
+            {/* 复制两项排在最底部、与上面四条写操作之间再隔一条分隔线——对齐 VSCode
+                资源管理器的排布，也是因为它们是**另一类东西**：上面四条会改写契约，
+                这两条什么都不改。 */}
+            <div className="fs-context-menu-sep" aria-hidden="true" />
+            <button
+              type="button"
+              role="menuitem"
+              // 刻意**不传** disabled：纯读操作不归只读闸门管，理由见 ContextMenuProps.disabled。
+              // title 就是将被复制的那条路径本身——它同时是"复制前先看一眼对不对"的
+              // 唯一机会（复制成功是静默的，事后没有任何地方能核对）。
+              title={absPath}
+              onClick={() => onCopy(absPath)}
+            >
+              {t('contextMenu.copyPath')}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              // 相对路径就是 target.path 原样：它是**契约自己的**标识符，.folderspec.md
+              // 里逐字就是这个串，Agent 也拿它匹配节点。所以即便在 Windows 上也不换成
+              // '\'（VSCode 的 Copy Relative Path 会换）——换了就得到一条在我们自己的
+              // 产物里根本不存在的字符串，粘回契约里对不上。绝对路径那条相反：它的
+              // 消费者是操作系统，必须用原生分隔符。
+              title={target.path}
+              onClick={() => onCopy(target.path as string)}
+            >
+              {t('contextMenu.copyRelPath')}
             </button>
           </>
         )}
