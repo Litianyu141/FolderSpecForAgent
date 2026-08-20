@@ -540,6 +540,33 @@ describe('Session 的视图模式（原始结构 / 我的结构）', () => {
     expect(find(r.tree, 'examples/foo')?.origin).toBe('actual-only')
   })
 
+  // 规则 3 的强化回归：分组色点跟不跟着节点走，靠的是 spec-edit.ts 的 moveNode()
+  // 内部调 rewriteGroupMembers 把 Group.members 里的旧路径重写成新路径——这条行为
+  // 依赖另一个文件里的逻辑，比"未移动节点按路径显示分组"更值得单独钉一条测试。
+  // 夹具必须真的把节点放进一个分组、再真的用 Session.move() 移动它，
+  // 否则"移动后消失"这个判断没有意义（先用两条对照断言确认这两件事都发生了）。
+  it('规则3强化：节点被移动后，旧路径在 disk 视图里不再带分组色点', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    const s = new Session(root)
+    await s.open()
+
+    const { id } = s.setGroup({ id: null, members: ['examples/foo'], text: '案例分组' })
+    // 对照 1：确认夹具真的把节点放进了分组
+    expect(find(s.tree(), 'examples/foo')?.groups).toEqual([id])
+
+    s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+
+    // 对照 2：分组没有被误删，只是随节点一起被重新指向了新路径
+    // （spec 视图里新位置是 spec-only，依旧带着 groups）——排除"分组整个消失"
+    // 这种会让下面的断言空转的可能。
+    expect(find(s.tree(), 'src/cases/foo')?.groups).toEqual([id])
+
+    const r = s.setViewMode('disk')
+    const foo = find(r.tree, 'examples/foo')
+    expect(foo?.origin).toBe('actual-only')
+    expect(foo?.groups).toBeUndefined()
+  })
+
   it('切回 spec 视图后 hidden 重新生效', async () => {
     await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
     const s = new Session(root)
@@ -606,6 +633,38 @@ describe('Session 的视图模式（原始结构 / 我的结构）', () => {
     expect((r as { mode: string }).mode).toBe('disk')
     await expect(s.handle('spec/annotate', { path: 'src', isDir: true, annotation: 'x' }))
       .rejects.toThrow('原始结构')
+  })
+
+  // viewMode 是用户的显示偏好，不是某次编辑的残留状态（与 hidden 不同类：hidden 在
+  // open() 里显式 clear()，viewMode 故意不跟着重置）。旁边"隐藏状态是临时的：同一个
+  // Session reload() 后旧位置重新出现"那条测试钉住了 hidden 该清空；这里补上对称的
+  // 一条，钉住 viewMode 不该被清空——否则外部触发的一次后台 reload（比如检测到磁盘
+  // 文件被 Agent 改了）会把用户正看着的「原始结构」视图悄悄切回「我的结构」。
+  //
+  // 必须复用同一个 Session 实例调用 reload()：换一个新 Session 的话它的 viewMode
+  // 天生就是默认值 'spec'，测试对"open() 里有没有偷偷重置 viewMode"没有任何区分力
+  // ——这与上面 hidden 那条测试选择复用同一实例的理由完全一样。
+  //
+  // 用两条独立信号确认 viewMode 真的还是 'disk'：树的形状（契约里已落盘的新位置
+  // 依旧不出现）与写入闸门（disk 视图下应继续被拦下）——只要 viewMode 被悄悄重置，
+  // 这两条会同时失效，不依赖其中任何一条本身的巧合。
+  it('viewMode 不随 reload() 重置：同一个 Session reload() 后仍保持切换前选的视图', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    const s = new Session(root)
+    await s.open()
+    s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+    await s.save() // 落盘，保证 reload 后契约里仍然是"已移动"的状态
+
+    s.setViewMode('disk')
+    expect(find(s.tree(), 'src/cases/foo')).toBeNull() // 切换生效：先做一次对照
+
+    const r = await s.reload()
+
+    // 信号 1：树仍按磁盘建树
+    expect(find(r.tree, 'src/cases/foo')).toBeNull()
+    expect(find(r.tree, 'examples/foo')?.origin).toBe('actual-only')
+    // 信号 2：写入仍被拦下
+    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow('原始结构')
   })
 })
 
