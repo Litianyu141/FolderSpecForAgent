@@ -222,8 +222,9 @@ export class Session {
 
   /**
    * 切换「原始结构 / 我的结构」视图。纯显示操作：只改 this.viewMode，不碰 this.spec，
-   * 不置 dirty——正因为它不产生任何编辑，才不需要 undo 栈（与项目裁定「不需要 undo 栈」
-   * 相容）。写入侧的闸门在 assertWritable() 里（见那里的注释）。
+   * 不置 dirty——正因为它不产生任何编辑，才不入 undoStack（不是"不需要 undo 栈"：
+   * 这个会话里此刻就有一个真实的 undoStack，见类顶部字段注释；这里只是不往里推）。
+   * 写入侧的闸门在 assertWritable() 里（见那里的注释）。
    */
   setViewMode(mode: ViewMode): ViewModeResult {
     this.assertOpened()
