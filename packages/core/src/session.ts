@@ -57,6 +57,29 @@ function assertRepresentablePath(path: string): void {
   }
 }
 
+/**
+ * 撤销栈深度上限。快照与「已标注节点数」成正比（不是仓库文件数），50 步在最坏情况下
+ * 也只是几十份 Spec 的副本；到顶丢最旧的一步，防止一份超大契约把内存吃干净。
+ */
+const MAX_UNDO_DEPTH = 50
+
+/**
+ * 一次编辑之前的完整可撤销状态。
+ *
+ * **hidden 必须和 spec 一起进快照。** hidden 记的是本次会话里被拖走节点的旧位置；
+ * 只还原 spec 的话，契约里节点已经回到旧位置、而旧位置又仍被 hidden 挡着，于是它
+ * 在**新旧两个位置都不显示**——正是 v1 里「`.claude/command` 拖一下就整个不见了」
+ * 那个缺陷的形状。
+ *
+ * actual（磁盘扫描结果）刻意**不**在里面：撤销的是"契约上的编辑"，不是"看过哪些
+ * 目录"，把懒加载出来的子树一起还原会让一次无关的撤销顺手折叠掉用户展开过的目录。
+ */
+interface Snapshot {
+  spec: Spec
+  hidden: Set<string>
+  revision: number
+}
+
 export class Session {
   private actual: ActualNode = { name: '', path: '', kind: 'dir', children: [] }
   private git: GitStates = new Map()
@@ -67,7 +90,35 @@ export class Session {
    *  永不落盘、不参与 dirty。不在 open()/reload() 时重置——它是用户的显示偏好，不是
    *  某次编辑的残留状态，外部触发的重载不该把用户正看着的视图悄悄切走。 */
   private viewMode: ViewMode = 'spec'
-  private dirty = false
+
+  /**
+   * 撤销 / 重做栈。与 hidden 同类：纯内存、open() 时清空、永不落盘。
+   *
+   * 设计文档与 CLAUDE.md 里「不需要 undo 栈、dry-run、回滚」那一句说的是**另一个
+   * 问题**：本工具永不改动磁盘上的文件，因此没有"操作把仓库弄坏了要回滚"这回事。
+   * 这里的撤销栈解决的是手滑——拖错了位置、注释写串了行，要能一步退回来。它只作用
+   * 于内存里的 Spec 与 hidden，一样一个字节都不写磁盘，只读铁律没有被动摇。
+   * 看到那句话时别顺手把这一整块删掉。
+   */
+  private undoStack: Snapshot[] = []
+  private redoStack: Snapshot[] = []
+
+  /**
+   * dirty 不是一个能随快照一起存取的布尔量，所以用「当前状态编号 vs 与磁盘一致的
+   * 那个编号」两个数来表达。
+   *
+   * 反例：照搬"存下编辑前的 dirty、撤销时还原"，会在「编辑 → 保存 → 撤销」上答错——
+   * 编辑前 dirty 是 false，可撤销回去之后磁盘上已经是编辑后的内容了，内存与磁盘明明
+   * 不一致却报告为干净，用户关掉窗口就丢东西。反过来"撤销一律置脏"则永远摘不掉脏
+   * 标记，撤回到打开时的状态也还在提示有未保存改动。
+   *
+   * 编号单调递增、从不复用，所以相等只可能是"真的是同一个状态"；栈到顶丢掉最旧一步
+   * 时也不会误判（那个编号从此无法再被还原到）。
+   */
+  private revisionSeq = 0
+  private revision = 0
+  private savedRevision = 0
+
   private parseErrors: ParseError[] | null = null
   /** open() 是否已经完整跑完一次。区分"从未打开"与"打开成功"——两者 parseErrors 都是 null，
    *  不能只靠 parseErrors 判断，否则未 open() 就调用 save() 会用空 spec 覆盖用户已有的文件。 */
@@ -80,12 +131,17 @@ export class Session {
   }
 
   isDirty(): boolean {
-    return this.dirty
+    return this.revision !== this.savedRevision
   }
 
   async open(): Promise<OpenResult> {
     this.hidden.clear()
-    this.dirty = false
+    // 历史与 hidden 同类，绝不跨越一次重载：open() 之后内存里的 spec 来自磁盘，
+    // 栈里那些快照描述的是上一份文件的状态，还原过去只会把别的内容写成"撤销结果"。
+    this.undoStack = []
+    this.redoStack = []
+    this.revision = this.nextRevision()
+    this.savedRevision = this.revision
 
     const [actual, git] = await Promise.all([
       scan(this.root, { depth: DEFAULT_DEPTH }),
@@ -199,15 +255,19 @@ export class Session {
       template,
       severity,
     }
+    // 先取快照再改。setAnnotation 抛错时 commitEdit 不会执行，栈保持原样。
+    const before = this.captureState()
     this.spec = setAnnotation(this.spec, path, isDir, patch)
-    this.dirty = true
-    return { tree: this.tree(), dirty: true, groups: this.groupsSnapshot() }
+    this.commitEdit(before)
+    return this.editResult()
   }
 
   move(params: MoveParams): EditResult {
     this.assertWritable()
     assertRepresentablePath(params.from)
     assertRepresentablePath(params.toParent)
+    // 快照必须盖住下面对 hidden 的两处改动，不能只盖 spec——见 Snapshot 的注释
+    const before = this.captureState()
     this.spec = moveNode(this.spec, params.from, params.toParent, params.isDir)
 
     const name = params.from.split('/').filter(Boolean).pop() ?? ''
@@ -225,8 +285,8 @@ export class Session {
     // 节点就从界面上凭空消失（文件和契约其实都还在）。
     if (to !== params.from) this.hidden.add(params.from)
 
-    this.dirty = true
-    return { tree: this.tree(), dirty: true, groups: this.groupsSnapshot() }
+    this.commitEdit(before)
+    return this.editResult()
   }
 
   setGroup(params: SetGroupParams): EditResult & { id: string } {
@@ -236,17 +296,49 @@ export class Session {
     if (params.name !== undefined) patch.name = params.name === null ? null : normalizeAnnotation(params.name)
     if (params.text !== undefined) patch.text = params.text === null ? null : normalizeAnnotation(params.text)
     if (params.severity !== undefined) patch.severity = params.severity
+    const before = this.captureState()
     const r = setGroup(this.spec, params.id, params.members, patch)
     this.spec = r.spec
-    this.dirty = true
-    return { tree: this.tree(), dirty: true, groups: this.groupsSnapshot(), id: r.id }
+    this.commitEdit(before)
+    return { ...this.editResult(), id: r.id }
   }
 
   deleteGroup(id: string): EditResult {
     this.assertWritable()
+    const before = this.captureState()
     this.spec = deleteGroup(this.spec, id)
-    this.dirty = true
-    return { tree: this.tree(), dirty: true, groups: this.groupsSnapshot() }
+    this.commitEdit(before)
+    return this.editResult()
+  }
+
+  /**
+   * 退回一次已提交的编辑。粒度是"一次编辑"而不是一次按键：注释面板失焦才提交，
+   * 所以一次注释修改就是一步；拖拽、分组增删改同理。
+   *
+   * 栈空时是**空操作**而不是抛错：UI 会按 canUndo 置灰按钮，但快捷键（Ctrl+Z）绕不过
+   * 去，没得可退时弹一条错误横幅只是噪音——何况空操作什么都没改，不存在"静默吞掉了
+   * 一次数据变更"的风险，与本项目"宁可报错也别静默改写"的取向不冲突。
+   */
+  undo(): EditResult {
+    this.assertWritable()
+    const prev = this.undoStack.pop()
+    if (prev) {
+      // redoStack 不需要单独限深：它只在这里增长，每长一格就从 undoStack 摘走一格，
+      // 而一有新编辑 commitEdit 就把它清空——长度恒不超过 MAX_UNDO_DEPTH。
+      this.redoStack.push(this.captureState())
+      this.restoreState(prev)
+    }
+    return this.editResult()
+  }
+
+  redo(): EditResult {
+    this.assertWritable()
+    const next = this.redoStack.pop()
+    if (next) {
+      this.pushUndo(this.captureState())
+      this.restoreState(next)
+    }
+    return this.editResult()
   }
 
   async readFile(path: string): Promise<FileReadResult> {
@@ -280,7 +372,9 @@ export class Session {
   async save(): Promise<{ written: boolean }> {
     const text = this.raw() // raw() 已完成 assertWritable 与自校验
     await fs.writeFile(this.specPath, text, 'utf8')
-    this.dirty = false
+    // 记下"磁盘上现在是哪一个状态"，而不是简单地把 dirty 抹掉：保存点可以落在撤销
+    // 链的任意一处，之后往回退反而会重新变脏（见 revision 的注释）。
+    this.savedRevision = this.revision
     return { written: true }
   }
 
@@ -312,6 +406,10 @@ export class Session {
         return (await this.readFile((params as { path: string }).path)) as Api[K]['result']
       case 'view/setMode':
         return this.setViewMode((params as SetViewModeParams).mode) as Api[K]['result']
+      case 'spec/undo':
+        return this.undo() as Api[K]['result']
+      case 'spec/redo':
+        return this.redo() as Api[K]['result']
       default:
         throw new Error(`未知方法 "${String(method)}"`)
     }
@@ -324,6 +422,65 @@ export class Session {
    */
   private groupsSnapshot(): Group[] {
     return structuredClone(this.spec.groups)
+  }
+
+  private editResult(): EditResult {
+    return {
+      tree: this.tree(),
+      dirty: this.isDirty(),
+      groups: this.groupsSnapshot(),
+      canUndo: this.undoStack.length > 0,
+      canRedo: this.redoStack.length > 0,
+    }
+  }
+
+  private nextRevision(): number {
+    return ++this.revisionSeq
+  }
+
+  /**
+   * spec 这里是深拷贝，**今天纯属防御**——四个编辑函数（setAnnotation/moveNode/
+   * setGroup/deleteGroup）都是纯函数，各自 structuredClone 一份新的返回，从不就地
+   * 改入参，所以直接存引用今天一条用例都判不到。别为它补一条"证明它有用"的用例，
+   * 那条用例只能是假的。
+   *
+   * 留着的理由：它守的是将来那一步——一旦有人为了省一次克隆把某个编辑函数改成就地
+   * 修改，栈里的历史会跟着被悄悄改写，而本工具唯一能造成的伤害正是弄丢人写的注释。
+   * 代价也确实只是"再克隆一次"：编辑函数本来就要克隆一份，这里是同一数量级的常数
+   * 倍，且与已标注节点数成正比，不是仓库文件数。
+   *
+   * hidden 则**必须**是副本，不是防御：move() 会就地 add/delete 同一个 Set，存引用
+   * 的话栈里所有快照都会跟着变。
+   */
+  private captureState(): Snapshot {
+    return {
+      spec: structuredClone(this.spec),
+      hidden: new Set(this.hidden),
+      revision: this.revision,
+    }
+  }
+
+  /**
+   * 直接接管快照自己的那两个对象，不再拷贝一次——前提是**调用方必须先把它从栈里
+   * pop 出来**（undo/redo 都是这么做的）。改成 peek 而不 pop 的话，后续一次 move()
+   * 就会就地改掉仍留在栈里的那份 hidden，历史被悄悄改写。
+   */
+  private restoreState(s: Snapshot): void {
+    this.spec = s.spec
+    this.hidden = s.hidden
+    this.revision = s.revision
+  }
+
+  /** 一次编辑提交后的收尾：入栈、清重做栈（标准语义）、领一个新的状态编号 */
+  private commitEdit(before: Snapshot): void {
+    this.pushUndo(before)
+    this.redoStack = []
+    this.revision = this.nextRevision()
+  }
+
+  private pushUndo(s: Snapshot): void {
+    this.undoStack.push(s)
+    if (this.undoStack.length > MAX_UNDO_DEPTH) this.undoStack.shift()
   }
 
   private assertOpened(): void {

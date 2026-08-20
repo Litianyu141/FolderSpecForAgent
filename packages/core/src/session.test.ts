@@ -608,3 +608,274 @@ describe('Session 的视图模式（原始结构 / 我的结构）', () => {
       .rejects.toThrow('原始结构')
   })
 })
+
+// ---------------------------------------------------------------------------
+// 撤销 / 重做
+//
+// CLAUDE.md 里「不需要 undo 栈、dry-run、回滚」那一句说的是**另一个问题**：本工具
+// 永不改动磁盘上的文件，因此没有"操作把仓库弄坏了要回滚"这回事。这里的撤销栈解决的
+// 是手滑——拖错了位置、注释写串了行，要能一步退回来。它只作用于内存里的 Spec 与
+// hidden，一样一个字节都不写磁盘，只读铁律没有被动摇。
+// 看到 CLAUDE.md 那句话时别顺手把这一整块删掉。
+// ---------------------------------------------------------------------------
+describe('Session 的撤销/重做', () => {
+  it('撤销一次注释编辑：注释回到编辑前', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '核心源码' })
+    const r = s.undo()
+    expect(find(r.tree, 'src')?.annotation).toBeUndefined()
+    expect(r.canUndo).toBe(false)
+    expect(r.canRedo).toBe(true)
+  })
+
+  it('重做把撤销掉的编辑放回来', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '核心源码' })
+    s.undo()
+    const r = s.redo()
+    expect(find(r.tree, 'src')?.annotation).toBe('核心源码')
+    expect(r.canUndo).toBe(true)
+    expect(r.canRedo).toBe(false)
+  })
+
+  it('连续两次编辑逐步退回，两份快照互不串味', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '一' })
+    s.annotate({ path: 'src', isDir: true, annotation: '二' })
+    expect(find(s.undo().tree, 'src')?.annotation).toBe('一')
+    expect(find(s.undo().tree, 'src')?.annotation).toBeUndefined()
+  })
+
+  it('四个写操作的返回值都带上 canUndo / canRedo', async () => {
+    const s = new Session(root); await s.open()
+    expect(s.annotate({ path: 'src', isDir: true, annotation: 'a' }))
+      .toMatchObject({ canUndo: true, canRedo: false })
+    expect(s.move({ from: 'README.md', toParent: 'src', isDir: false }))
+      .toMatchObject({ canUndo: true, canRedo: false })
+    // members 是单个顶层路径（无公共父目录），deriveGroupId 按既有规则回退为 'group'
+    expect(s.setGroup({ id: null, members: ['src'], text: 't' }))
+      .toMatchObject({ canUndo: true, canRedo: false })
+    expect(s.deleteGroup('group')).toMatchObject({ canUndo: true, canRedo: false })
+  })
+
+  it('setGroup 可撤销', async () => {
+    const s = new Session(root); await s.open()
+    s.setGroup({ id: null, members: ['src/core', 'src/deep'], text: '一体的两个目录' })
+    expect(s.raw()).toContain('一体的两个目录')
+    const r = s.undo()
+    expect(r.groups).toEqual([])
+    expect(s.raw()).not.toContain('一体的两个目录')
+  })
+
+  it('deleteGroup 可撤销：删错的分组连说明一起回来', async () => {
+    const s = new Session(root); await s.open()
+    const { id } = s.setGroup({ id: null, members: ['src/core', 'src/deep'], text: '不该被删的说明' })
+    s.deleteGroup(id)
+    expect(s.raw()).not.toContain('不该被删的说明')
+    const r = s.undo()
+    expect(r.groups).toHaveLength(1)
+    expect(r.groups[0].text).toBe('不该被删的说明')
+  })
+
+  // 回归：撤销一次拖拽，必须连 hidden 里那条「旧位置」一起撤掉。只还原 Spec 的话，
+  // 契约里节点已经回到旧位置、而旧位置又被 hidden 挡着，节点在**两个位置都不显示**
+  // ——正是 v1 里「`.claude/command` 拖一下就整个不见了」那个缺陷的形状。
+  it('回归：撤销拖拽后旧位置重新出现（hidden 必须一并还原）', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    const s = new Session(root); await s.open()
+    s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+    // 先确认这次拖拽真的往 hidden 里记了一条，否则下面的断言没有区分力
+    expect(find(s.tree(), 'examples/foo')).toBeNull()
+    expect(find(s.tree(), 'src/cases/foo')?.origin).toBe('spec-only')
+
+    const r = s.undo()
+    expect(find(r.tree, 'examples/foo')?.origin).toBe('actual-only')
+    expect(find(r.tree, 'src/cases/foo')).toBeNull()
+  })
+
+  // 回归：快照存的必须是**当时那一份** hidden 的副本。存空集、或直接存引用（后续
+  // move 会就地改掉同一个 Set），都会让"撤销第二次拖拽"顺手把第一次拖拽的隐藏
+  // 一起弄丢或弄错。上一条用例里第一次拖拽前 hidden 本来就是空的，判不出这个区别。
+  it('回归：撤销第二次拖拽时，第一次拖拽的旧位置仍然藏着', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    await fs.mkdir(nodePath.join(root, 'examples/bar'), { recursive: true })
+    const s = new Session(root); await s.open()
+    s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+    s.move({ from: 'examples/bar', toParent: 'src/cases', isDir: true })
+
+    const r = s.undo()
+    expect(find(r.tree, 'examples/bar')?.origin).toBe('actual-only')  // 第二次拖拽退回了
+    expect(find(r.tree, 'src/cases/bar')).toBeNull()
+    expect(find(r.tree, 'examples/foo')).toBeNull()                   // 第一次拖拽仍然生效
+    expect(find(r.tree, 'src/cases/foo')?.origin).toBe('spec-only')
+  })
+
+  it('重做一次拖拽：旧位置重新藏起来，新位置重新出现', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    const s = new Session(root); await s.open()
+    s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+    // 先确认撤销确实把旧位置放了出来，否则下面"又不见了"的断言恒真
+    expect(find(s.undo().tree, 'examples/foo')).not.toBeNull()
+
+    const r = s.redo()
+    expect(find(r.tree, 'examples/foo')).toBeNull()
+    expect(find(r.tree, 'src/cases/foo')?.origin).toBe('spec-only')
+  })
+
+  it('拖拽重写过的分组成员路径，撤销后也回到原路径', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    const s = new Session(root); await s.open()
+    s.setGroup({ id: null, members: ['examples/foo'], text: '一组' })
+    const m = s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+    expect(m.groups[0].members).toEqual(['src/cases/foo'])   // 确认拖拽真的改写了成员
+    expect(s.undo().groups[0].members).toEqual(['examples/foo'])
+  })
+
+  it('新的编辑清空重做栈', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '一' })
+    s.annotate({ path: 'src', isDir: true, annotation: '二' })
+    expect(s.undo().canRedo).toBe(true)
+
+    const r = s.annotate({ path: 'src', isDir: true, annotation: '三' })
+    expect(r.canRedo).toBe(false)
+    expect(find(s.redo().tree, 'src')?.annotation).toBe('三')  // redo 退化成空操作
+  })
+
+  it('栈空时 undo 是空操作：既不抛错，也不会把已经读进来的契约清掉', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), [
+      '---', 'folderspec: 1', 'root: .', 'ownership: human', '---',
+      '', '# 已有契约', '', '## 结构', '', '- `src/` — 人类写的注释', '',
+    ].join('\n'))
+    const s = new Session(root); await s.open()
+
+    const r = s.undo()
+    expect(r.canUndo).toBe(false)
+    expect(r.canRedo).toBe(false)
+    expect(r.dirty).toBe(false)
+    expect(find(r.tree, 'src')?.annotation).toBe('人类写的注释')
+    expect(find(s.redo().tree, 'src')?.annotation).toBe('人类写的注释')
+  })
+
+  // 上限刻意写死 50，不从实现里 import 常量：跟着实现走的期望值等于没有期望值——
+  // 把上限改成 100 时这条用例照样绿，它就不再证明"到顶会丢掉最旧的一步"。
+  it('撤销栈上限 50：第 51 次编辑之后，最早那一步再也退不回去', async () => {
+    const s = new Session(root); await s.open()
+    for (let i = 1; i <= 51; i++) s.annotate({ path: 'src', isDir: true, annotation: `注释${i}` })
+
+    for (let i = 0; i < 50; i++) s.undo()
+    const r = s.undo()   // 第 51 次撤销：栈已空，空操作
+    expect(r.canUndo).toBe(false)
+    expect(find(r.tree, 'src')?.annotation).toBe('注释1')  // 不是 undefined：打开时那一步已被丢弃
+  })
+
+  it('open() 清空撤销与重做栈——历史与 hidden 同类，永不跨越一次重载', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '未保存' })
+    s.undo()
+    await s.open()
+    const r = s.undo()
+    expect(r.canUndo).toBe(false)
+    expect(r.canRedo).toBe(false)
+  })
+
+  it('撤销与重做一个字节都不写磁盘', async () => {
+    const specPath = nodePath.join(root, SPEC_FILENAME)
+    const original = [
+      '---', 'folderspec: 1', 'root: .', 'ownership: human', '---',
+      '', '# 已有契约', '', '## 结构', '', '- `src/` — 人类写的注释', '',
+    ].join('\n')
+    await fs.writeFile(specPath, original)
+
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '改过了' })
+    s.undo(); s.redo(); s.undo()
+    expect(await fs.readFile(specPath, 'utf8')).toBe(original)
+  })
+
+  it('撤销的是契约上的编辑，不是"看过哪些目录"：已展开的目录不会被退回未扫描', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: 'x' })
+    expect(find(s.tree(), 'src/deep')?.children).toBeUndefined()  // 先确认它确实还没扫
+    await s.expand('src/deep')
+    expect(find(s.tree(), 'src/deep/deeper')).not.toBeNull()
+
+    const r = s.undo()
+    expect(find(r.tree, 'src/deep/deeper')).not.toBeNull()
+  })
+
+  it('撤销回到打开时的状态后 dirty 归零，重做之后重新变脏', async () => {
+    const s = new Session(root); await s.open()
+    expect(s.isDirty()).toBe(false)
+    s.annotate({ path: 'src', isDir: true, annotation: 'x' })
+    expect(s.isDirty()).toBe(true)
+
+    expect(s.undo().dirty).toBe(false)
+    expect(s.isDirty()).toBe(false)
+    expect(s.redo().dirty).toBe(true)
+    expect(s.isDirty()).toBe(true)
+  })
+
+  it('保存之后再编辑再撤销，回到的正是磁盘上那一份，dirty 归零', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '第一版' })
+    await s.save()
+    s.annotate({ path: 'src', isDir: true, annotation: '第二版' })
+    expect(s.isDirty()).toBe(true)
+    expect(s.undo().dirty).toBe(false)
+  })
+
+  // 回归：dirty 不是一个能随快照一起存取的布尔量。保存可以发生在**撤销点之后**，
+  // 那一刻更早的那些快照相对磁盘反而变脏了。照搬"存下编辑前的 dirty、撤销时还原"
+  // 会在这里答错：编辑前 dirty 是 false，可撤销回去之后磁盘上已经是编辑后的内容。
+  it('回归：编辑→保存→撤销，内存与磁盘不再一致，dirty 必须为 true', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '已写盘的那一版' })
+    await s.save()
+    expect(s.isDirty()).toBe(false)
+
+    expect(s.undo().dirty).toBe(true)
+    expect(s.isDirty()).toBe(true)
+    expect(s.redo().dirty).toBe(false)   // 重做回到已写盘的那一版，又一致了
+  })
+
+  it('未 open 时 undo / redo 抛错，而不是静默接受', () => {
+    const s = new Session(root)
+    expect(() => s.undo()).toThrow('尚未打开')
+    expect(() => s.redo()).toThrow('尚未打开')
+  })
+
+  it('只读模式（契约解析失败）下 undo / redo 被拒绝', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '不是合法的契约文件\n')
+    const s = new Session(root); await s.open()
+    expect(() => s.undo()).toThrow('只读模式')
+    expect(() => s.redo()).toThrow('只读模式')
+  })
+
+  // 撤销/重做改的就是 this.spec，它就是写操作。disk 视图里的树本来就不按契约合成，
+  // 撤销一次拖拽在那个视图上什么都看不出来——用户会以为没生效而连按，一整轮编辑
+  // 被悄悄退光。闸门只能有一处，就是 assertWritable()。
+  it('disk 视图下 undo / redo 被拦下，错误信息说明处于原始结构视图', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '一' })
+    s.annotate({ path: 'src', isDir: true, annotation: '二' })
+    s.undo()   // 两个栈都非空，闸门一旦缺失这两次调用就真的会生效
+    s.setViewMode('disk')
+
+    expect(() => s.undo()).toThrow('原始结构')
+    expect(() => s.redo()).toThrow('原始结构')
+  })
+
+  it('handle 能分发 spec/undo 与 spec/redo', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '核心源码' })
+
+    const u = await s.handle('spec/undo', {})
+    expect(u.canRedo).toBe(true)
+    expect(find(u.tree, 'src')?.annotation).toBeUndefined()
+
+    const r = await s.handle('spec/redo', {})
+    expect(find(r.tree, 'src')?.annotation).toBe('核心源码')
+    expect(r.canUndo).toBe(true)
+  })
+})
