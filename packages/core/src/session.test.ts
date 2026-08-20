@@ -500,3 +500,111 @@ describe('Session 的分组与文件读取', () => {
     expect((f as { kind: string }).kind).toBeDefined()
   })
 })
+
+describe('Session 的视图模式（原始结构 / 我的结构）', () => {
+  it('默认是 spec 视图：树按契约里的结构合成', async () => {
+    const s = new Session(root)
+    await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '核心源码' })
+    expect(find(s.tree(), 'src')?.annotation).toBe('核心源码')
+  })
+
+  it('setViewMode("disk") 后契约里的结构性重排不再生效：新位置消失，只按磁盘建树', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    const s = new Session(root)
+    await s.open()
+    s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+    // spec 视图：新位置可见（spec-only）——既有行为，先确认夹具本身有效
+    expect(find(s.tree(), 'src/cases/foo')?.origin).toBe('spec-only')
+
+    const r = s.setViewMode('disk')
+    expect(r.mode).toBe('disk')
+    expect(find(r.tree, 'src/cases/foo')).toBeNull() // 磁盘上根本没有这个路径
+  })
+
+  // 规则 2 的回归测试：必须真的触发一次拖拽（hidden 里真的记了一条旧位置），
+  // 否则"忽略不忽略 hidden"这条判断在这条用例里没有任何区分力。
+  it('规则2回归：disk 视图必须忽略 hidden——拖走的节点旧位置在磁盘视图里重新出现', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    const s = new Session(root)
+    await s.open()
+    expect(find(s.tree(), 'examples/foo')).not.toBeNull() // 拖拽前：可见
+
+    s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+    // spec 视图：旧位置被 hidden 吞掉——先确认这条 hidden 真的生效了，
+    // 否则下面 disk 视图"仍然可见"的断言即使实现忘了忽略 hidden 也会通过。
+    expect(find(s.tree(), 'examples/foo')).toBeNull()
+
+    const r = s.setViewMode('disk')
+    expect(find(r.tree, 'examples/foo')).not.toBeNull()
+    expect(find(r.tree, 'examples/foo')?.origin).toBe('actual-only')
+  })
+
+  it('切回 spec 视图后 hidden 重新生效', async () => {
+    await fs.mkdir(nodePath.join(root, 'examples/foo'), { recursive: true })
+    const s = new Session(root)
+    await s.open()
+    s.move({ from: 'examples/foo', toParent: 'src/cases', isDir: true })
+    s.setViewMode('disk')
+
+    const r = s.setViewMode('spec')
+    expect(r.mode).toBe('spec')
+    expect(find(r.tree, 'examples/foo')).toBeNull()
+    expect(find(r.tree, 'src/cases/foo')?.origin).toBe('spec-only')
+  })
+
+  it('切换视图是纯显示操作：不产生写入、不置 dirty', async () => {
+    const s = new Session(root)
+    await s.open()
+    expect(s.isDirty()).toBe(false)
+    s.setViewMode('disk')
+    expect(s.isDirty()).toBe(false)
+    s.setViewMode('spec')
+    expect(s.isDirty()).toBe(false)
+  })
+
+  // 规则 4 的回归测试：闸门必须长在 assertWritable() 上——annotate/move/setGroup/
+  // deleteGroup/raw/save 全部经过它，两个宿主也都经过它，UI 不可能绕过去。
+  it('规则4回归：disk 视图下所有写操作被拒绝，错误信息说明处于原始结构视图', async () => {
+    const s = new Session(root)
+    await s.open()
+    s.setViewMode('disk')
+
+    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow('原始结构')
+    expect(() => s.move({ from: 'README.md', toParent: 'src', isDir: false })).toThrow('原始结构')
+    expect(() => s.setGroup({ id: null, members: ['src'], text: 't' })).toThrow('原始结构')
+    expect(() => s.deleteGroup('whatever')).toThrow('原始结构')
+    expect(() => s.raw()).toThrow('原始结构')
+    await expect(s.save()).rejects.toThrow('原始结构')
+  })
+
+  it('规则4：错误信息里带上如何退出只读状态的提示', async () => {
+    const s = new Session(root)
+    await s.open()
+    s.setViewMode('disk')
+    expect(() => s.annotate({ path: 'src', isDir: true, annotation: 'x' })).toThrow(/切回|退出/)
+  })
+
+  it('切回 spec 视图后写入恢复正常', async () => {
+    const s = new Session(root)
+    await s.open()
+    s.setViewMode('disk')
+    s.setViewMode('spec')
+    const r = s.annotate({ path: 'src', isDir: true, annotation: '正常' })
+    expect(r.dirty).toBe(true)
+  })
+
+  it('未 open 时 setViewMode 抛错，而不是静默接受', () => {
+    const s = new Session(root)
+    expect(() => s.setViewMode('disk')).toThrow('尚未打开')
+  })
+
+  it('handle("view/setMode") 分发正确，且后续写操作经同一 Session 被同样拦下', async () => {
+    const s = new Session(root)
+    await s.open()
+    const r = await s.handle('view/setMode', { mode: 'disk' })
+    expect((r as { mode: string }).mode).toBe('disk')
+    await expect(s.handle('spec/annotate', { path: 'src', isDir: true, annotation: 'x' }))
+      .rejects.toThrow('原始结构')
+  })
+})

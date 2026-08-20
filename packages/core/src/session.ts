@@ -9,8 +9,8 @@ import { emptySpec, moveNode, setAnnotation, setGroup, deleteGroup } from './spe
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
-import type { Api, ApiMethod, AnnotateParams, EditResult, MoveParams, OpenResult, SetGroupParams } from './api.js'
-import type { ActualNode, GitStates, Group, ParseError, Spec, ViewNode } from './types.js'
+import type { Api, ApiMethod, AnnotateParams, EditResult, MoveParams, OpenResult, SetGroupParams, SetViewModeParams, ViewModeResult } from './api.js'
+import type { ActualNode, GitStates, Group, ParseError, Spec, ViewMode, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
 
@@ -63,6 +63,10 @@ export class Session {
   private spec: Spec = emptySpec()
   /** 当次会话内被拖走的旧位置；临时状态，永不落盘（spec §6.1） */
   private hidden = new Set<string>()
+  /** 「原始结构 / 我的结构」显示模式。与 hidden 同类的派生状态：只影响 tree() 怎么合成，
+   *  永不落盘、不参与 dirty。不在 open()/reload() 时重置——它是用户的显示偏好，不是
+   *  某次编辑的残留状态，外部触发的重载不该把用户正看着的视图悄悄切走。 */
+  private viewMode: ViewMode = 'spec'
   private dirty = false
   private parseErrors: ParseError[] | null = null
   /** open() 是否已经完整跑完一次。区分"从未打开"与"打开成功"——两者 parseErrors 都是 null，
@@ -157,7 +161,18 @@ export class Session {
 
   tree(): ViewNode {
     this.assertOpened()
-    return merge(this.actual, this.git, this.spec, this.hidden)
+    return merge(this.actual, this.git, this.spec, this.hidden, this.viewMode)
+  }
+
+  /**
+   * 切换「原始结构 / 我的结构」视图。纯显示操作：只改 this.viewMode，不碰 this.spec，
+   * 不置 dirty——正因为它不产生任何编辑，才不需要 undo 栈（与项目裁定「不需要 undo 栈」
+   * 相容）。写入侧的闸门在 assertWritable() 里（见那里的注释）。
+   */
+  setViewMode(mode: ViewMode): ViewModeResult {
+    this.assertOpened()
+    this.viewMode = mode
+    return { tree: this.tree(), mode: this.viewMode }
   }
 
   async expand(path: string): Promise<ViewNode> {
@@ -295,6 +310,8 @@ export class Session {
         return this.deleteGroup((params as { id: string }).id) as Api[K]['result']
       case 'file/read':
         return (await this.readFile((params as { path: string }).path)) as Api[K]['result']
+      case 'view/setMode':
+        return this.setViewMode((params as SetViewModeParams).mode) as Api[K]['result']
       default:
         throw new Error(`未知方法 "${String(method)}"`)
     }
@@ -319,6 +336,13 @@ export class Session {
     this.assertOpened()
     if (this.parseErrors !== null) {
       throw new Error('契约文件解析失败，当前为只读模式，请先修复文件')
+    }
+    // disk 视图只按磁盘扫描结果建树，节点路径与契约里的路径可能对不上（节点被移动过
+    // 时尤其如此）。如果在这个视图上放行编辑，改动会挂到用户当前视图里看到的路径上，
+    // 那条路径未必是契约打算表达的那条——标注会悄悄挂错地方，而用户全程看不出来。
+    // 闸放在这里而不是 UI 层：两个宿主的写操作都经过 assertWritable()，UI 不可能绕过去。
+    if (this.viewMode === 'disk') {
+      throw new Error('当前处于「原始结构」视图，为只读模式；切回「我的结构」视图后即可编辑')
     }
   }
 }

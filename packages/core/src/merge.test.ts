@@ -188,3 +188,94 @@ describe('merge 的分组派生', () => {
     expect(b.groups).toEqual(['g1'])
   })
 })
+
+describe('merge 的 disk 视图模式（原始结构，忽略契约里的结构性重排）', () => {
+  it('disk 模式下只按磁盘扫描结果建树：契约声明但磁盘没有的节点（spec-only）不出现', () => {
+    const actual = dir('r', '', [dir('src', 'src', [])])
+    const s = spec([
+      sdir('src', [], { annotation: '核心源码' }),
+      sdir('docs', [sdir('specs', [], { annotation: '设计文档' })]), // 磁盘上不存在
+    ])
+    const v = merge(actual, NO_GIT, s, undefined, 'disk')
+    expect(() => find(v, 'docs')).toThrow()
+    expect(find(v, 'src').origin).toBe('both')
+    expect(find(v, 'src').annotation).toBe('核心源码')
+  })
+
+  it('disk 模式下磁盘有、契约无 → actual-only 且无注释', () => {
+    const actual = dir('r', '', [file('README.md', 'README.md')])
+    const v = merge(actual, NO_GIT, spec([]), undefined, 'disk')
+    const n = find(v, 'README.md')
+    expect(n.origin).toBe('actual-only')
+    expect(n.annotation).toBeUndefined()
+  })
+
+  // 规则 3：节点被"移动"后，契约里的路径变了，但磁盘上的文件从未真的移动（本工具
+  // 绝不 mv 文件）。disk 视图必须显示出这个错位：旧路径上文件仍在、但契约里已经没有
+  // 同路径的节点了，所以必须显示为"无标注"——这本身就是"它被移动过"的诚实信号，
+  // 不应该试图把注释跟过去（那样反而会掩盖移动发生过的事实）。
+  it('节点被移动后，旧路径在 disk 视图里显示为无标注，新路径完全不出现（磁盘上没有）', () => {
+    // 模拟 Session.move 之后的 spec 形态：examples/foo 已从 spec 里摘掉、改挂到
+    // src/cases/foo 下；但磁盘扫描（actual）仍然在旧路径 examples/foo 看到这个目录。
+    const actual = dir('r', '', [dir('examples', 'examples', [dir('foo', 'examples/foo', [])])])
+    const s = spec([sdir('src', [sdir('cases', [sdir('foo', [], { annotation: '案例' })])])])
+    const v = merge(actual, NO_GIT, s, undefined, 'disk')
+    const foo = find(v, 'examples/foo')
+    expect(foo.origin).toBe('actual-only')
+    expect(foo.annotation).toBeUndefined()
+    expect(() => find(v, 'src/cases/foo')).toThrow()
+  })
+
+  // 规则 2 的核心测试。夹具必须真的有一个被拖走的节点、且它的旧位置真的在 hidden
+  // 集合里——否则"忽略不忽略 hidden"在断言上没有任何区分力（本项目记录过多次这种
+  // 空转的假绿用例）。这里先用 spec 模式的既有行为确认这份 hidden 夹具确实生效
+  // （examples/foo 被吞掉），再验证 disk 模式下同一份 hidden 必须被完全无视。
+  it('disk 模式必须忽略 hidden 集合：被拖走的旧位置在磁盘视图里仍然可见', () => {
+    const actual = dir('r', '', [dir('examples', 'examples', [dir('foo', 'examples/foo', [])])])
+    const s = spec([sdir('src', [sdir('cases', [sdir('foo', [], { annotation: '案例' })])])])
+    const hidden = new Set(['examples/foo'])
+
+    const specView = merge(actual, NO_GIT, s, hidden, 'spec')
+    expect(() => find(specView, 'examples/foo')).toThrow() // 对照：spec 模式下确实被吞掉
+
+    const diskView = merge(actual, NO_GIT, s, hidden, 'disk')
+    expect(find(diskView, 'examples/foo').origin).toBe('actual-only')
+  })
+
+  it('disk 模式下分组仍按路径匹配（与 spec 模式共用同一套按路径索引，天然满足规则 3）', () => {
+    const actual = dir('r', '', [file('a.ts', 'a.ts')])
+    const v = merge(actual, NO_GIT, specG([], [{ id: 'g1', members: ['a.ts'], text: 't' }]), undefined, 'disk')
+    expect(find(v, 'a.ts').groups).toEqual(['g1'])
+  })
+
+  it('disk 模式对"actual 侧缺失分支"幂等：未扫描目录不产出任何 spec 合成节点', () => {
+    const s = spec([sdir('src', [sdir('core', [], { annotation: '内核' })])])
+    const before = merge(dir('r', '', [dir('src', 'src')]), NO_GIT, s, undefined, 'disk') // src.children undefined
+    expect(find(before, 'src').children).toBeUndefined()
+
+    const after = merge(dir('r', '', [dir('src', 'src', [dir('core', 'src/core', [])])]), NO_GIT, s, undefined, 'disk')
+    expect(find(after, 'src/core').origin).toBe('both')
+    expect(find(after, 'src/core').annotation).toBe('内核')
+  })
+
+  it('disk 模式下 git 状态、truncated、unreadable 仍然透传', () => {
+    const actual: ActualNode = {
+      name: 'r', path: '', kind: 'dir',
+      children: [
+        { name: 'big', path: 'big', kind: 'dir', children: [], truncated: true },
+        { name: 'a.txt', path: 'a.txt', kind: 'file' },
+      ],
+    }
+    const git: GitStates = new Map([['a.txt', 'modified']])
+    const v = merge(actual, git, spec([]), undefined, 'disk')
+    expect(find(v, 'big').truncated).toBe(true)
+    expect(find(v, 'a.txt').gitState).toBe('modified')
+  })
+
+  it('mode 默认值仍是 spec：不传第五个参数时行为与改动前完全一致（向后兼容）', () => {
+    const actual = dir('r', '', [])
+    const s = spec([sdir('docs', [], { annotation: '文档' })])
+    const v = merge(actual, NO_GIT, s) // 只传 3 个参数
+    expect(find(v, 'docs').origin).toBe('spec-only')
+  })
+})

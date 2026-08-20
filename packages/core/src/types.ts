@@ -117,6 +117,15 @@ export type GitStates = Map<string, GitState>
 
 export type NodeOrigin = 'both' | 'spec-only' | 'actual-only' | 'unscanned'
 
+/**
+ * 'spec'：三源合成（默认，现有行为）——磁盘扫描 + git 状态 + 契约，契约里声明的结构生效。
+ * 'disk'：只按磁盘扫描结果建树，忽略契约里的结构性重排——用于「原始结构」对比视图，
+ * 让用户看清拖拽到底改了什么（拖拽本身不记录"从哪儿来"，是设计文档 §6.1 记录在案、
+ * 刻意接受的限制；这个模式是四个候选方案里用户选中的补偿手段）。
+ * 纯显示模式，不落盘、不进 Spec——与 hidden 同类的派生状态。
+ */
+export type ViewMode = 'spec' | 'disk'
+
 export interface ViewNode {
   name: string
   path: string

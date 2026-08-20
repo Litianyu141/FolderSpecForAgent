@@ -1,7 +1,7 @@
-import type { Group, ParseError, Severity, ViewNode } from './types.js'
+import type { Group, ParseError, Severity, ViewMode, ViewNode } from './types.js'
 import type { FileReadResult } from './file-read.js'
 
-export type { GitState, Group, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewNode } from './types.js'
+export type { GitState, Group, NodeOrigin, ParseError, Severity, Spec, SpecNode, ViewMode, ViewNode } from './types.js'
 export type { FileReadResult } from './file-read.js'
 
 export interface OpenResult {
@@ -48,6 +48,15 @@ export interface SetGroupParams {
   severity?: Severity | null
 }
 
+export interface SetViewModeParams {
+  mode: ViewMode
+}
+
+export interface ViewModeResult {
+  tree: ViewNode
+  mode: ViewMode
+}
+
 export interface Api {
   'workspace/open': { params: { root: string }; result: OpenResult }
   'tree/get': { params: Record<string, never>; result: { tree: ViewNode } }
@@ -59,6 +68,8 @@ export interface Api {
   'spec/setGroup': { params: SetGroupParams; result: EditResult & { id: string } }
   'spec/deleteGroup': { params: { id: string }; result: EditResult }
   'file/read': { params: { path: string }; result: FileReadResult }
+  /** 切换「原始结构 / 我的结构」显示模式。纯显示状态，不写盘、不置 dirty（见 Session.setViewMode）。 */
+  'view/setMode': { params: SetViewModeParams; result: ViewModeResult }
 }
 
 export type ApiMethod = keyof Api

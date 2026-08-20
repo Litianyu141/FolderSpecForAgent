@@ -1,4 +1,4 @@
-import type { ActualNode, GitStates, Group, NodeOrigin, Spec, SpecNode, ViewNode } from './types.js'
+import type { ActualNode, GitStates, Group, NodeOrigin, Spec, SpecNode, ViewMode, ViewNode } from './types.js'
 
 const NO_HIDDEN: ReadonlySet<string> = new Set()
 
@@ -7,13 +7,14 @@ export function merge(
   git: GitStates,
   spec: Spec,
   hidden: ReadonlySet<string> = NO_HIDDEN,
+  mode: ViewMode = 'spec',
 ): ViewNode {
   const groupsByPath = indexGroups(spec.groups)
   const root: ViewNode = { name: actual.name, path: actual.path, isDir: true, origin: 'both' }
   applyGroups(root, groupsByPath)
   if (actual.truncated) root.truncated = true
   if (actual.unreadable) root.unreadable = true
-  const children = mergeChildren(actual.path, actual.children, spec.nodes, git, hidden, groupsByPath)
+  const children = mergeChildren(actual.path, actual.children, spec.nodes, git, hidden, groupsByPath, mode)
   if (children) root.children = children
   return root
 }
@@ -50,10 +51,13 @@ function mergeChildren(
   git: GitStates,
   hidden: ReadonlySet<string>,
   groupsByPath: Map<string, string[]>,
+  mode: ViewMode,
 ): ViewNode[] | undefined {
-  // 该目录尚未扫描：spec 子节点原样物化为 unscanned，等展开后重新合成
+  // 该目录尚未扫描。spec 模式下把 spec 子节点原样物化为 unscanned，等展开后重新合成；
+  // disk 模式不做任何 spec 驱动的合成（下面同一函数里"补上 spec-only 遗留项"那段
+  // 也是同一类合成），未扫描就是"还不知道"，不能拿契约声明的结构去猜。
   if (actualKids === undefined) {
-    if (specKids.length === 0) return undefined
+    if (mode === 'disk' || specKids.length === 0) return undefined
     return sortView(specKids
       .map(s => fromSpec(parentPath, s, 'unscanned', git, hidden, groupsByPath))
       .filter((v): v is ViewNode => v !== null))
@@ -63,18 +67,25 @@ function mergeChildren(
   const out: ViewNode[] = []
 
   for (const a of actualKids) {
-    if (hidden.has(a.path)) {
+    // hidden 记的是「本次会话里被拖走节点的旧位置」，是 spec 模式专属的临时 UI 状态
+    // （spec §6.1：拖拽绝不记录"从哪儿来"）。disk 视图存在的全部理由就是诚实地显示
+    // 磁盘上真实的样子——如果它也听 hidden 的，刚被拖走的节点在"原始结构"里的旧位置
+    // 照样不显示，这个视图就是在撒谎，等于自己废掉自己存在的理由。
+    if (mode === 'spec' && hidden.has(a.path)) {
       bySpecName.delete(a.name)
       continue
     }
     const s = bySpecName.get(a.name)
     if (s) bySpecName.delete(a.name)
-    out.push(fromActual(a, s, git, hidden, groupsByPath))
+    out.push(fromActual(a, s, git, hidden, groupsByPath, mode))
   }
 
-  for (const s of bySpecName.values()) {
-    const v = fromSpec(parentPath, s, 'spec-only', git, hidden, groupsByPath)
-    if (v) out.push(v)
+  // disk 模式不产出 spec-only 节点：这些节点在磁盘上并不存在，"原始结构"视图只认磁盘。
+  if (mode === 'spec') {
+    for (const s of bySpecName.values()) {
+      const v = fromSpec(parentPath, s, 'spec-only', git, hidden, groupsByPath)
+      if (v) out.push(v)
+    }
   }
 
   return sortView(out)
@@ -86,6 +97,7 @@ function fromActual(
   git: GitStates,
   hidden: ReadonlySet<string>,
   groupsByPath: Map<string, string[]>,
+  mode: ViewMode,
 ): ViewNode {
   const v: ViewNode = {
     name: a.name,
@@ -97,11 +109,14 @@ function fromActual(
   if (g) v.gitState = g
   if (a.truncated) v.truncated = true
   if (a.unreadable) v.unreadable = true
+  // s 是按同一路径逐层匹配到的 spec 节点（bySpecName 在每一级都按 name 对齐，
+  // 等价于按完整路径查找）——这就是规则 3「标注按路径挂」：节点被移动后，
+  // 它在磁盘上的旧路径与契约里的新路径不再对应同一条 s，自然显示为无标注。
   applySpecFields(v, s)
   applyGroups(v, groupsByPath)
 
   if (a.kind === 'dir') {
-    const children = mergeChildren(a.path, a.children, s?.children ?? [], git, hidden, groupsByPath)
+    const children = mergeChildren(a.path, a.children, s?.children ?? [], git, hidden, groupsByPath, mode)
     if (children) v.children = children
   }
   return v
