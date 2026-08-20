@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
+import { createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, removeNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
 import type { Spec, SpecNode } from './types.js'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
@@ -393,6 +393,116 @@ describe('deleteGroup', () => {
   it('删除不存在的 id 是空操作', () => {
     const s = setGroup(emptySpec(), null, ['a/b.ts'], { text: 't' }).spec
     expect(deleteGroup(s, 'nope').groups).toHaveLength(1)
+  })
+})
+
+/**
+ * removeNode：从契约里撤销一个节点的声明——"不再声明这里应该有它"，不是删除磁盘上
+ * 的文件/目录（真正动磁盘的是随后读契约的 Agent，见 CLAUDE.md 铁律 1）。完整语义
+ * 推导见 spec-edit.ts 里 removeNode() 上方的注释；这里只钉住具体行为。
+ */
+describe('removeNode（撤销节点声明，不碰磁盘）', () => {
+  it('移除一个没有子节点的叶子声明', () => {
+    const s = setAnnotation(emptySpec(), 'README.md', false, { annotation: '说明文档' })
+    const after = removeNode(s, 'README.md')
+    expect(find(after.nodes, 'README.md')).toBeNull()
+  })
+
+  it('不修改传入的 spec（返回新对象）', () => {
+    const before = setAnnotation(emptySpec(), 'README.md', false, { annotation: 'x' })
+    const after = removeNode(before, 'README.md')
+    expect(find(before.nodes, 'README.md')).not.toBeNull()
+    expect(find(after.nodes, 'README.md')).toBeNull()
+  })
+
+  it('目标节点自己带 annotation/role/severity 不影响移除——移除的正是它自己的声明', () => {
+    const s = setAnnotation(emptySpec(), 'src', true, { annotation: '核心源码', role: 'source-root', severity: 'error' })
+    const after = removeNode(s, 'src')
+    expect(after.nodes).toEqual([])
+  })
+
+  it('不能移除根节点', () => {
+    expect(() => removeNode(emptySpec(), '')).toThrow('根节点')
+  })
+
+  it('路径不存在时是空操作，不报错——与 deleteGroup 对不存在 id 的既有行为一致', () => {
+    const s = setAnnotation(emptySpec(), 'src', true, { annotation: 'x' })
+    const after = removeNode(s, 'does/not/exist')
+    expect(after.nodes).toEqual(s.nodes)
+  })
+
+  it('移除一棵纯脚手架子树（子孙都没有任何内容）——整棵子树一并收走', () => {
+    let s = emptySpec()
+    ;({ spec: s } = createNode(s, '', 'src', true))
+    ;({ spec: s } = createNode(s, 'src', 'cases', true))
+    ;({ spec: s } = createNode(s, 'src/cases', 'foo', true))
+    ;({ spec: s } = createNode(s, 'src/cases/foo', 'bar.ts', false))
+
+    const after = removeNode(s, 'src/cases')
+    expect(find(after.nodes, 'src/cases')).toBeNull()
+    expect(find(after.nodes, 'src/cases/foo/bar.ts')).toBeNull()
+    // 'src' 本身不在被移除的子树里，留作空脚手架——这是可接受的代价（见
+    // pruneAlong 的说明：多留一截没人管的空目录，远比错删内容安全），不是本函数
+    // 要顺手清理的东西。
+    expect(find(after.nodes, 'src')).not.toBeNull()
+  })
+
+  it('移除节点后，分组里的成员路径原样保留（悬空成员，不自动清理）', () => {
+    const s0 = setAnnotation(emptySpec(), 'src/a.ts', false, { annotation: 'x' })
+    const { spec: s } = setGroup(s0, null, ['src/a.ts', 'src/b.ts'], { text: '一起看' })
+    const after = removeNode(s, 'src/a.ts')
+    expect(after.groups).toHaveLength(1)
+    expect(after.groups[0].members).toEqual(['src/a.ts', 'src/b.ts'])
+  })
+})
+
+/**
+ * 红线：removeNode 绝不能无条件级联删除子树。结构区是嵌套列表，移除一个目录节点
+ * 必然带走它在 spec.nodes 里嵌套的全部子节点——如果子孙里有任何一个携带用户内容
+ * （annotation/role/template/severity），无条件级联就是一次点击丢掉多条用户或
+ * Agent 已经写下的声明，正是本工具"唯一能造成的伤害"那条铁律要防的事。这里没有
+ * "强制级联"的旁路：想清空整棵子树，必须自底向上对每个带内容的子节点分别调用一次
+ * ——每一步都是一次独立、可撤销、用户明确按下的操作（"显式优于隐式"）。
+ */
+describe('removeNode 红线：子树里有用户内容时拒绝级联删除', () => {
+  it('目标节点自身无内容，但直接子节点带注释——拒绝，原 spec 一个字节都不变', () => {
+    let s = emptySpec()
+    ;({ spec: s } = createNode(s, '', 'src', true))
+    s = setAnnotation(s, 'src/cases', true, { annotation: '用户手写的关键说明' })
+
+    expect(() => removeNode(s, 'src')).toThrow()
+    // 抛错意味着调用方拿到的还是原来那个 s——重新断言它没被动过，
+    // 而不是只看"抛没抛错"这一件事本身。
+    expect(find(s.nodes, 'src/cases')?.annotation).toBe('用户手写的关键说明')
+  })
+
+  it('隔两层的子孙带内容也会被发现——不能只查直接子节点', () => {
+    let s = emptySpec()
+    ;({ spec: s } = createNode(s, '', 'src', true))
+    ;({ spec: s } = createNode(s, 'src', 'cases', true))
+    s = setAnnotation(s, 'src/cases/foo', true, { role: 'fixture' })
+
+    expect(() => removeNode(s, 'src')).toThrow()
+    expect(find(s.nodes, 'src/cases/foo')?.role).toBe('fixture')
+  })
+
+  it('只有 template/severity（没有 annotation/role）的子孙同样能拦下', () => {
+    let s = emptySpec()
+    ;({ spec: s } = createNode(s, '', 'src', true))
+    s = setAnnotation(s, 'src/cases', false, { severity: 'warning' })
+
+    expect(() => removeNode(s, 'src')).toThrow()
+  })
+
+  it('自底向上先移除带内容的子节点，父节点才能被移除——显式级联，不是隐式的', () => {
+    let s = emptySpec()
+    ;({ spec: s } = createNode(s, '', 'src', true))
+    s = setAnnotation(s, 'src/cases', true, { annotation: '说明' })
+
+    expect(() => removeNode(s, 'src')).toThrow()
+    s = removeNode(s, 'src/cases')
+    const after = removeNode(s, 'src')
+    expect(after.nodes).toEqual([])
   })
 })
 

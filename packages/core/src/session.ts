@@ -5,7 +5,7 @@ import { serializeSpec } from './serialize.js'
 import { scan, DEFAULT_DEPTH } from './scan.js'
 import { gitStatus } from './git.js'
 import { merge } from './merge.js'
-import { createNode, emptySpec, findSpecNode, moveNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
+import { createNode, emptySpec, findSpecNode, moveNode, removeNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
@@ -369,6 +369,27 @@ export class Session {
     }
   }
 
+  /**
+   * 撤销一个节点的声明——只影响 spec.nodes 这一条（及其被判定为纯脚手架的子树），
+   * 不碰磁盘上的任何文件/目录。走与其他写方法完全相同的收口（assertWritable →
+   * 快照 → 纯函数改 spec → commitEdit），因此也天然进撤销栈、天然被「原始结构」
+   * 只读视图拦下、天然会被 raw()/save() 的自校验闸门保护。
+   *
+   * 子树保护、分组成员是否清理、路径不存在时是空操作——完整语义推导见 spec-edit.ts
+   * 的 removeNode()。这里与 deleteGroup 一样，不特殊处理"路径不存在"这个空操作：
+   * 无条件走 captureState → 纯函数 → commitEdit，即便这次调用什么都没改也照样
+   * 置脏、进撤销栈——与 Session.deleteGroup 对不存在 id 的既有行为保持一致，
+   * 不为这一个方法单独发明一套"真空操作不进撤销栈"的例外。
+   */
+  removeNode(path: string): EditResult {
+    this.assertWritable()
+    assertRepresentablePath(path)
+    const before = this.captureState()
+    this.spec = removeNode(this.spec, path)
+    this.commitEdit(before)
+    return this.editResult()
+  }
+
   setGroup(params: SetGroupParams): EditResult & { id: string } {
     this.assertWritable()
     for (const m of params.members) assertRepresentablePath(m)
@@ -557,6 +578,8 @@ export class Session {
         return this.move(params as MoveParams) as Api[K]['result']
       case 'spec/createNode':
         return this.createNode(params as CreateNodeParams) as Api[K]['result']
+      case 'spec/removeNode':
+        return this.removeNode((params as { path: string }).path) as Api[K]['result']
       case 'spec/save':
         return (await this.save()) as Api[K]['result']
       case 'spec/raw':

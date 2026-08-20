@@ -165,6 +165,71 @@ export function moveNode(spec: Spec, from: string, toParent: string, isDir: bool
   return next
 }
 
+/**
+ * 从契约里撤销一个节点的声明——"不再声明这里应该有它"，不是删除磁盘上的文件/目录
+ * （真正动磁盘的是随后读契约的 Agent，见 CLAUDE.md 铁律 1）。对 `origin: 'both'` 的
+ * 节点（磁盘上真实存在）而言，节点依旧会出现在树上（merge 按磁盘扫描结果把它物化
+ * 成 actual-only），只是不再带任何标注；只有对 spec-only 节点（磁盘上不存在），移除
+ * 才等于这一行彻底从树上消失——这两种情形在调用方那侧看起来不一样，但对这个函数
+ * 而言是同一件事：从 spec.nodes 里去掉这一条声明。
+ *
+ * 子树保护（红线所在）：若目标节点的子树（不含它自己）里有任何一个后代带着用户内容
+ * （annotation/role/template/severity），一律拒绝——结构区是嵌套列表，移除一个目录
+ * 节点必然连带移除它在 spec.nodes 里嵌套的全部子节点，子节点的行离不开父节点的行；
+ * 无条件级联等于一次点击丢掉多条用户或 Agent 已经写下的声明，正是本工具"唯一能造成
+ * 的伤害是弄丢人写的注释"这条铁律要防的事。拒绝时不提供"强制级联"的旁路：想清空
+ * 整棵子树，请自底向上对每个带内容的子节点分别调用一次——每一步都是一次独立、可
+ * 撤销、被用户明确按下的操作，而不是一次点击的隐藏后果（"显式优于隐式"）。目标节点
+ * 自己的 annotation/role/... 不受这条限制——移除它自己的声明正是本函数要做的事；
+ * 限制只看**子孙**是否带内容，纯脚手架子树（没有任何一层携带内容）才允许连同收走。
+ *
+ * 分组成员留作悬空，不在这里一并清理：与 moveNode 的 rewriteGroupMembers 不同——
+ * 那边节点还在（只是换了路径），把成员路径同步过去是维持同一个指代对象继续有效；
+ * 这里节点的声明整个被撤销，不存在"该指向哪儿"这个新答案，代替调用方悄悄改掉一条
+ * 分组成员是本函数被要求之外的隐式副作用。也不是什么新状况：`both` 节点移除声明后
+ * 依旧出现在树上（上面已经说明），分组点位置照常显示；只有 spec-only 节点被移除后，
+ * 它的分组成员才会退化成 README 已经记录、判定为可接受的已知限制——"分组成员若
+ * 既不在结构区、又不在磁盘上，树上不会出现对应的行，但成员本身不会丢失，仍在
+ * `.folderspec.md` 的分组区与分组面板里"。用户若想真的清掉这条成员，走 setGroup
+ * 显式改 members，而不是指望删节点时顺带发生。
+ *
+ * 路径不存在时是空操作，不报错——与 deleteGroup 对不存在 id 的既有行为一致："撤销
+ * 一个本来就不存在的声明"天然就该是幂等的，不该因为调用了两次就报错。
+ */
+export function removeNode(spec: Spec, path: string): Spec {
+  const segs = toSegments(path)
+  if (segs.length === 0) throw new Error('不能移除根节点')
+
+  const next = structuredClone(spec)
+  let list = next.nodes
+  for (let i = 0; i < segs.length - 1; i++) {
+    const found = list.find(n => n.name === segs[i])
+    if (!found) return next // 路径不存在：空操作
+    list = found.children
+  }
+  const idx = list.findIndex(n => n.name === segs[segs.length - 1])
+  if (idx === -1) return next // 路径不存在：空操作
+
+  const target = list[idx]
+  if (target.children.some(hasContent)) {
+    throw new Error(
+      `\`${path}\` 下还有带注释/角色/模板/严重级别的子节点，移除会连带丢失这些声明：` +
+      '请先分别移除这些子节点自己的声明，再移除该节点本身',
+    )
+  }
+
+  list.splice(idx, 1)
+  return next
+}
+
+/** 节点自身或其任意后代是否带有用户内容。removeNode 用它判断能不能连同子树一起
+ *  收走——只有整棵子树都是"纯脚手架"（没有任何一层携带内容）才允许，否则移除一个
+ *  目录会把子孙的声明一并静默吃掉，见 removeNode 上方注释里的"子树保护"。 */
+function hasContent(n: SpecNode): boolean {
+  if (n.annotation || n.role || n.template || n.severity) return true
+  return n.children.some(hasContent)
+}
+
 export function findSpecNode(nodes: SpecNode[], path: string): SpecNode | null {
   let list = nodes
   let node: SpecNode | null = null

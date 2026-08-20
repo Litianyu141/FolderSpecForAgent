@@ -122,6 +122,21 @@ export interface Api {
    * 和 name，一旦两边拼接规则（'' 表示根）不一致就会选中错误的节点。
    */
   'spec/createNode': { params: CreateNodeParams; result: EditResult & { path: string } }
+  /**
+   * 从契约里撤销一个节点的声明——"不再声明这里应该有它"，不是删除磁盘上的文件/目录
+   * （真正动磁盘的是随后读契约的 Agent，见 CLAUDE.md 铁律 1）。对磁盘上真实存在的
+   * 节点而言，它依旧会出现在树上（只是不再带任何标注）；只有对 spec-only 节点（磁盘
+   * 上不存在），移除才等于这一行彻底从树上消失。
+   *
+   * 若目标节点的子树里有任何后代带着用户内容（annotation/role/template/severity），
+   * 会抛错拒绝——移除一个目录节点必然连带移除它嵌套的全部子节点，无条件级联等于
+   * 一次点击丢掉多条用户或 Agent 已经写下的声明。想清空整棵子树，请自底向上对每个
+   * 带内容的子节点分别调用一次；完整推导见 spec-edit.ts 的 removeNode()。
+   *
+   * 路径不存在时是空操作，不报错（与 spec/deleteGroup 对不存在 id 的既有行为一致）。
+   * 分组成员不会被一并清理，见 removeNode() 上方"分组成员留作悬空"一节。
+   */
+  'spec/removeNode': { params: { path: string }; result: EditResult }
   'spec/save': { params: Record<string, never>; result: SaveResult }
   'spec/raw': { params: Record<string, never>; result: { markdown: string } }
   'spec/setGroup': { params: SetGroupParams; result: EditResult & { id: string } }
@@ -144,7 +159,8 @@ export interface Api {
   /** 切换「原始结构 / 我的结构」显示模式。纯显示状态，不写盘、不置 dirty（见 Session.setViewMode）。 */
   'view/setMode': { params: SetViewModeParams; result: ViewModeResult }
   /**
-   * 退回 / 重做**一次已提交的编辑**（annotate、move、setGroup、deleteGroup 各算一步）。
+   * 退回 / 重做**一次已提交的编辑**（annotate、move、setGroup、deleteGroup、removeNode
+   * 各算一步）。
    * 只动内存里的 Spec 与 hidden，不产生任何文件写入；栈空时是空操作而非报错
    * （见 Session.undo）。
    */

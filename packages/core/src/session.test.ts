@@ -690,6 +690,114 @@ describe('Session.createNode（在契约里声明一个尚不存在的节点）'
   })
 })
 
+describe('Session.removeNode（撤销节点声明——只影响契约，不碰磁盘）', () => {
+  it('移除一个叶子声明，raw() 里不再出现它的注释', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'README.md', isDir: false, annotation: '说明文档' })
+    const r = s.removeNode('README.md')
+    expect(r.dirty).toBe(true)
+    expect(find(r.tree, 'README.md')?.annotation).toBeUndefined()
+    expect(s.raw()).not.toContain('说明文档')
+  })
+
+  it('spec-only 节点被移除后彻底从树上消失', async () => {
+    const s = new Session(root); await s.open()
+    const created = s.createNode({ parentPath: '', name: 'docs', isDir: true })
+    expect(find(created.tree, 'docs')?.origin).toBe('spec-only')
+    const r = s.removeNode('docs')
+    expect(find(r.tree, 'docs')).toBeNull()
+  })
+
+  // 语义问题 3：只是撤销契约里的声明，不是删磁盘文件——磁盘上真实存在的 src 目录
+  // 移除声明后仍会出现在树上（merge 按磁盘扫描结果把它物化成 actual-only），
+  // 只是不再带任何标注，与本工具"只写 .folderspec.md 一个文件"这条铁律一致。
+  it('origin both 节点移除声明后仍出现在树上，只是不再带标注——磁盘上的目录纹丝不动', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '核心源码' })
+    const r = s.removeNode('src')
+    const node = find(r.tree, 'src')
+    expect(node).not.toBeNull()
+    expect(node?.origin).toBe('actual-only')
+    expect(node?.annotation).toBeUndefined()
+    // 磁盘上的目录确实还在——不是树只是没刷新
+    expect((await fs.stat(nodePath.join(root, 'src'))).isDirectory()).toBe(true)
+  })
+
+  it('路径不存在时是空操作，树的形状不变——但与 deleteGroup 对不存在 id 的既有行为一致，仍会置脏、进撤销栈', async () => {
+    const s = new Session(root); await s.open()
+    expect(s.isDirty()).toBe(false)
+    const before = s.tree()
+    const r = s.removeNode('does/not/exist')
+    expect(r.tree).toEqual(before)
+    expect(r.dirty).toBe(true)
+    expect(r.canUndo).toBe(true)
+  })
+
+  // 红线：子树里有用户内容时拒绝，且 Session 的内存状态（spec 与撤销栈）必须
+  // 一个字节都不被这次失败的调用碰过——不能只看"抛没抛错"，还要看抛错之后
+  // 契约本身真的原封不动。
+  it('红线：子树里有用户内容时拒绝，raw() 与撤销栈都不受影响', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '重要的核心模块说明' })
+    const beforeRaw = s.raw()
+
+    expect(() => s.removeNode('src')).toThrow()
+
+    expect(s.raw()).toBe(beforeRaw)
+    expect(find(s.tree(), 'src/core')?.annotation).toBe('重要的核心模块说明')
+    // 失败的调用不该往撤销栈里塞一条什么都没变的记录
+    expect(s.undo().canUndo).toBe(false)
+  })
+
+  it('只读模式（disk 视图）下 removeNode 抛错', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: 'x' })
+    s.setViewMode('disk')
+    expect(() => s.removeNode('src')).toThrow('原始结构')
+  })
+
+  it('可撤销：删错的节点连注释一起回来', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '不该被删的说明' })
+    s.removeNode('src')
+    expect(s.raw()).not.toContain('不该被删的说明')
+    const r = s.undo()
+    expect(find(r.tree, 'src')?.annotation).toBe('不该被删的说明')
+  })
+
+  it('handle("spec/removeNode") 分发正确', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: 'x' })
+    const r = await s.handle('spec/removeNode', { path: 'src' })
+    expect((r as { dirty: boolean }).dirty).toBe(true)
+    expect(find((r as { tree: ViewNode }).tree, 'src')?.annotation).toBeUndefined()
+  })
+
+  // 端到端护栏：移除节点之后 raw() 必须仍然成功——这条直接守着「别把会话弄成永远
+  // 存不了盘」（save() 与 spec/raw 共用同一道 serialize→parse 自校验闸门）。
+  it('移除节点之后 raw() 能成功序列化并自校验，其余标注不受影响', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src', isDir: true, annotation: '待移除' })
+    s.annotate({ path: 'README.md', isDir: false, annotation: '保留这条' })
+    s.removeNode('src')
+    expect(() => s.raw()).not.toThrow()
+    expect(s.raw()).not.toContain('待移除')
+    expect(s.raw()).toContain('保留这条')
+  })
+
+  it('移除节点之后 save() 落盘，重新 open() 也看不到这条声明', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'README.md', isDir: false, annotation: '会被撤销的声明' })
+    await s.save()
+    s.removeNode('README.md')
+    await s.save()
+
+    const s2 = new Session(root)
+    const r = await s2.open()
+    expect(find(r.tree, 'README.md')?.annotation).toBeUndefined()
+  })
+})
+
 describe('Session.setLang（切换展示语言：样板文字未改过才跟着换，走既有写路径闸门）', () => {
   it('无契约文件时以 zh 打开，raw() 不带 lang 字段', async () => {
     const s = new Session(root); await s.open()
@@ -923,6 +1031,7 @@ describe('Session 的视图模式（原始结构 / 我的结构）', () => {
     expect(() => s.setGroup({ id: null, members: ['src'], text: 't' })).toThrow('原始结构')
     expect(() => s.deleteGroup('whatever')).toThrow('原始结构')
     expect(() => s.createNode({ parentPath: '', name: 'docs', isDir: true })).toThrow('原始结构')
+    expect(() => s.removeNode('src')).toThrow('原始结构')
     expect(() => s.raw()).toThrow('原始结构')
     await expect(s.save()).rejects.toThrow('原始结构')
   })
