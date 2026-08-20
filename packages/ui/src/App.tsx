@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
-  Bridge, FileReadResult, Group, OpenResult, ParseError, SetGroupParams, ViewNode,
+  Bridge, FileReadResult, Group, OpenResult, ParseError, SetGroupParams, ViewMode, ViewNode,
 } from '@folderspec/core/api'
 import { SpecTree, flatten } from './Tree.js'
 import { AnnotationPanel } from './AnnotationPanel.js'
@@ -81,9 +81,32 @@ export function App({ bridge, initialRoot }: AppProps) {
   const [externalChange, setExternalChange] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [bodyHeight, setBodyHeight] = useState(600)
+  /** 「原始结构 / 我的结构」显示模式，默认与 Session 的默认值一致（api.ts view/setMode）。 */
+  const [viewMode, setViewModeState] = useState<ViewMode>('spec')
+  /**
+   * 撤销 / 重做栈是否非空，供按钮置灰。EditResult.canUndo/canRedo 只表示"栈非空"，
+   * 不含只读判断（core 故意不重复实现只读规则）——按钮真正的禁用条件在 Toolbar 里
+   * 是 `disabled || !canUndo`，`disabled` 那半才是"现在允不允许写"。
+   */
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
 
   const headerRef = useRef<HTMLDivElement>(null)
   const treeApiRef = useRef<TreeApi<ViewNode> | undefined>(undefined)
+  /**
+   * 上一次 workspace/open 成功后的根路径（已经过宿主解析）。
+   *
+   * 用来判断下一次 open 是"重新载入同一个工作区"还是"换一个工作区"：CLI 宿主里
+   * 同根 open 复用同一个 Session（server.ts 的 `wanted !== session.root` 才换新的），
+   * viewMode 不随之重置；换根则换新 Session，viewMode 天生是默认值 'spec'（Session
+   * 的字段初始值）。UI 拿不到"服务端到底有没有换 Session"这个事实本身——OpenResult
+   * 没有携带 viewMode 字段——只能靠根路径是否变化去推断，这正是两个宿主都要遵守的
+   * open()/reload() 契约（session.ts 的 `reload()` 就是 `return this.open()`）。
+   * 不这样推断的后果：外部变更触发"重新载入"时，UI 会把用户正看着的「原始结构」
+   * 视图悄悄切回「我的结构」，而这时 server 返回的树其实仍是磁盘视图——按钮显示
+   * 与实际画面对不上，正是这个功能最忌讳的"界面说谎"。
+   */
+  const openedRootRef = useRef<string | null>(null)
 
   /**
    * PendingGroup 的两副本：
@@ -155,6 +178,9 @@ export function App({ bridge, initialRoot }: AppProps) {
   const openRoot = useCallback(async (path: string) => {
     try {
       const r: OpenResult = await bridge.request('workspace/open', { root: path })
+      // open() 是否换了一个新 Session，只能靠根路径变没变推断——见 openedRootRef 的注释。
+      const isSameWorkspace = r.root === openedRootRef.current
+      openedRootRef.current = r.root
       setRoot(r.root)
       setTree(r.tree)
       setGroups(r.groups)
@@ -169,6 +195,13 @@ export function App({ bridge, initialRoot }: AppProps) {
       setDirty(false)
       setExternalChange(false)
       setError(null)
+      // OpenResult 上没有 canUndo/canRedo：open() 必定清空撤销栈（Session.open），
+      // 两值此刻恒为 false，UI 直接按 false 复位即可（api.ts EditResult 上的注释）。
+      setCanUndo(false)
+      setCanRedo(false)
+      // viewMode 不在此列——它是显示偏好，不是"这次编辑的残留状态"，同一工作区
+      // reload 后不该被悄悄重置（与 core 侧 Session.viewMode 的裁定对称）。
+      if (!isSameWorkspace) setViewModeState('spec')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -178,7 +211,50 @@ export function App({ bridge, initialRoot }: AppProps) {
 
   useEffect(() => bridge.on('external-change', () => setExternalChange(true)), [bridge])
 
-  const readOnly = parseErrors !== null
+  /**
+   * 不可编辑：契约解析失败，或当前处于「原始结构」视图。两者都会被 core 的
+   * assertWritable() 拒绝写入（session.ts），UI 必须把编辑入口全部禁用，
+   * 而不是让用户点了没反应——这里合并成一个闸门，驱动树的拖拽、注释面板、
+   * 分组面板、保存/撤销/重做按钮共用同一条判据，不在多处各自重复一遍。
+   */
+  const readOnly = parseErrors !== null || viewMode === 'disk'
+
+  const switchViewMode = useCallback(async (mode: ViewMode) => {
+    if (mode === viewMode) return // 已经在这个视图：空操作，别把它也发出去
+    try {
+      const r = await bridge.request('view/setMode', { mode })
+      setTree(r.tree)
+      setViewModeState(r.mode)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [bridge, viewMode])
+
+  const handleUndo = useCallback(async () => {
+    try {
+      const r = await bridge.request('spec/undo', {})
+      setTree(r.tree)
+      setGroups(r.groups)
+      setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [bridge])
+
+  const handleRedo = useCallback(async () => {
+    try {
+      const r = await bridge.request('spec/redo', {})
+      setTree(r.tree)
+      setGroups(r.groups)
+      setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [bridge])
 
   // 外部变更后点"重新载入"会丢弃尚未保存的改动，必须先确认。
   // window.confirm 在两个宿主里都可用，且失败安全：万一某个 webview 环境屏蔽了它，
@@ -203,6 +279,8 @@ export function App({ bridge, initialRoot }: AppProps) {
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -295,6 +373,8 @@ export function App({ bridge, initialRoot }: AppProps) {
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -307,6 +387,8 @@ export function App({ bridge, initialRoot }: AppProps) {
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
       return r.id
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -531,9 +613,15 @@ export function App({ bridge, initialRoot }: AppProps) {
           searchTerm={searchTerm}
           dirty={dirty}
           disabled={readOnly}
+          viewMode={viewMode}
+          canUndo={canUndo}
+          canRedo={canRedo}
           onOpenRoot={p => void openRoot(p)}
           onSearch={setSearchTerm}
           onSave={() => void handleSave()}
+          onSetViewMode={m => void switchViewMode(m)}
+          onUndo={() => void handleUndo()}
+          onRedo={() => void handleRedo()}
         />
 
         {parseErrors && (
@@ -542,6 +630,13 @@ export function App({ bridge, initialRoot }: AppProps) {
             <ul>
               {parseErrors.map(e => <li key={`${e.line}-${e.message}`}>第 {e.line} 行：{e.message}</li>)}
             </ul>
+          </div>
+        )}
+
+        {viewMode === 'disk' && (
+          <div className="fs-banner" role="status">
+            当前为<strong>「原始结构」</strong>视图：只按磁盘扫描结果显示，忽略契约里的结构性调整，因此暂时无法编辑。
+            点击顶栏「我的结构」切换回可编辑视图。
           </div>
         )}
 

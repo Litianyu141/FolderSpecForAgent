@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, act, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { App } from './App.js'
 import { FakeBridge } from './test-bridge.js'
-import type { Bridge, FileReadResult, Group, OpenResult, Severity, ViewNode } from '@folderspec/core/api'
+import type { Bridge, FileReadResult, Group, OpenResult, Severity, ViewMode, ViewNode } from '@folderspec/core/api'
 
 const tree = (children: ViewNode[]): ViewNode =>
   ({ name: 'repo', path: '', isDir: true, origin: 'both', children })
@@ -41,18 +41,24 @@ const openResult = (over: Partial<OpenResult> = {}): OpenResult => ({
   ...over,
 })
 
+// canUndo: true 是四个写操作桩的如实反映——core 侧真实 Session 提交一次编辑之后
+// undoStack 必然非空（见 session.test.ts「四个写操作的返回值都带上 canUndo / canRedo」）。
+// 桩若省略这两个字段，App 里任何"编辑后撤销按钮该启用"的断言都测不出对应缺陷。
 const bridgeWith = (over: Partial<Record<string, unknown>> = {}) => new FakeBridge({
   'workspace/open': () => openResult(over as Partial<OpenResult>),
   'spec/annotate': () => ({
     tree: tree([{ ...SRC, annotation: '核心源码', origin: 'both' }, DOCS, README]),
-    dirty: true, groups: [G1],
+    dirty: true, groups: [G1], canUndo: true, canRedo: false,
   }),
-  'spec/move': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1] }),
+  'spec/move': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false }),
   'spec/save': () => ({ written: true }),
   'tree/expand': () => ({ tree: tree(FIXTURE) }),
-  'spec/setGroup': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], id: 'g1' }),
-  'spec/deleteGroup': () => ({ tree: tree(FIXTURE), dirty: true, groups: [] }),
+  'spec/setGroup': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], id: 'g1', canUndo: true, canRedo: false }),
+  'spec/deleteGroup': () => ({ tree: tree(FIXTURE), dirty: true, groups: [], canUndo: true, canRedo: false }),
   'file/read': () => ({ kind: 'text', text: 'hello\nworld' }),
+  'view/setMode': ({ mode }: { mode: ViewMode }) => ({ tree: tree(FIXTURE), mode }),
+  'spec/undo': () => ({ tree: tree(FIXTURE), dirty: false, groups: [G1], canUndo: false, canRedo: true }),
+  'spec/redo': () => ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false }),
 } as never)
 
 const rowsOf = (container: HTMLElement) => Array.from(container.querySelectorAll('.fs-row'))
@@ -1710,5 +1716,268 @@ describe('App', () => {
     expect((back as HTMLTextAreaElement).value).toBe('我打了一半就反悔了')
     expect(removeBtn('README.md').disabled).toBe(false)
     expect(bridge.calls.filter(c => c.method === 'spec/setGroup')).toHaveLength(1)
+  })
+
+  // ---------------------------------------------------------------------
+  // 「原始结构 / 我的结构」视图切换
+  //
+  // 核心动机（用户原话）：拖拽改完结构之后，没有任何地方能看出自己到底改了什么。
+  // 判据因此是"一眼能看出当前在哪个视图"——下面第一条钉的就是这件事本身。
+  // ---------------------------------------------------------------------
+  describe('原始结构 / 我的结构视图切换', () => {
+    it('默认显示"我的结构"为当前视图', async () => {
+      render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      expect(screen.getByRole('button', { name: '我的结构' }).getAttribute('aria-pressed')).toBe('true')
+      expect(screen.getByRole('button', { name: '原始结构' }).getAttribute('aria-pressed')).toBe('false')
+    })
+
+    it('点击"原始结构"发出 view/setMode 请求，控件随之切换高亮', async () => {
+      const bridge = bridgeWith()
+      render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+
+      await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: '原始结构' }).getAttribute('aria-pressed')).toBe('true'))
+      expect(screen.getByRole('button', { name: '我的结构' }).getAttribute('aria-pressed')).toBe('false')
+    })
+
+    // 这是本节的回归重点：core 的 assertWritable() 在 disk 视图下拒绝一切写入，
+    // UI 必须把编辑入口全部禁用，而不是让用户点了没反应。单点变异见实现后的验证记录。
+    it('"原始结构"视图下：横幅说明原因，保存按钮与注释面板控件均被禁用', async () => {
+      const bridge = bridgeWith()
+      const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+      await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+      // 横幅必须解释"为什么现在点不动"，且要给出怎么切回去——不能让用户自己猜。
+      // 用 role="status" 定位而不是文字：顶栏的切换按钮本身文字也含"原始结构"，
+      // 用文字找会撞上"多个元素匹配"（已实测：改用 getByText 前先见过这条报错）。
+      await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/原始结构/))
+      expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+
+      clickFirstRow(container)
+      await waitFor(() => screen.getByLabelText('注释'))
+      expect((screen.getByLabelText('注释') as HTMLTextAreaElement).disabled).toBe(true)
+      expect((screen.getByLabelText('语义角色') as HTMLInputElement).disabled).toBe(true)
+      expect((screen.getByLabelText('约束强度') as HTMLSelectElement).disabled).toBe(true)
+    })
+
+    it('切回"我的结构"后恢复可编辑', async () => {
+      const bridge = bridgeWith()
+      const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+      await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+      fireEvent.click(screen.getByRole('button', { name: '我的结构' }))
+      await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'spec' }))
+
+      clickFirstRow(container)
+      await waitFor(() => screen.getByLabelText('注释'))
+      expect((screen.getByLabelText('注释') as HTMLTextAreaElement).disabled).toBe(false)
+    })
+
+    it('再次点击当前已激活的视图不重复发请求', async () => {
+      const bridge = bridgeWith()
+      render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      fireEvent.click(screen.getByRole('button', { name: '我的结构' }))
+      // 给一次微任务窗口，让"万一真发了"的请求有机会落地
+      await act(async () => { await Promise.resolve() })
+
+      expect(bridge.calls.some(c => c.method === 'view/setMode')).toBe(false)
+    })
+
+    // 验证"旧位置重新出现"这件事在 UI 侧真正生效的机制：view/setMode 换回来的树
+    // 必须真的替换掉当前显示的树，而不是被忽略。src 折叠时 docs 被挪进 src 后不可见，
+    // 切到 disk 视图应看到它重新出现在顶层——这正是这个功能对用户的全部意义。
+    it('切到原始结构后，被移动进 src 的节点重新出现在顶层旧位置', async () => {
+      const movedDocs: ViewNode = { ...DOCS, path: 'src/docs' }
+      const specTree = tree([{ ...SRC, children: [...(SRC.children ?? []), movedDocs] }, README])
+      const diskTree = tree(FIXTURE)
+
+      const bridge = new FakeBridge({
+        'workspace/open': () => openResult({ tree: specTree }),
+        'view/setMode': ({ mode }: { mode: ViewMode }) => ({ tree: mode === 'disk' ? diskTree : specTree, mode }),
+      } as never)
+
+      const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      // 切换前：src 折叠，docs 已被挪进它下面，顶层只剩 src 与 README.md 两行
+      expect(rowsOf(container)).toHaveLength(2)
+
+      fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+      await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+      // 切换后：按磁盘状态重建，docs 回到顶层——与打开时的原始 FIXTURE 一致
+      await waitFor(() => expect(rowsOf(container)).toHaveLength(3))
+      expect(rowsOf(container).map(r => r.querySelector('.fs-name')?.textContent))
+        .toEqual(['src/', 'docs/', 'README.md'])
+    })
+
+    it('载入不同工作区后视图复位为「我的结构」；重新载入同一个工作区保留原视图', async () => {
+      // 照真实 CLI 宿主的规则（cli/src/server.ts）：同一个 root 复用同一个 Session，
+      // viewMode 不会被重置；换一个 root 则换一个全新 Session，天生是默认值 'spec'。
+      const bridge = new FakeBridge({
+        'workspace/open': ({ root }: { root: string }) => openResult({ root }),
+        'view/setMode': ({ mode }: { mode: ViewMode }) => ({ tree: tree(FIXTURE), mode }),
+      } as never)
+
+      render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+      await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+      // 重新载入同一个根（不改路径框直接点载入）
+      fireEvent.click(screen.getByText('载入'))
+      await waitFor(() => expect(bridge.calls.filter(c => c.method === 'workspace/open').length).toBe(2))
+      expect(screen.getByRole('button', { name: '原始结构' }).getAttribute('aria-pressed')).toBe('true')
+
+      // 换成不同的根
+      fireEvent.change(screen.getByLabelText('工作区路径'), { target: { value: '/tmp/other' } })
+      fireEvent.click(screen.getByText('载入'))
+      await waitFor(() => expect(bridge.calls.filter(c => c.method === 'workspace/open').length).toBe(3))
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: '我的结构' }).getAttribute('aria-pressed')).toBe('true'))
+    })
+
+    it('view/setMode 失败时显示错误横幅', async () => {
+      const bridge = bridgeWith()
+      bridge.setHandler('view/setMode', () => { throw new Error('切换视图炸了') })
+      render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+
+      await waitFor(() => expect(screen.getByText('切换视图炸了')).toBeTruthy())
+    })
+  })
+
+  // ---------------------------------------------------------------------
+  // 撤销 / 重做
+  //
+  // 核心动机（用户原话）：拖拽的时候可能会不小心拖拽错。粒度是"一次已提交的编辑"。
+  // ---------------------------------------------------------------------
+  describe('撤销 / 重做', () => {
+    it('初始加载后撤销/重做按钮均禁用', async () => {
+      render(<App bridge={bridgeWith()} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+      expect((screen.getByText('重做') as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('提交一次编辑后撤销按钮启用；点击后发出 spec/undo 并回退树/分组/脏标记', async () => {
+      const bridge = bridgeWith()
+      const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      clickFirstRow(container)
+      await waitFor(() => screen.getByLabelText('注释'))
+      fireEvent.change(screen.getByLabelText('注释'), { target: { value: '核心源码' } })
+      fireEvent.blur(screen.getByLabelText('注释'))
+      await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false))
+
+      fireEvent.click(screen.getByText('撤销'))
+
+      await waitFor(() => expect(bridge.calls.some(c => c.method === 'spec/undo')).toBe(true))
+      expect(bridge.lastCall('spec/undo')).toEqual({})
+      await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true))
+      expect((screen.getByText('重做') as HTMLButtonElement).disabled).toBe(false)
+      // 桩里 spec/undo 回的 dirty:false——脏标记与撤销共用同一份 EditResult 才会同步
+      expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('点击重做发出 spec/redo 并前进树/分组/脏标记', async () => {
+      const bridge = bridgeWith()
+      const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      clickFirstRow(container)
+      await waitFor(() => screen.getByLabelText('注释'))
+      fireEvent.change(screen.getByLabelText('注释'), { target: { value: '核心源码' } })
+      fireEvent.blur(screen.getByLabelText('注释'))
+      await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false))
+
+      fireEvent.click(screen.getByText('撤销'))
+      await waitFor(() => expect((screen.getByText('重做') as HTMLButtonElement).disabled).toBe(false))
+
+      fireEvent.click(screen.getByText('重做'))
+      await waitFor(() => expect(bridge.calls.some(c => c.method === 'spec/redo')).toBe(true))
+      expect(bridge.lastCall('spec/redo')).toEqual({})
+      await waitFor(() => expect((screen.getByText('重做') as HTMLButtonElement).disabled).toBe(true))
+      expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false)
+      expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false)
+    })
+
+    it('spec/undo 失败时显示错误横幅', async () => {
+      const bridge = bridgeWith()
+      bridge.setHandler('spec/undo', () => { throw new Error('撤销炸了') })
+      const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      clickFirstRow(container)
+      await waitFor(() => screen.getByLabelText('注释'))
+      fireEvent.change(screen.getByLabelText('注释'), { target: { value: 'x' } })
+      fireEvent.blur(screen.getByLabelText('注释'))
+      await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false))
+
+      fireEvent.click(screen.getByText('撤销'))
+
+      await waitFor(() => expect(screen.getByText('撤销炸了')).toBeTruthy())
+    })
+
+    // 明确要求 2：OpenResult 上没有 canUndo/canRedo（open 会清空撤销栈，两值恒 false
+    // 不携带信息），UI 收到 open 结果时必须自己把两个按钮复位——不能指望桩里有这两个字段。
+    it('workspace/open 之后撤销/重做按钮复位为禁用，即便此前已有可撤销的编辑', async () => {
+      const bridge = bridgeWith()
+      const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      clickFirstRow(container)
+      await waitFor(() => screen.getByLabelText('注释'))
+      fireEvent.change(screen.getByLabelText('注释'), { target: { value: 'x' } })
+      fireEvent.blur(screen.getByLabelText('注释'))
+      await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false))
+
+      fireEvent.click(screen.getByText('载入'))   // 重新打开当前根
+
+      await waitFor(() => expect(bridge.calls.filter(c => c.method === 'workspace/open').length).toBe(2))
+      await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true))
+      expect((screen.getByText('重做') as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    // 明确要求 1：canUndo 只表示"栈非空"，不含只读判断（core 故意不重复实现只读规则）。
+    // 按钮的禁用条件必须是 canUndo && 可编辑。这里构造一个真实可达的场景——在编辑态下
+    // 提交过一次编辑（canUndo 变 true），随后切到「原始结构」视图（这一步完全不经过
+    // open()，不会重置 canUndo）——如果按钮只判 canUndo，会在这里被误判成可点，
+    // 点下去会撞上 core 的 assertWritable()「原始结构」错误，界面上凭空弹出一条报错。
+    it('切到原始结构视图后，即便 canUndo 仍为 true，撤销按钮也必须禁用', async () => {
+      const bridge = bridgeWith()
+      const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+      await waitFor(() => screen.getByLabelText('工作区路径'))
+
+      clickFirstRow(container)
+      await waitFor(() => screen.getByLabelText('注释'))
+      fireEvent.change(screen.getByLabelText('注释'), { target: { value: '核心源码' } })
+      fireEvent.blur(screen.getByLabelText('注释'))
+      await waitFor(() => expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false))
+
+      fireEvent.click(screen.getByRole('button', { name: '原始结构' }))
+      await waitFor(() => expect(bridge.lastCall('view/setMode')).toEqual({ mode: 'disk' }))
+
+      expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+    })
   })
 })

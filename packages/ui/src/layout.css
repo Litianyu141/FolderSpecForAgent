@@ -81,6 +81,20 @@
 .fs-group-link { border: none; background: transparent; padding: 0; color: var(--fs-group-dot); cursor: pointer; text-decoration: underline; }
 .fs-group-text { font-size: 12px; opacity: 0.75; }
 
+/* 顶栏：「原始结构 / 我的结构」分段控件。判据是"来回对比时一眼能看出当前在哪个视图"
+   （用户原话诉求），所以当前态必须靠明显的底色差异表达，不能只靠 aria-pressed——
+   那对屏幕阅读器有效，肉眼看不出来。 */
+.fs-viewmode {
+  display: flex; flex-shrink: 0; border: 1px solid var(--fs-border); border-radius: 4px;
+  overflow: hidden;
+}
+.fs-viewmode button {
+  border: none; background: transparent; padding: 4px 10px; font: inherit;
+  color: var(--fs-fg); opacity: 0.7; cursor: pointer;
+}
+.fs-viewmode button + button { border-left: 1px solid var(--fs-border); }
+.fs-viewmode button.fs-viewmode-active { background: var(--fs-selected-bg); opacity: 1; font-weight: 600; }
+
 /* 中间栏：只读文件预览。逐行高亮而非整段高亮是有意的取舍——行号与内容必须严格对齐，
    整段高亮产出的 HTML 会跨行嵌套 token，按 \n 拆行时标签会断。 */
 .fs-content { padding: 8px 12px; font-size: 13px; }
