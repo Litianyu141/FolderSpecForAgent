@@ -1865,3 +1865,288 @@ describe('纯 spec-only 模板树必须继续放行（丙 的反向护栏）', (
     expect(find(s.tree(), 'templates/cases/fixtures/demo.json')?.origin).toBe('spec-only')
   })
 })
+
+/**
+ * 重命名与 move 是结构完全同构的两条写路径：都要改 spec 里的节点、都要往 hidden 里
+ * 记一笔旧位置、都要重写分组成员路径、都要让快照盖住 hidden。下面按"七条配套动作"
+ * 逐条钉住，其中三条是 move 已经用真实缺陷换来的（改成同名照样隐藏 / 改回原名不解除
+ * 隐藏 / 快照只盖 spec），rename 会一模一样地踩到，所以各有一条独立用例。
+ */
+describe('Session.rename（在契约里给节点改名——不碰磁盘上的文件）', () => {
+  it('配套动作 1：改 spec 里的节点——新名字带着注释出现在树上，返回新的完整路径', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '核心模块' })
+    const r = s.rename({ path: 'src/core', newName: 'kernel' })
+    expect(r.path).toBe('src/kernel')
+    expect(find(r.tree, 'src/kernel')?.annotation).toBe('核心模块')
+    expect(r.dirty).toBe(true)
+  })
+
+  it('配套动作 2：旧路径进 hidden——否则磁盘上那一行实体与新名字的虚线行会同时出现', async () => {
+    const s = new Session(root); await s.open()
+    // 夹具确认：改名之前 src/core 是磁盘上真实存在的一行，这条断言才有区分力
+    expect(find(s.tree(), 'src/core')?.origin).toBe('actual-only')
+    const r = s.rename({ path: 'src/core', newName: 'kernel' })
+    expect(find(r.tree, 'src/core')).toBeNull()
+    expect(find(r.tree, 'src/kernel')?.origin).toBe('spec-only')
+  })
+
+  it('配套动作 3（踩坑）：改成它现在的名字时不隐藏——照样隐藏会让 merge 把磁盘侧与 spec 侧双双跳过，节点凭空消失', async () => {
+    const s = new Session(root); await s.open()
+    // 必须拿一个 actual-only 节点来测：对它改成同名会真的改变契约（多出一条声明），
+    // 不会被"什么都没变"那条空操作提前返回吃掉，`to !== path` 那道闸才是唯一挡在
+    // "节点凭空消失"前面的东西。换成已声明的节点，这条用例对那道闸没有区分力。
+    expect(find(s.tree(), 'src/core')?.origin).toBe('actual-only')
+    const r = s.rename({ path: 'src/core', newName: 'core' })
+    expect(find(r.tree, 'src/core')).not.toBeNull()
+    expect(find(r.tree, 'src/core')?.origin).toBe('both')
+  })
+
+  it('配套动作 4（踩坑）：改回原名时先解除隐藏——不解除的话节点第二次凭空消失', async () => {
+    const s = new Session(root); await s.open()
+    s.rename({ path: 'src/core', newName: 'kernel' })
+    expect(find(s.tree(), 'src/core')).toBeNull() // 第一次改名后旧位置确实藏起来了
+    const r = s.rename({ path: 'src/kernel', newName: 'core' })
+    expect(find(r.tree, 'src/core')).not.toBeNull()
+    expect(find(r.tree, 'src/kernel')).toBeNull()
+  })
+
+  it('配套动作 5：分组成员路径连同子孙一并重写，否则成员悬空', async () => {
+    await fs.writeFile(nodePath.join(root, 'src/core/walk.ts'), '')
+    const s = new Session(root); await s.open()
+    // 孙节点：src/core/walk.ts 是被改名的 src 的孙子，且带注释、且在一个分组里——
+    // 少了任何一样，"成员路径有没有被重写"这条断言都会退化成恒真。
+    s.annotate({ path: 'src/core/walk.ts', isDir: false, annotation: '遍历入口' })
+    const g = s.setGroup({ id: null, members: ['src/core/walk.ts'], text: '遍历相关' })
+    const r = s.rename({ path: 'src', newName: 'lib' })
+    expect(r.groups[0].members).toEqual(['lib/core/walk.ts'])
+    const moved = find(r.tree, 'lib/core/walk.ts')
+    expect(moved?.annotation).toBe('遍历入口')
+    expect(moved?.groups).toEqual([g.id])
+  })
+
+  it('配套动作 6（踩坑）：快照盖住 hidden——撤销之后旧位置必须真的回到树上且可见', async () => {
+    const s = new Session(root); await s.open()
+    s.rename({ path: 'src/core', newName: 'kernel' })
+    expect(find(s.tree(), 'src/core')).toBeNull()
+    const u = s.undo()
+    // 只还原 spec 的话：kernel 这条声明没了，而 src/core 仍被 hidden 挡着，
+    // 节点在新旧两个位置都不显示——正是 Snapshot 注释里守的那条。
+    expect(find(u.tree, 'src/core')?.origin).toBe('actual-only')
+    expect(find(u.tree, 'src/kernel')).toBeNull()
+    expect(u.dirty).toBe(false)
+  })
+
+  it('配套动作 7：走 assertWritable + commitEdit——置脏、进撤销栈、重做回得来', async () => {
+    const s = new Session(root); await s.open()
+    const r = s.rename({ path: 'src/core', newName: 'kernel' })
+    expect(r.dirty).toBe(true)
+    expect(r.canUndo).toBe(true)
+    expect(r.canRedo).toBe(false)
+    const u = s.undo()
+    expect(u.canRedo).toBe(true)
+    const re = s.redo()
+    expect(find(re.tree, 'src/kernel')).not.toBeNull()
+    expect(find(re.tree, 'src/core')).toBeNull()
+  })
+
+  it('改成它现在的名字、且契约里本来就声明过它时是真正的空操作：不置脏、不进撤销栈', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '核心模块' })
+    await s.save()
+    const r = s.rename({ path: 'src/core', newName: 'core' })
+    expect(r.dirty).toBe(false)
+    expect(r.path).toBe('src/core')
+    // 那一次空操作若偷偷吃了一格撤销栈，这次 undo 退回的就是"改名前"，注释还在
+    const u = s.undo()
+    expect(find(u.tree, 'src/core')?.annotation).toBeUndefined()
+  })
+
+  it('子树连同注释跟着走：改父节点的名字，孙节点的注释出现在新路径下', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core/walk.ts', isDir: false, annotation: '遍历入口' })
+    const r = s.rename({ path: 'src', newName: 'lib' })
+    expect(find(r.tree, 'lib/core/walk.ts')?.annotation).toBe('遍历入口')
+    expect(find(r.tree, 'src')).toBeNull()
+  })
+
+  it('对 actual-only 节点改名是有意义的声明（"我声明这东西应该叫 X"），不要求先声明过', async () => {
+    const s = new Session(root); await s.open()
+    expect(find(s.tree(), 'src/core')?.origin).toBe('actual-only')
+    const r = s.rename({ path: 'src/core', newName: 'kernel' })
+    expect(find(r.tree, 'src/kernel')?.origin).toBe('spec-only')
+  })
+
+  it('只读模式（disk 视图）下 rename 抛错', async () => {
+    const s = new Session(root); await s.open()
+    s.setViewMode('disk')
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('原始结构')
+  })
+
+  it('只读模式（契约解析失败）下 rename 抛错', async () => {
+    await fs.writeFile(nodePath.join(root, SPEC_FILENAME), '# x\n\n## 结构\n\n   - `a/`\n')
+    const s = new Session(root); await s.open()
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('只读模式')
+  })
+
+  it('handle("spec/rename") 分发正确', async () => {
+    const s = new Session(root); await s.open()
+    const r = await s.handle('spec/rename', { path: 'src/core', newName: 'kernel' })
+    expect((r as { path: string }).path).toBe('src/kernel')
+    expect(find((r as { tree: ViewNode }).tree, 'src/kernel')).not.toBeNull()
+  })
+
+  it('改名之后 raw() 能成功序列化并自校验，落盘重开仍是新名字', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/core', isDir: true, annotation: '核心模块' })
+    s.rename({ path: 'src/core', newName: 'kernel' })
+    expect(s.raw()).toContain('- `kernel/` — 核心模块')
+    expect(parseSpec(s.raw()).ok).toBe(true)
+    await s.save()
+
+    const s2 = new Session(root)
+    const o = await s2.open()
+    expect(find(o.tree, 'src/kernel')?.annotation).toBe('核心模块')
+  })
+
+  it('只写 .folderspec.md：磁盘上的目录名一个字都没被改', async () => {
+    const s = new Session(root); await s.open()
+    s.rename({ path: 'src/core', newName: 'kernel' })
+    await s.save()
+    expect((await fs.stat(nodePath.join(root, 'src/core'))).isDirectory()).toBe(true)
+    await expect(fs.stat(nodePath.join(root, 'src/kernel'))).rejects.toThrow()
+  })
+})
+
+describe('Session.rename 的名字校验与撞名（悄悄合并两个不同的东西 = 不可逆的丢失）', () => {
+  it('名字校验与 createNode 完全一致：空名 / "/" / 反引号 / 换行 / "." / ".." 全部拒绝', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.rename({ path: 'src/core', newName: '' })).toThrow('名字不能为空')
+    expect(() => s.rename({ path: 'src/core', newName: 'a/b' })).toThrow('不能包含 "/"')
+    expect(() => s.rename({ path: 'src/core', newName: 'we`ird' })).toThrow('反引号或换行')
+    expect(() => s.rename({ path: 'src/core', newName: 'a\nb' })).toThrow('反引号或换行')
+    expect(() => s.rename({ path: 'src/core', newName: '.' })).toThrow('特殊含义')
+    expect(() => s.rename({ path: 'src/core', newName: '..' })).toThrow('特殊含义')
+  })
+
+  it('不能重命名根节点', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.rename({ path: '', newName: 'x' })).toThrow('不能重命名根节点')
+  })
+
+  it('契约里同层已经有同名声明时拒绝（磁盘上并没有这个名字）', async () => {
+    const s = new Session(root); await s.open()
+    s.createNode({ parentPath: 'src', name: 'kernel', isDir: true })
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('已经有同名节点')
+  })
+
+  it('磁盘上同层已经有同名条目时拒绝——契约不能把两个不同的东西说成同一个', async () => {
+    await fs.mkdir(nodePath.join(root, 'src/kernel'))
+    const s = new Session(root); await s.open()
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('磁盘上已经存在')
+  })
+
+  it('新名字所在那一层尚未扫描时拒绝——分不清磁盘上有没有同名的东西，宁可让用户先展开', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/deep/x', isDir: true, annotation: '声明' })
+    expect(find(s.tree(), 'src/deep/x')?.origin).toBe('unscanned') // 夹具确认落在懒加载边界之下
+    expect(() => s.rename({ path: 'src/deep/x', newName: 'y' })).toThrow('尚未扫描')
+  })
+
+  it('对照：展开那一层之后，同一次改名照常放行', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'src/deep/x', isDir: true, annotation: '声明' })
+    await s.expand('src/deep')
+    const r = s.rename({ path: 'src/deep/x', newName: 'y' })
+    expect(find(r.tree, 'src/deep/y')?.annotation).toBe('声明')
+  })
+
+  it('契约里和磁盘上都没有这条路径时拒绝——没有可以重命名的节点', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.rename({ path: 'src/ghost', newName: 'x' })).toThrow('没有可以重命名的节点')
+  })
+
+  it('源节点落在懒加载边界之下、契约里也没有它时拒绝，而不是猜它是文件还是目录', async () => {
+    const s = new Session(root); await s.open()
+    expect(() => s.rename({ path: 'src/deep/deeper', newName: 'x' })).toThrow('尚未扫描')
+  })
+
+  it('拒绝之后不产生任何副作用：不置脏、不进撤销栈、契约一个字节都不变', async () => {
+    const s = new Session(root); await s.open()
+    s.annotate({ path: 'README.md', isDir: false, annotation: '说明' })
+    const before = s.raw()
+    expect(() => s.rename({ path: 'src/core', newName: 'a/b' })).toThrow()
+    expect(s.raw()).toBe(before)
+    // 那一次失败若偷偷吃了一格撤销栈，这次 undo 退回的就是"改名前"而不是"写注释前"
+    const u = s.undo()
+    expect(find(u.tree, 'README.md')?.annotation).toBeUndefined()
+    expect(u.dirty).toBe(false)
+  })
+})
+
+/**
+ * 闸门必须接进 createNode / move / annotate 已经共用的那一套（assertNotHidden /
+ * assertCreatableParent / assertDeclarableResult），不新写一份——同一条不变量有两个
+ * 实现，界面迟早在两条写路径上给出相反的答案。
+ */
+describe('Session.rename 接进既有的三道闸门', () => {
+  it('源节点自己就是本次会话刚被拖走的旧位置时拒绝——那一行在树上根本不存在', async () => {
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(() => s.rename({ path: 'src/core', newName: 'kernel' })).toThrow('刚被拖走的旧位置')
+  })
+
+  it('祖先链上有被拖走的旧位置时同样拒绝——判据不是精确匹配', async () => {
+    await fs.mkdir(nodePath.join(root, 'src/core/sub'), { recursive: true })
+    const s = new Session(root); await s.open()
+    s.move({ from: 'src/core', toParent: '', isDir: true })
+    expect(() => s.rename({ path: 'src/core/sub', newName: 'x' })).toThrow('刚被拖走的旧位置')
+  })
+
+  it('父级在磁盘上是文件时拒绝——与 createNode / move 共用 assertCreatableParent', async () => {
+    const s = new Session(root); await s.open()
+    // annotate 不过 assertCreatableParent（它只查 hidden），所以这条声明写得进去；
+    // 正因为写得进去，才有机会在这里被 rename 的闸门挡下。
+    s.annotate({ path: 'README.md/child', isDir: false, annotation: 'x' })
+    expect(() => s.rename({ path: 'README.md/child', newName: 'y' })).toThrow('在磁盘上是一个文件')
+  })
+
+  it('结果路径与磁盘上的类型冲突时拒绝——与 createNode / move 共用 assertDeclarableResult', async () => {
+    await fs.writeFile(nodePath.join(root, 'src/note.md'), '')
+    const s = new Session(root); await s.open()
+    // 先把 src/core 改走，src/core 落进 hidden：撞名检查因此放行（改回一个被藏起来的
+    // 位置是合法动作），闸门这一格才轮得到 assertDeclarableResult 去审类型。
+    s.rename({ path: 'src/core', newName: 'core-old' })
+    expect(() => s.rename({ path: 'src/note.md', newName: 'core' })).toThrow('在磁盘上是一个目录')
+  })
+})
+
+/**
+ * rename 会从另一扇门把 5eea9e1 修掉的那条红线放回来：releaseHiddenFor 按 basename
+ * 回收 hidden，而它成立的前提是"移动不改名"——rename 恰好废掉这个前提。
+ */
+describe('Session.removeNode 回收 rename 遗留的 hidden', () => {
+  it('红线：改名后再对新名字「取消声明」，磁盘上真实存在的旧位置连同子树必须回到树上', async () => {
+    await fs.writeFile(nodePath.join(root, 'src/core/keep.ts'), '')
+    const s = new Session(root); await s.open()
+    s.rename({ path: 'src/core', newName: 'kernel' })
+    expect(find(s.tree(), 'src/core')).toBeNull()
+
+    const r = s.removeNode('src/kernel')
+    const back = find(r.tree, 'src/core')
+    expect(back).not.toBeNull()
+    expect(back?.origin).toBe('actual-only')
+    // 整棵子树都要能重新够着，不只是那一行
+    const expanded = await s.expand('src/core')
+    expect(find(expanded, 'src/core/keep.ts')).not.toBeNull()
+  })
+
+  it('撤销之后 hidden 恢复原状：声明回到新名字上，旧位置重新隐藏', async () => {
+    const s = new Session(root); await s.open()
+    s.rename({ path: 'src/core', newName: 'kernel' })
+    s.removeNode('src/kernel')
+    const u = s.undo()
+    expect(find(u.tree, 'src/kernel')).not.toBeNull()
+    expect(find(u.tree, 'src/core')).toBeNull()
+  })
+})

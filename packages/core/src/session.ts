@@ -5,11 +5,11 @@ import { serializeSpec } from './serialize.js'
 import { scan, DEFAULT_DEPTH } from './scan.js'
 import { gitStatus } from './git.js'
 import { merge } from './merge.js'
-import { createNode, emptySpec, findSpecNode, moveNode, removeNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
+import { createNode, emptySpec, findSpecNode, moveNode, removeNode, renameNode, setAnnotation, setGroup, deleteGroup, setLang } from './spec-edit.js'
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
-import type { Api, ApiMethod, AnnotateParams, CreateNodeParams, EditResult, MoveParams, OpenResult, SaveResult, SetGroupParams, SetLangParams, SetViewModeParams, ViewModeResult } from './api.js'
+import type { Api, ApiMethod, AnnotateParams, CreateNodeParams, EditResult, MoveParams, OpenResult, RenameParams, SaveResult, SetGroupParams, SetLangParams, SetViewModeParams, ViewModeResult } from './api.js'
 import type { ActualNode, GitStates, Group, Lang, ParseError, Spec, SpecNode, ViewMode, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
@@ -359,6 +359,120 @@ export class Session {
   }
 
   /**
+   * 在契约里给一个节点改名——"我声明这东西应该叫 X"，不是"去把磁盘上的文件改名"
+   * （真正改名的是随后读契约的 Agent，见 CLAUDE.md 铁律 1）。除 `.folderspec.md`
+   * 之外一个字节都不写。
+   *
+   * 与 move() 结构完全同构，七条配套动作一一对应、逐条照做——其中三条是 move 用真实
+   * 缺陷换来的（改成同名照样隐藏 → 节点凭空消失；改回原名不解除隐藏 → 第二次凭空
+   * 消失；快照只盖 spec → 节点被 hidden 永久挡住），改名会一模一样地踩到。
+   *
+   * 三道闸门全部接进 createNode / move / annotate 已经共用的那一套，不新写一份：
+   * 同一条不变量有两个实现，两条写路径迟早给出相反的答案，界面就在说谎（e7a723f、
+   * 06c7167 两次为这条原则付过代价）。
+   *
+   * **isDir 不进参数**（与 MoveParams / CreateNodeParams 唯一一处刻意的不同）：那两个
+   * 方法在决定"新位置该是个什么东西"，调用方的声明带着信息；改名不改变一个节点是
+   * 文件还是目录，这个值调用方只可能传错。所以在这里自己解析——契约里有这个节点就
+   * 听契约的（与 movedIsDir 同一条优先级：现有数据高于调用方的声明），没有才问磁盘；
+   * 两边都没有就报错，而不是随便猜一个：那条路径在树上根本没有对应的行。
+   */
+  rename(params: RenameParams): EditResult & { path: string } {
+    this.assertWritable()
+    const { path, newName } = params
+    assertRepresentablePath(path)
+    // 与 createNode 共用同一条名字规则：两处分叉就会出现"新建允许、改名拒绝"这种
+    // 界面在说谎的情形（见 assertValidNodeName 上方对每一条禁令的推导）。
+    assertValidNodeName(newName)
+
+    const segs = path.split('/').filter(Boolean)
+    if (segs.length === 0) throw new Error('不能重命名根节点')
+    const parentSegs = segs.slice(0, -1)
+    const parentPath = parentSegs.join('/')
+    // 按段拼接（而不是字符串直接相连）：与 renameNode 内部的 toSegments 归一化保持
+    // 一致，两边对同一次调用必须算出同一条路径，否则闸门审的是 A、写下去的是 B。
+    const to = [...parentSegs, newName].join('/')
+
+    // 源节点自己落在 hidden 上时拒绝。ancestorChain 逐级走完，所以这一句同时覆盖
+    // "祖先被拖走"：那条路径连同它下面的一切在树上都不显示，给一个树上根本不存在的
+    // 节点改名，写下去的是一条用户既看不见也删不掉的声明（与 annotate 同源）。
+    this.assertNotHidden(path)
+    // 结果路径 `parentPath/newName` 是一条**新增的声明**，"这个父级下面能不能安全地
+    // 挂一条新声明"对 createNode、move、rename 是同一个问题，共用同一套判据。
+    this.assertCreatableParent(parentPath)
+
+    // 契约里有这个节点就听契约的，没有才问磁盘（见方法头部关于 isDir 的推导）。
+    const inSpec = findSpecNode(this.spec.nodes, path)
+    let diskIsDir = false
+    if (!inSpec) {
+      const { node: onDisk, unscanned } = lookupActual(this.actual, path)
+      if (unscanned) {
+        throw new Error(`\`${path}\` 尚未扫描到，无法确认它是文件还是目录；请先展开它所在的目录再重试`)
+      }
+      if (!onDisk) throw new Error(`契约里和磁盘上都没有 \`${path}\`，没有可以重命名的节点`)
+      diskIsDir = onDisk.kind === 'dir'
+    }
+
+    // 撞名一律拒绝，绝不静默合并：把两个不同东西的注释揉到一起是不可逆的丢失，而
+    // role/template/severity 三个字段根本没有"并"这个操作（完整推导见 spec-edit.ts
+    // 的 assertNoMergeConflict）。契约侧那一半的判重在 renameNode() 里，与 createNode
+    // 的同层重名共用同一条判据；这里补磁盘侧的另一半——磁盘上已经有一个叫这个名字的
+    // 东西时，这条声明会让契约把两个不同的东西说成同一个。
+    //
+    // 两个例外必须放行，否则最普通的操作会被挡在门外：
+    //   - `to === path`：用户在预填当前名字的输入框里直接回车，那不是撞名；
+    //   - `to` 落在 hidden 上：那正是"把名字改回去"——磁盘上那一行此刻被藏着，
+    //     下面的 this.hidden.delete(to) 就是为它准备的（与 assertDeclarableResult
+    //     的 allowHidden 是同一条理由，也继承了它同一处已知的不精确：hidden 不记
+    //     去向，工具分不出这条 hidden 是不是同一个节点留下的）。
+    if (to !== path && !this.hidden.has(to)) {
+      const { node: occupied, unscanned } = lookupActual(this.actual, to)
+      // 这里与 assertDeclarableResult 对 unscanned 的取向刻意相反（那边放行）：那边
+      // 未知时最多把 isDir 这一位写错，用户一展开就看到真相；这里未知时可能悄悄把
+      // 一个节点的全部注释挂到磁盘上另一个真实存在的东西上，是不可逆的丢失。代价是
+      // 用户要先展开那一层再重试，报错原文已经写明这条出路。
+      if (unscanned) {
+        throw new Error(`\`${to}\` 尚未扫描到，无法确认磁盘上有没有同名的东西；请先展开它所在的目录再重试`)
+      }
+      if (occupied) {
+        throw new Error(
+          `\`${to}\` 在磁盘上已经存在：改成这个名字会让契约把两个不同的东西说成同一个，` +
+          '两边的注释也会被揉到一起。请换一个名字（本工具不会去动磁盘上的文件名）',
+        )
+      }
+    }
+
+    const candidate = renameNode(this.spec, path, newName, diskIsDir)
+
+    // 真正的空操作：改成它现在的名字、且契约里本来就有这个节点时，什么都没变——
+    // 不置脏、不吃一格撤销栈（与 removeNode / deleteGroup / setLang 同一条判据：
+    // 一次什么都没改变的调用不该让界面显示"有未保存的改动"）。判据是"结果是否与
+    // 当前逐字相同"而**不是**"newName 是不是原名"：对一个 actual-only 节点改成同名
+    // 会真的多出一条声明，那不是空操作，下面那道 `to !== path` 的闸也正是为它准备的。
+    if (specsEqual(candidate, this.spec)) return { ...this.editResult(), path: to }
+
+    // 结果路径闸门。allowHidden 这里是 true，理由与 move 完全相同：结果路径落在
+    // hidden 上正是"把名字改回原来那个"这个完全合法的动作。
+    this.assertDeclarableResult(to, this.movedIsDir(path, to, diskIsDir), true)
+
+    // 快照必须盖住下面对 hidden 的两处改动，不能只盖 spec——见 Snapshot 的注释
+    const before = this.captureState()
+    this.spec = candidate
+
+    // 改回原名时必须先解除隐藏，否则该路径会同时在 actual 侧（磁盘上真实存在）和
+    // spec 侧（契约又把它声明了回去）被 merge 跳过，节点第二次凭空消失。
+    this.hidden.delete(to)
+
+    // 只有名字真的变了才隐藏旧路径。改成同名时新旧路径相同，若照样加进 hidden，
+    // merge 会把磁盘侧和 spec 侧双双跳过，节点就从界面上凭空消失（文件和契约其实
+    // 都还在）——与 move() 拖回原父级那个缺陷是同一个形状。
+    if (to !== path) this.hidden.add(path)
+
+    this.commitEdit(before)
+    return { ...this.editResult(), path: to }
+  }
+
+  /**
    * 在契约里声明一个尚不存在的节点。走与其他四个写方法（annotate/move/setGroup/
    * deleteGroup）完全相同的收口（assertWritable → 快照 → 纯函数改 spec →
    * commitEdit），因此也天然进撤销栈、天然被「原始结构」只读视图拦下、天然会被
@@ -536,8 +650,17 @@ export class Session {
    * **判据为什么是 basename。** 不变量 2 明令禁止记录"从哪儿来"，所以工具没有任何
    * 数据能把"hidden 里的这条旧位置"与"契约里的哪个节点"对应起来。唯一可依赖、且由
    * moveNode 本身保证的事实是：移动不改名（`const name = fromSegs[fromSegs.length-1]`，
-   * 落点用的是同一个 name，本工具也没有"重命名"这个操作）。所以被移除的子树里出现
-   * 过的每一个名字，都可能是某条 hidden 的那个节点。
+   * 落点用的是同一个 name）。所以被移除的子树里出现过的每一个名字，都可能是某条
+   * hidden 的那个节点。
+   *
+   * **第二条判据：同层。** rename() 恰好废掉了上面那个前提——它换的正是名字，按名
+   * 回收在改过名的节点上必然落空（hidden 里记着 `src/core`，契约里活着的却是
+   * `src/kernel`），于是"改名 → 对新名字取消声明"会把上面那条红线原样放回来：磁盘上
+   * 真实存在的整棵子树在本次会话里彻底够不着。rename 不换父级，改名前的旧位置与改名
+   * 后的那条声明**永远是同层兄弟**，这就是同层这一格能补上的原因。它比按名回收更宽，
+   * 会顺带解除同层里与这次移除无关的 hidden——按本函数一贯的取向（宁可多解除，不可
+   * 少解除；多解除只是旧位置多显示一行，难看、可撤销、用户看得见），这个代价是可接受
+   * 的一侧。
    *
    * **宁可多解除，不可少解除。** 多解除的最坏后果是旧位置多显示一行（节点在新旧两处
    * 同时出现，一处带标注一处不带）——难看、可撤销、用户看得见；少解除的后果是磁盘上
@@ -555,9 +678,11 @@ export class Session {
 
     const names = new Set<string>()
     collectNames(removed, names)
+    const removedParent = parentPathOf(removedPath)
     for (const h of [...this.hidden]) {
       const base = h.split('/').filter(Boolean).pop() ?? ''
-      if (names.has(base)) this.hidden.delete(h)
+      // 两条判据任一命中就回收：按名（move 留下的）或按同层（rename 留下的）。
+      if (names.has(base) || parentPathOf(h) === removedParent) this.hidden.delete(h)
     }
   }
 
@@ -797,6 +922,8 @@ export class Session {
         return this.annotate(params as AnnotateParams) as Api[K]['result']
       case 'spec/move':
         return this.move(params as MoveParams) as Api[K]['result']
+      case 'spec/rename':
+        return this.rename(params as RenameParams) as Api[K]['result']
       case 'spec/createNode':
         return this.createNode(params as CreateNodeParams) as Api[K]['result']
       case 'spec/removeNode':
@@ -924,6 +1051,12 @@ export class Session {
 function ancestorChain(path: string): string[] {
   const segs = path.split('/').filter(s => s !== '')
   return segs.map((_, i) => segs.slice(0, i + 1).join('/'))
+}
+
+/** 一条路径的父级路径，根下的节点给出 ''。供 releaseHiddenFor 的"同层"判据用，
+ *  推导见那里。 */
+function parentPathOf(path: string): string {
+  return path.split('/').filter(s => s !== '').slice(0, -1).join('/')
 }
 
 /** 一棵 spec 子树里出现过的全部节点名（含根自己）。供 releaseHiddenFor 用，判据的

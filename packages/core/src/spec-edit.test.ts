@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, removeNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
+import { createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, moveNode, removeNode, renameNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
 import type { Spec, SpecNode } from './types.js'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
@@ -801,5 +801,119 @@ describe('setLang（切换展示语言：样板文字未改过才跟着换，用
     const after = setLang(s, 'zh')
     expect(after.title).toBe(s.title)
     expect(after.preamble).toEqual(s.preamble)
+  })
+})
+
+/**
+ * 重命名与 moveNode 结构完全同构：一样要改 spec 里的节点、一样要重写分组成员路径。
+ * 差别只有两处，都是"父级不变"推导出来的——
+ *   1. 就地改 name，不走 detach + push：父级没变，detach 再 push 会把节点挪到兄弟
+ *      列表末尾，序列化出来的行顺序跟着变。改一个名字不该顺手重排用户看惯的那份
+ *      结构区（这份文件是给人读的）。
+ *   2. 撞上同名兄弟一律拒绝，不像 move 那样先合并再查冲突：move 的合并语义来自
+ *      "把 A 搬到 B 下面，B 下面恰好已经有一个同名的东西"，两边是两个不同的东西；
+ *      改名撞名同样是两个不同的东西，而 role/template/severity 三个字段根本没有
+ *      "并"这个操作（推导见 assertNoMergeConflict）。既然合并出来的东西一定要
+ *      用户自己拍板保留哪一份，不如在这一刻就拒绝，与 createNode 的同层重名判据一致。
+ */
+describe('renameNode（在契约里改一个节点的名字，不碰磁盘）', () => {
+  it('改名后节点连同子树与注释都挂在新名字下，旧名字不再有节点', () => {
+    let s = setAnnotation(emptySpec(), 'src', true, { annotation: '源码' })
+    s = setAnnotation(s, 'src/core/walk.ts', false, { annotation: '遍历入口' })
+    s = renameNode(s, 'src', 'lib', true)
+    expect(find(s.nodes, 'src')).toBeNull()
+    expect(find(s.nodes, 'lib')?.annotation).toBe('源码')
+    expect(find(s.nodes, 'lib/core/walk.ts')?.annotation).toBe('遍历入口')
+  })
+
+  it('不修改传入的 spec（返回新对象）', () => {
+    const before = setAnnotation(emptySpec(), 'src', true, { annotation: 'x' })
+    const after = renameNode(before, 'src', 'lib', true)
+    expect(find(before.nodes, 'src')).not.toBeNull()
+    expect(find(after.nodes, 'lib')).not.toBeNull()
+  })
+
+  it('就地改名：节点在兄弟列表里的位置不变，不会被挪到末尾', () => {
+    let s = setAnnotation(emptySpec(), 'a', true, { annotation: '1' })
+    s = setAnnotation(s, 'b', true, { annotation: '2' })
+    s = setAnnotation(s, 'c', true, { annotation: '3' })
+    s = renameNode(s, 'a', 'z', true)
+    // detach + push 会得到 ['b','c','z']；就地改名保持 ['z','b','c']
+    expect(s.nodes.map(n => n.name)).toEqual(['z', 'b', 'c'])
+  })
+
+  it('契约里尚不存在该节点时新建一个——"我声明这东西应该叫 X"，与 moveNode 同一条取向', () => {
+    const s = renameNode(emptySpec(), 'src/core', 'kernel', true)
+    const renamed = find(s.nodes, 'src/kernel')
+    expect(renamed).not.toBeNull()
+    expect(renamed?.isDir).toBe(true)
+    expect(find(s.nodes, 'src/core')).toBeNull()
+  })
+
+  it('isDir 只在契约里没有该节点时才生效；现有数据优先级高于调用者的声明', () => {
+    const s0 = setAnnotation(emptySpec(), 'notes.md', false, { annotation: 'x' })
+    const s = renameNode(s0, 'notes.md', 'readme.md', true)
+    expect(find(s.nodes, 'readme.md')?.isDir).toBe(false)
+  })
+
+  it('不能重命名根节点', () => {
+    expect(() => renameNode(emptySpec(), '', 'x', true)).toThrow('不能重命名根节点')
+  })
+
+  it('同层已经有同名声明时拒绝，且原 spec 一个字节都不变', () => {
+    let s = setAnnotation(emptySpec(), 'src/core', true, { annotation: '核心' })
+    s = setAnnotation(s, 'src/kernel', true, { annotation: '另一个东西' })
+    const snapshot = JSON.stringify(s)
+    expect(() => renameNode(s, 'src/core', 'kernel', true)).toThrow('已经有同名节点')
+    expect(JSON.stringify(s)).toBe(snapshot)
+  })
+
+  it('判重只看 name、不看 isDir——与解析器的判重键保持一致', () => {
+    let s = setAnnotation(emptySpec(), 'src/core', true, { annotation: '核心' })
+    s = setAnnotation(s, 'src/kernel', false, { annotation: '是个文件' })
+    expect(() => renameNode(s, 'src/core', 'kernel', true)).toThrow('已经有同名节点')
+  })
+
+  it('改成它自己现在的名字不算撞名（判据是"另一个兄弟"，不是"有同名的"）', () => {
+    const s0 = setAnnotation(emptySpec(), 'src/core', true, { annotation: '核心' })
+    const s = renameNode(s0, 'src/core', 'core', true)
+    expect(find(s.nodes, 'src/core')?.annotation).toBe('核心')
+  })
+
+  it('改名之后序列化仍能被解析回来（结构区一行一节点的格式没被破坏）', () => {
+    let s = setAnnotation(emptySpec(), 'src/core/walk.ts', false, { annotation: '入口' })
+    s = renameNode(s, 'src/core', 'kernel', true)
+    const parsed = parseSpec(serializeSpec(s))
+    expect(parsed.ok).toBe(true)
+  })
+})
+
+describe('renameNode 与分组成员', () => {
+  it('节点自己在分组里时，成员路径跟着改名', () => {
+    let s = setAnnotation(emptySpec(), 'src/core', true, { annotation: 'x' })
+    s = setGroup(s, null, ['src/core'], { text: '核心' }).spec
+    s = renameNode(s, 'src/core', 'kernel', true)
+    expect(s.groups[0].members).toEqual(['src/kernel'])
+  })
+
+  it('子孙在分组里时成员路径一并重写——子树跟着走，成员却是绝对路径字符串', () => {
+    let s = setAnnotation(emptySpec(), 'src/core/walk.ts', false, { annotation: 'x' })
+    s = setGroup(s, null, ['src/core/walk.ts'], { text: '遍历' }).spec
+    s = renameNode(s, 'src/core', 'kernel', true)
+    expect(s.groups[0].members).toEqual(['src/kernel/walk.ts'])
+  })
+
+  it('不动与被改名子树无关的成员', () => {
+    let s = setAnnotation(emptySpec(), 'other/keep.ts', false, { annotation: 'x' })
+    s = setGroup(s, null, ['other/keep.ts'], { text: '保持' }).spec
+    s = renameNode(s, 'src/core', 'kernel', true)
+    expect(s.groups[0].members).toEqual(['other/keep.ts'])
+  })
+
+  it('不动与旧路径共享字符串前缀、但不在其子树内的成员（src/core-utils 不是 src/core 的子节点）', () => {
+    let s = setAnnotation(emptySpec(), 'src/core', true, { annotation: 'x' })
+    s = setGroup(s, null, ['src/core-utils/a.ts'], { text: '工具' }).spec
+    s = renameNode(s, 'src/core', 'kernel', true)
+    expect(s.groups[0].members).toEqual(['src/core-utils/a.ts'])
   })
 })

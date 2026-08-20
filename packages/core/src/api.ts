@@ -58,6 +58,19 @@ export interface MoveParams {
   isDir: boolean
 }
 
+/**
+ * 没有 isDir——这是与 MoveParams / CreateNodeParams 唯一一处刻意的不同。那两处是在
+ * 决定"新位置该是个什么东西"，调用方的声明带着信息；改名不改变一个节点是文件还是
+ * 目录，这个值调用方只可能传错，于是由 Session 自己解析（契约里有就听契约的，没有
+ * 才问磁盘）——少一个能传错的参数，就少一格"闸门审的是 A、写下去的是 B"。
+ */
+export interface RenameParams {
+  /** 被改名节点当前的完整路径 */
+  path: string
+  /** 新名字，单个路径段，不是路径——不能含 "/"（校验与 CreateNodeParams.name 完全一致） */
+  newName: string
+}
+
 export interface CreateNodeParams {
   /** 挂在哪个父目录下；'' 表示挂在根下。父级链条在契约里若还不存在会按需补齐（同 spec/annotate）。 */
   parentPath: string
@@ -150,6 +163,26 @@ export interface Api {
    * 和 name，一旦两边拼接规则（'' 表示根）不一致就会选中错误的节点。
    */
   'spec/createNode': { params: CreateNodeParams; result: EditResult & { path: string } }
+  /**
+   * 在契约里给一个节点改名——"我声明这东西应该叫 X"，不是"去把磁盘上的文件改名"
+   * （真正改名的是随后读契约的 Agent，见 CLAUDE.md 铁律 1）。磁盘上的文件名一个字
+   * 都不会变；旧名字那一行在本次会话里被藏起来（hidden，临时 UI 状态、永不落盘），
+   * 新名字以 spec-only（虚线）出现。契约里**不记录"原来叫什么"**：那是一次性操作
+   * 记录，一被执行就过期（铁律 2）。
+   *
+   * 对任何节点都可用，不限于已声明过的：对 actual-only 节点改名等于"我声明这东西
+   * 应该叫 X"，与 spec/move 对未声明节点的既有行为一致。
+   *
+   * 撞名一律拒绝、不静默合并——无论同名的那个是在契约里还是在磁盘上。静默合并会把
+   * 两个不同东西的注释揉到一起，那是不可逆的丢失；名字校验（空名、含 "/"、反引号、
+   * 换行、"." / ".."）与 spec/createNode 共用同一套判据。父级链条、结果路径两道闸门
+   * 也与 spec/createNode、spec/move 共用（Session.assertCreatableParent /
+   * assertDeclarableResult）。
+   *
+   * 结果里的 path 是改名后的完整路径，供 UI 重新选中它——与 spec/createNode 同理，
+   * 自己拼 parentPath + name 会踩"根路径是 ''"的不一致。
+   */
+  'spec/rename': { params: RenameParams; result: EditResult & { path: string } }
   /**
    * 从契约里撤销一个节点的声明——"不再声明这里应该有它"，不是删除磁盘上的文件/目录
    * （真正动磁盘的是随后读契约的 Agent，见 CLAUDE.md 铁律 1）。对磁盘上真实存在的

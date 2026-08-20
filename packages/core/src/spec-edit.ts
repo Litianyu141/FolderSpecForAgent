@@ -181,6 +181,63 @@ export function moveNode(spec: Spec, from: string, toParent: string, isDir: bool
 }
 
 /**
+ * 在契约里给一个节点改名——"我声明这东西应该叫 X"，不是"去把磁盘上的文件改名"
+ * （真正改名的是随后读契约的 Agent，见 CLAUDE.md 铁律 1、2）。
+ *
+ * 与 moveNode 结构同构（同样要改 spec 里的节点、同样要重写分组成员路径），差别只有
+ * 两处，都从"父级不变"这一条推导出来：
+ *
+ * 1. **就地改 name，不走 detach + push。** move 换父级，节点必须从一个列表挪到另一个
+ *    列表；改名不换父级，detach 再 push 只会把它挪到兄弟列表末尾，序列化出来的行顺序
+ *    跟着变。结构区是给人读的，改一个名字不该顺手重排用户看惯的那份结构。
+ *
+ * 2. **撞上同名兄弟一律拒绝，不像 move 那样先合并再查冲突。** move 的合并语义来自
+ *    "把 A 搬到 B 下面，B 下面恰好已经有一个同名的东西"；改名撞名同样是两个不同的
+ *    东西，而 role/template/severity 三个字段根本没有"并"这个操作、annotation 并出来
+ *    是一条自相矛盾的声明（完整推导见 assertNoMergeConflict）。既然合并的结果一定要
+ *    用户自己拍板保留哪一份，就在这一刻拒绝，判据与 createNode 的同层重名完全一致：
+ *    同层同名兄弟是重复声明，解析器本来也会拒绝。
+ *
+ * 判重的判据是"**另一个**兄弟占着这个名字"，不是"有兄弟叫这个名字"——改成它自己现在
+ * 的名字（用户在预填当前名字的输入框里直接回车）必须放行，那是一次什么都没改变的调用，
+ * 不是一次撞名。
+ *
+ * 子树自动跟随：子节点嵌套在 children 里，改父节点的 name 它们的路径自然跟着走。
+ * 但分组成员是绝对路径字符串，子孙的成员路径必须一并重写——rewriteGroupMembers 已经
+ * 用前缀匹配处理了这件事（与 moveNode 共用同一个函数，不另起一套）。
+ *
+ * isDir 与 moveNode 同一条优先级：只在契约里还没有这个节点时才生效（现有数据优先级
+ * 高于调用者的声明）。
+ */
+export function renameNode(spec: Spec, path: string, newName: string, isDir: boolean): Spec {
+  const segs = toSegments(path)
+  if (segs.length === 0) throw new Error('不能重命名根节点')
+
+  const next = structuredClone(spec)
+  const parentSegs = segs.slice(0, -1)
+  const oldName = segs[segs.length - 1]
+  const siblings = parentSegs.length === 0 ? next.nodes : ensure(next.nodes, parentSegs, true).children
+
+  const target = siblings.find(n => n.name === oldName)
+  if (siblings.some(n => n !== target && n.name === newName)) {
+    throw new Error(
+      `${parentSegs.length === 0 ? '根' : `\`${parentSegs.join('/')}\``} 下已经有同名节点 \`${newName}\`：` +
+      '同层同名兄弟是重复声明，解析器会拒绝，请换个名字',
+    )
+  }
+
+  // 契约里没有该节点时新建一个——它表达"我声明它应该叫这个名字"，本身就是有效数据
+  // （与 moveNode 里那句同源：对 actual-only 节点改名是有意义的声明）。
+  if (target) target.name = newName
+  else siblings.push({ name: newName, isDir, children: [] })
+
+  const renamedTo = [...parentSegs, newName].join('/')
+  rewriteGroupMembers(next.groups, segs.join('/'), renamedTo)
+
+  return next
+}
+
+/**
  * 从契约里撤销一个节点的声明——"不再声明这里应该有它"，不是删除磁盘上的文件/目录
  * （真正动磁盘的是随后读契约的 Agent，见 CLAUDE.md 铁律 1）。对 `origin: 'both'` 的
  * 节点（磁盘上真实存在）而言，节点依旧会出现在树上（merge 按磁盘扫描结果把它物化
