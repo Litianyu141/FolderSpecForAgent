@@ -137,6 +137,26 @@ export function App({ bridge, initialRoot }: AppProps) {
    * 提交前捕获一次，落地时相等才拨。
    */
   const selectionEpochRef = useRef(0)
+  /**
+   * 工作区载入序号。**必须与上面的 selectionEpochRef 分成两个**，这是最容易接错的地方：
+   * 那一个数的是"用户重新决定选中谁"的次数，点一行、点一个色点都会自增。拿它当
+   * "工作区还是不是同一次载入"的判据，等于用户随手点一下就把所有在途编辑的落地回调
+   * 全部作废——树、脏标记、撤销可用性会一起停在编辑之前的样子。这一个只在
+   * workspace/open 成功落地时自增。
+   *
+   * openRoot 会把 tree/groups/dirty/canUndo/canRedo/selection 整套复位（Session 那侧
+   * 也已经重读磁盘、清空撤销栈）。任何横跨一个宿主往返的落地回调若在重载之后才回来，
+   * 就会把上一份工作区的树连同脏标记、撤销按钮一起贴回屏幕：界面显示的树、脏标记、
+   * 撤销可用性三者同时与会话真实状态不符。所以每个落地回调都在发请求前捕获一次，
+   * 回来时不相等就整段放弃——**连 catch 里那句错误横幅也放弃**，那是上一个工作区的
+   * 报错，弹在新工作区上只会让人以为刚做的事失败了（与 contentReqRef 同一条判据）。
+   *
+   * 诚实说明可达性：CLI 宿主里多数写操作在 core 侧是纯同步的，响应通常快于
+   * workspace/open 的磁盘扫描；但两个宿主都对每条消息各起一个互不排队的异步任务
+   * （server.ts / editor.ts），顺序没有任何保证，tree/expand 这种同样要扫盘的路径上
+   * 窗口是实打实的。
+   */
+  const loadEpochRef = useRef(0)
   const t = useCallback<I18n['t']>((key, params) => translate(lang, key, params), [lang])
   // I18nContext 的 value：见 i18n.ts 里那段解释"为什么用 Context 而不是一路传 props"
   // 的注释。这里用 useMemo 是因为 Provider 的 value 一变，整棵消费了 useContext 的
@@ -242,6 +262,9 @@ export function App({ bridge, initialRoot }: AppProps) {
       // 换/重载工作区也是一次"重新决定选中谁"：在途的 spec/createNode 若在这之后落地，
       // 不能再把选中集拨到它那个属于上一份树的路径上去。
       selectionEpochRef.current += 1
+      // 与上面那半条同源、但护的是另一半：在途的任何编辑落地时都不该再往界面上贴
+      // 属于上一份工作区的树与脏标记，见 loadEpochRef。
+      loadEpochRef.current += 1
       // 菜单与新建输入框里冻结的那个 parentPath 属于上一次载入的那棵树，新工作区里
       // 完全可能根本没有这条路径。整个收掉，不留半成品。
       setMenu(null)
@@ -298,15 +321,18 @@ export function App({ bridge, initialRoot }: AppProps) {
   const handleSetLang = useCallback((next: Lang) => {
     setLang(next)
     if (readOnly) return
+    const epoch = loadEpochRef.current
     void (async () => {
       try {
         const r = await bridge.request('spec/setLang', { lang: next })
+        if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
         setTree(r.tree)
         setGroups(r.groups)
         setDirty(r.dirty)
         setCanUndo(r.canUndo)
         setCanRedo(r.canRedo)
       } catch (e) {
+        if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
         setError(e instanceof Error ? e.message : String(e))
       }
     })()
@@ -329,37 +355,46 @@ export function App({ bridge, initialRoot }: AppProps) {
 
   const switchViewMode = useCallback(async (mode: ViewMode) => {
     if (mode === viewMode) return // 已经在这个视图：空操作，别把它也发出去
+    const epoch = loadEpochRef.current
     try {
       const r = await bridge.request('view/setMode', { mode })
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setTree(r.tree)
       setViewModeState(r.mode)
     } catch (e) {
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [bridge, viewMode])
 
   const handleUndo = useCallback(async () => {
+    const epoch = loadEpochRef.current
     try {
       const r = await bridge.request('spec/undo', {})
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
       setCanUndo(r.canUndo)
       setCanRedo(r.canRedo)
     } catch (e) {
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [bridge])
 
   const handleRedo = useCallback(async () => {
+    const epoch = loadEpochRef.current
     try {
       const r = await bridge.request('spec/redo', {})
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
       setCanUndo(r.canUndo)
       setCanRedo(r.canRedo)
     } catch (e) {
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [bridge])
@@ -373,23 +408,29 @@ export function App({ bridge, initialRoot }: AppProps) {
   }, [dirty, openRoot, root, t])
 
   const handleExpand = useCallback(async (path: string) => {
+    const epoch = loadEpochRef.current
     try {
       const r = await bridge.request('tree/expand', { path })
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setTree(r.tree)
     } catch (e) {
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [bridge])
 
   const handleMove = useCallback(async (from: string, toParent: string, isDir: boolean) => {
+    const epoch = loadEpochRef.current
     try {
       const r = await bridge.request('spec/move', { from, toParent, isDir })
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
       setCanUndo(r.canUndo)
       setCanRedo(r.canRedo)
     } catch (e) {
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [bridge])
@@ -480,22 +521,29 @@ export function App({ bridge, initialRoot }: AppProps) {
     if (selectedPath === null || tree === null) return
     const node = flatten(tree.children ?? []).get(selectedPath)
     if (!node) return
+    const epoch = loadEpochRef.current
     try {
       const r = await bridge.request('spec/annotate', { path: selectedPath, isDir: node.isDir, ...patch })
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
       setCanUndo(r.canUndo)
       setCanRedo(r.canRedo)
     } catch (e) {
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [bridge, selectedPath, tree])
 
   /** 成功时返回该分组**落地后**的 id（改名时就是新 id），失败返回 null */
   const sendSetGroup = useCallback(async (params: SetGroupParams): Promise<string | null> => {
+    const epoch = loadEpochRef.current
     try {
       const r = await bridge.request('spec/setGroup', params)
+      // 见 loadEpochRef。返回 null 不会误触 runGroupWrite 的"写失败要退回成员集"分支：
+      // openRoot 已经 setPending(null)，那边的 `now === null` 一闸排在判 id 之前。
+      if (epoch !== loadEpochRef.current) return null
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
@@ -503,6 +551,7 @@ export function App({ bridge, initialRoot }: AppProps) {
       setCanRedo(r.canRedo)
       return r.id
     } catch (e) {
+      if (epoch !== loadEpochRef.current) return null // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
       return null
     }
@@ -773,10 +822,16 @@ export function App({ bridge, initialRoot }: AppProps) {
     creatingRef.current = true
     setCreating(true)
     const epoch = selectionEpochRef.current
+    const loadEpoch = loadEpochRef.current
     try {
       const r = await bridge.request('spec/createNode', {
         parentPath: draft.parentPath, name, isDir: draft.isDir,
       })
+      // 这一道与下面那道 epoch 闸门是两件事：这里问的是"工作区还是不是同一次载入"
+      // （见 loadEpochRef），下面那道问的是"用户有没有改选"。少了这一道，一笔在重载
+      // 之后才回来的 createNode 会把上一份树连同那个新节点重新贴回屏幕、把脏标记与
+      // 撤销按钮重新点亮，而 Session 那侧撤销栈早已清空。
+      if (loadEpoch !== loadEpochRef.current) return
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
@@ -796,8 +851,11 @@ export function App({ bridge, initialRoot }: AppProps) {
       // core 在输入边界拦下的那几条（反引号、"/"、"." / ".."）与 assertCreatableParent
       // 的三条，报错原文都写明了原因和出路，**原样显示**。吞掉它，用户只会看到点了
       // 没反应，然后转去手改 .folderspec.md——那才是真正会弄丢注释的路径。
+      if (loadEpoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     } finally {
+      // finally 不设闸门：这两句复位的是"这一笔 createNode 还在不在途"这个纯本地的
+      // 按钮态，它与工作区换没换没有关系；跳过它会让新建按钮永远卡在禁用上。
       creatingRef.current = false
       setCreating(false)
     }
@@ -810,33 +868,89 @@ export function App({ bridge, initialRoot }: AppProps) {
   const handleRemoveNode = useCallback(async (path: string) => {
     setMenu(null)
     if (readOnly) return
+    const epoch = loadEpochRef.current
+    // 点下「取消声明」那一刻树上有哪些路径。它和落地后那棵树的差集，就是这一次
+    // 取消声明真正从屏幕上抹掉的那些行——见下面清理选中集那一段。
+    const before = tree === null ? new Map<string, ViewNode>() : flatten(tree.children ?? [])
     try {
       const r = await bridge.request('spec/removeNode', { path })
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setTree(r.tree)
       setGroups(r.groups)
       setDirty(r.dirty)
       setCanUndo(r.canUndo)
       setCanRedo(r.canRedo)
+
+      /**
+       * **选中集必须跟着树走。** 取消一个 spec-only 节点（契约里有、磁盘上没有）的
+       * 声明之后，merge 让它整行从树上消失，而选中集不动的话那条路径就成了幽灵：
+       * 右栏此刻退回空态（用户以为选中集空了）→ 接着 ctrl 点另一个节点，选中集变成
+       * 两项，右栏跳出分组面板、标题写着「已选中 2 项」而树上只有一行高亮 → 一次失焦
+       * 就把那条树上根本不存在的路径写进 members，用户只能靠分组面板里的 × 才发现。
+       * 这与树上 Shift 区间坚持读 react-arborist 的 visibleNodes 是同一条理由：
+       * 选中集会经 spec/setGroup 原样写进用户的 .folderspec.md（设计文档 §5.3 的
+       * "所见即所选"），凡是屏幕上没有的东西都不许留在里面。
+       *
+       * 判据是"落地之后它还在不在树上"，**不是路径前缀**。两者不等价，各错一半：
+       * - 只剔 path 自己：取消一个目录的声明会连带取消它嵌套的全部子声明（core 的
+       *   removeNode 就是这么做的，它拒绝的只是"子节点自己带注释"那种），子路径
+       *   同样会从树上消失，漏掉它们等于换个位置留幽灵。
+       * - 按 `path + '/'` 前缀无脑剔：磁盘上真实存在的节点（origin 'both'）取消声明
+       *   之后**行还在树上**，只是不再带标注——把它从选中集里剔掉，用户会看到自己
+       *   刚右键的那一行还高亮着、右栏却空了。
+       * 差集同时避开这两头，也天然放过"根本没在这棵已加载的树上出现过"的路径
+       * （懒加载边界之下的分组成员）：它们不在 before 里，不算被这次操作抹掉。
+       *
+       * 剔干净之后选中集若空了，右栏就回到**空态**（AnnotationPanel 在 node 为 null
+       * 时渲染的那句提示）——这正是"什么都没选中"本来的样子，不需要额外分支。
+       * 锚点若也被剔掉就置 null：从一个已经不在树上的锚点拉 Shift 区间没有意义，
+       * applyClick 见到 null 会退化成普通单击。
+       */
+      const after = flatten(r.tree.children ?? [])
+      const gone = (p: string) => before.has(p) && !after.has(p)
+      setSelection(prev => prev.selected.some(gone)
+        ? {
+          selected: prev.selected.filter(x => !gone(x)),
+          anchor: prev.anchor !== null && gone(prev.anchor) ? null : prev.anchor,
+        }
+        : prev)
+      // 分组面板那一份（pending）是"界面上此刻显示的选中集"的另一半真源，也是真正被
+      // 提交出去的那一份，同样不能留幽灵。刻意**不**换 session 号：这不是一次"重新
+      // 决定编辑目标"，在途那笔写入落地后仍要把 core 给的新 id 回填进来（少了那一步，
+      // 改过名的分组会被反复新建成副本，见 runGroupWrite 里那段）。
+      const cur = pendingRef.current
+      if (cur !== null && cur.members.some(gone)) {
+        const members = cur.members.filter(x => !gone(x))
+        setPending(members.length === 0 ? null : {
+          ...cur,
+          members,
+          anchor: cur.anchor !== null && gone(cur.anchor) ? null : cur.anchor,
+        })
+      }
     } catch (e) {
       // **这一条是本轮最要紧的错误显示。** 子树里有带注释/角色/模板/严重级别的后代时，
       // core 会拒绝（移除一个目录必然连带移除它嵌套的全部子节点，无条件级联等于一次
       // 点击丢掉多条已经写下的声明）。报错原文自带出路——"请先分别移除这些子节点自己
       // 的声明"——原样显示，别吞、别改写：吞掉它，用户会以为「取消声明」坏了，转而去
       // 用别的方式达到目的（手改文件），那才是真正丢东西的路径。
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [bridge, readOnly])
+  }, [bridge, readOnly, tree, setPending])
 
   const handleSave = useCallback(async () => {
+    const epoch = loadEpochRef.current
     try {
       // 两个宿主的消息回调都不排队：这个 await 横跨落盘期间完全可能又落地一笔
       // spec/annotate/move/setGroup/deleteGroup，把 dirty 重新变 true——不能无
       // 条件复位，必须信 spec/save 自己回报的 r.dirty（api.ts SaveResult.dirty
       // 上有完整推导），否则界面会把一笔从未写盘的编辑显示成"已保存"。
       const r = await bridge.request('spec/save', {})
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setDirty(r.dirty)
       setError(null)
     } catch (e) {
+      if (epoch !== loadEpochRef.current) return // 见 loadEpochRef
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [bridge])

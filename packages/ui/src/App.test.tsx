@@ -2458,6 +2458,214 @@ describe('右键菜单：取消声明', () => {
   })
 })
 
+describe('取消声明之后的选中集清理', () => {
+  /** 契约里有、磁盘上没有的一个目录，带一个同样只存在于契约里的子节点 */
+  const GHOST: ViewNode = {
+    name: 'cases', path: 'cases', isDir: true, origin: 'spec-only',
+    children: [{ name: 'x.md', path: 'cases/x.md', isDir: false, origin: 'spec-only', annotation: '占位' }],
+  }
+  /** 取消声明落地后 core 那侧的树：cases 整棵（连同 cases/x.md）从树上消失 */
+  const removedGhost = () =>
+    ({ tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false })
+
+  it('取消一个 spec-only 节点的声明后，它的路径不再留在选中集里（否则会被写进分组成员）', async () => {
+    const bridge = bridgeWith({ tree: tree([...FIXTURE, GHOST]) })
+    bridge.setHandler('spec/removeNode', (() => removedGhost()) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    // 先单击它——右栏证明它确实进了选中集
+    fireEvent.click(rowByName(container, 'cases/'))
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('cases'))
+
+    rightClickRow(container, 'cases/')
+    fireEvent.click(menuItem('取消声明'))
+    // 树上真的没有这一行了（前提先钉死，否则后面测的是另一回事）
+    await waitFor(() => expect(rowsOf(container).some(
+      r => r.querySelector('.fs-name')?.textContent === 'cases/')).toBe(false))
+    // 右栏回到空态：选中集空了本来就该是这个样子
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')).toBeNull())
+
+    // 关键的一步：接着 ctrl 点另一个节点。幽灵还在选中集里的话，这一下会变成"两项"，
+    // 右栏跳出分组面板，一次失焦就把树上根本不存在的 'cases' 写进 members。
+    fireEvent.click(rowByName(container, 'README.md'), { ctrlKey: true })
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('README.md'))
+    expect(screen.queryByText(/已选中 2 项/)).toBeNull()
+  })
+
+  it('取消一个目录的声明会连带抹掉它的子声明，子路径也要一起离开选中集', async () => {
+    const bridge = bridgeWith({ tree: tree([...FIXTURE, GHOST]) })
+    bridge.setHandler('spec/removeNode', (() => removedGhost()) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    // 展开 cases/，把子节点 x.md 也选进来——选中集这时是 ['cases/x.md']
+    fireEvent.click(rowByName(container, 'cases/'))
+    await waitFor(() => rowByName(container, 'x.md'))
+    fireEvent.click(rowByName(container, 'x.md'))
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('cases/x.md'))
+
+    // 取消的是**父目录**的声明，子声明被 core 一并抹掉
+    rightClickRow(container, 'cases/')
+    fireEvent.click(menuItem('取消声明'))
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')).toBeNull())
+
+    fireEvent.click(rowByName(container, 'README.md'), { ctrlKey: true })
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('README.md'))
+    // 只剔了 path 自己、没剔子路径的话，这里会是"已选中 2 项"（cases/x.md + README.md）
+    expect(screen.queryByText(/已选中 2 项/)).toBeNull()
+  })
+
+  it('磁盘上真实存在的节点取消声明后行还在树上，选中集不许跟着被剔掉', async () => {
+    // 这条钉的是反方向：按 `path + '/'` 前缀无脑剔的实现会在这里把 src 剔出去，
+    // 用户看到的是"我右键的那一行还高亮着，右栏却空了"。
+    const bridge = bridgeWith({ tree: tree([{ ...SRC, origin: 'both', annotation: '核心源码' }, DOCS, README]) })
+    bridge.setHandler('spec/removeNode', (() => ({
+      // 取消声明只去掉标注，src 因为磁盘上真的有，照旧留在树上
+      tree: tree([{ ...SRC, origin: 'actual-only' }, DOCS, README]),
+      dirty: true, groups: [G1], canUndo: true, canRedo: false,
+    })) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    clickFirstRow(container) // FIXTURE 第一行是 src
+    await waitFor(() => expect(container.querySelector('.fs-panel-path')?.textContent).toBe('src'))
+
+    rightClickRow(container, 'src/')
+    fireEvent.click(menuItem('取消声明'))
+    await waitFor(() => expect(bridge.lastCall('spec/removeNode')).toEqual({ path: 'src' }))
+    await flushChain()
+
+    expect(rowByName(container, 'src/')).toBeTruthy()
+    expect(container.querySelector('.fs-panel-path')?.textContent).toBe('src')
+  })
+})
+
+describe('落地回调的「还是不是同一次载入」闸门', () => {
+  /** 换一个工作区之后 core 给出的另一棵树；只有这个工作区里才有 OTHER.md */
+  const OTHER: ViewNode = { name: 'OTHER.md', path: 'OTHER.md', isDir: false, origin: 'actual-only' }
+
+  /**
+   * open 按 root 分岔：/tmp/other 是一份全新的、干净的工作区。
+   * 原工作区里的 src 必须是 origin 'both'——它在 FIXTURE 里是 actual-only，
+   * 那种节点上的「取消声明」是**禁用**的，请求根本发不出去，整条用例会变成空转
+   * （删掉被测的闸门也照样绿，已实测）。
+   */
+  const twoWorkspaceBridge = () => {
+    const bridge = bridgeWith()
+    const HERE = tree([{ ...SRC, origin: 'both' as const, annotation: '核心源码' }, DOCS, README])
+    bridge.setHandler('workspace/open', (({ root }: { root: string }) =>
+      root === '/tmp/other'
+        ? openResult({ root: '/tmp/other', tree: tree([OTHER]), groups: [] })
+        : openResult({ tree: HERE })) as never)
+    return bridge
+  }
+
+  /** 在顶栏路径框里换一个根并载入。label 可指定，因为切过语言之后它是英文的 */
+  const switchWorkspace = async (label = '工作区路径') => {
+    fireEvent.change(screen.getByLabelText(label), { target: { value: '/tmp/other' } })
+    fireEvent.keyDown(screen.getByLabelText(label), { key: 'Enter' })
+    // 载入成功的信号取"路径框停在新根上"：openRoot 会用 OpenResult.root 回填它
+    await waitFor(() => expect(screen.getByLabelText('工作区路径')).toHaveProperty('value', '/tmp/other'))
+  }
+
+  it('在途的 spec/removeNode 在换工作区之后才落地：不把上一份树与脏标记贴回来', async () => {
+    const bridge = twoWorkspaceBridge()
+    bridge.setHandler('spec/removeNode', (() => delayed({
+      tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false,
+    }, 40)) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    rightClickRow(container, 'src/')
+    expect(menuItem('取消声明').disabled).toBe(false) // 先钉死请求真的发得出去
+    fireEvent.click(menuItem('取消声明'))
+    await waitFor(() => expect(bridge.lastCall('spec/removeNode')).toEqual({ path: 'src' }))
+    await switchWorkspace()
+    await waitFor(() => expect(rowByName(container, 'OTHER.md')).toBeTruthy())
+
+    // 等在途那笔真的回来了（40ms 的桩 + 一点余量）
+    await act(async () => { await new Promise(r => setTimeout(r, 80)) })
+
+    // 新工作区刚载入：撤销栈空、没有未保存改动。旧树更不该回来。
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+    expect(rowsOf(container).some(r => r.querySelector('.fs-name')?.textContent === 'src/')).toBe(false)
+  })
+
+  it('在途的 spec/createNode 在换工作区之后才落地：同样不回贴', async () => {
+    const bridge = twoWorkspaceBridge()
+    bridge.setHandler('spec/createNode', ((pms: { parentPath: string; name: string; isDir: boolean }) =>
+      delayed({
+        tree: tree(withCreated(pms.parentPath, pms.name, pms.isDir)),
+        dirty: true, groups: [G1], canUndo: true, canRedo: false,
+        path: createdPath(pms.parentPath, pms.name),
+      }, 40)) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    const pane = container.querySelector('.fs-pane-tree') as HTMLElement
+    fireEvent.contextMenu(pane, { clientX: 30, clientY: 400 })
+    fireEvent.click(menuItem('新建目录（仅契约）'))
+    fireEvent.change(nameInput(), { target: { value: 'cases' } })
+    fireEvent.click(createBtn())
+
+    await switchWorkspace()
+    await waitFor(() => expect(rowByName(container, 'OTHER.md')).toBeTruthy())
+    await act(async () => { await new Promise(r => setTimeout(r, 80)) })
+
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+    expect(rowsOf(container).some(r => r.querySelector('.fs-name')?.textContent === 'cases/')).toBe(false)
+  })
+
+  it('这道闸门必须与「用户改选」那个序号分开：在途的注释落地前点了别的节点，编辑照样落地', async () => {
+    // 反方向的钉子。终审那条 Minor 字面上写的是"epoch 只护住了 setSelection 那一半"，
+    // 照字面把 selectionEpochRef 直接拿来当载入闸门是错的：它每点一行、每点一个色点
+    // 都自增，用户在宿主往返的 20–60ms 里随手点一下，这笔编辑的落地回调就整段被丢掉,
+    // 树、脏标记、撤销可用性一起停在编辑之前的样子，而 core 那侧编辑其实已经生效。
+    const bridge = bridgeWith()
+    bridge.setHandler('spec/annotate', (() => delayed({
+      tree: tree([{ ...SRC, annotation: '核心源码', origin: 'both' }, DOCS, README]),
+      dirty: true, groups: [G1], canUndo: true, canRedo: false,
+    }, 40)) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: '核心源码' } })
+    fireEvent.blur(screen.getByLabelText('注释'))
+
+    // 请求还在途，用户点走了（这一下会让 selectionEpochRef 自增，工作区却没变）
+    fireEvent.click(rowByName(container, 'README.md'))
+    await act(async () => { await new Promise(r => setTimeout(r, 80)) })
+
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('在途的 spec/setLang 在换工作区之后才落地：同样不回贴', async () => {
+    const bridge = twoWorkspaceBridge()
+    bridge.setHandler('spec/setLang', (() => delayed({
+      tree: tree(FIXTURE), dirty: true, groups: [G1], canUndo: true, canRedo: false,
+    }, 40)) as never)
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'English' }))
+    // 换工作区后界面语言会被 OpenResult.lang 拨回中文（见 App 里 lang state 的注释），
+    // 所以这里先用英文标签找路径框，之后的断言又回到中文文案上。
+    await switchWorkspace('Workspace path')
+    await waitFor(() => expect(rowByName(container, 'OTHER.md')).toBeTruthy())
+    await act(async () => { await new Promise(r => setTimeout(r, 80)) })
+
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText('撤销') as HTMLButtonElement).disabled).toBe(true)
+    expect(rowsOf(container).some(r => r.querySelector('.fs-name')?.textContent === 'src/')).toBe(false)
+  })
+})
+
 describe('新建 / 取消声明：core 的报错必须原样显示在界面上', () => {
   // 三条都断言"那段话真的出现在界面上"，不是断言"调用抛错了"——后者测的是 core 不是 UI。
 
