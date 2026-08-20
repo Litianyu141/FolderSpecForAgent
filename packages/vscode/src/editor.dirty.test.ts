@@ -133,6 +133,9 @@ describe('VSCode 宿主：spec/save 走 WorkspaceEdit 之后 dirty 记账要跟�
     const saveResp = await send({ id: 3, method: 'spec/save', params: {} })
     expect(saveResp.ok).toBe(true)
     expect(saveResp.result?.written).toBe(true)
+    // 保存期间没有任何并发编辑插进来：dirty 必须如实回报 false，而不是留空让
+    // webview 端的 UI 去猜（api.ts SaveResult.dirty 上有完整推导）。
+    expect(saveResp.result?.dirty).toBe(false)
     // 写入路径确实被触发了——否则下面的断言就算通过也证明不了 markSaved 生效
     expect(state.writtenTexts.length).toBe(1)
     expect(state.applyEditCalls).toBe(1)

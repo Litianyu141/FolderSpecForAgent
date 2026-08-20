@@ -56,6 +56,25 @@ export interface EditResult {
   canRedo: boolean
 }
 
+/**
+ * dirty 是保存落地那一刻的真值，不是调用方的假定。两个宿主的消息回调都不排队
+ * （cli/src/server.ts 的 `socket.on('message', async ...)`、vscode/src/editor.ts 的
+ * `onDidReceiveMessage`）：spec/save 横跨落盘的那个 await（CLI 是 fs.writeFile；
+ * VSCode 是 WorkspaceEdit + document.save()）期间完全可能又落地一笔 spec/annotate
+ * / move / setGroup / deleteGroup。core 侧用捕获时的 revision 记账
+ * （Session.rawForSave/markSaved）已经能正确识别这种情况——此刻的 dirty 完全可能
+ * 仍是 true，因为那笔新编辑从未被这次保存写进磁盘。调用方必须回填这个值，而不是
+ * 在 spec/save 成功后无条件把界面上的脏标记抹掉，否则用户会以为存好了、关窗即丢。
+ *
+ * 没有 canUndo / canRedo：save() 自己不碰撤销/重做栈，那两个值在保存前后不变——
+ * 若保存期间恰好插入了一笔新编辑，那笔编辑自己的 EditResult 早已把它们更新到位，
+ * 这里再重复携带一遍只是在复述别处已经正确的值，不带来新信息。
+ */
+export interface SaveResult {
+  written: boolean
+  dirty: boolean
+}
+
 export interface SetGroupParams {
   /** null 表示新建并自动取名，实际 id 由 result 返回 */
   id: string | null
@@ -81,7 +100,7 @@ export interface Api {
   'tree/expand': { params: { path: string }; result: { tree: ViewNode } }
   'spec/annotate': { params: AnnotateParams; result: EditResult }
   'spec/move': { params: MoveParams; result: EditResult }
-  'spec/save': { params: Record<string, never>; result: { written: boolean } }
+  'spec/save': { params: Record<string, never>; result: SaveResult }
   'spec/raw': { params: Record<string, never>; result: { markdown: string } }
   'spec/setGroup': { params: SetGroupParams; result: EditResult & { id: string } }
   'spec/deleteGroup': { params: { id: string }; result: EditResult }

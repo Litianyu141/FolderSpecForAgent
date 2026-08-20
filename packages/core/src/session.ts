@@ -9,7 +9,7 @@ import { emptySpec, moveNode, setAnnotation, setGroup, deleteGroup } from './spe
 import type { AnnotationPatch, GroupPatch } from './spec-edit.js'
 import { readWorkspaceFile } from './file-read.js'
 import type { FileReadResult } from './file-read.js'
-import type { Api, ApiMethod, AnnotateParams, EditResult, MoveParams, OpenResult, SetGroupParams, SetViewModeParams, ViewModeResult } from './api.js'
+import type { Api, ApiMethod, AnnotateParams, EditResult, MoveParams, OpenResult, SaveResult, SetGroupParams, SetViewModeParams, ViewModeResult } from './api.js'
 import type { ActualNode, GitStates, Group, ParseError, Spec, ViewMode, ViewNode } from './types.js'
 
 export const SPEC_FILENAME = '.folderspec.md'
@@ -388,7 +388,7 @@ export class Session {
     return { text, revision: this.revision }
   }
 
-  async save(): Promise<{ written: boolean }> {
+  async save(): Promise<SaveResult> {
     // text 与 revision 必须来自同一次 rawForSave() 调用：下面 await fs.writeFile
     // 期间，两个宿主的消息回调都不排队，一笔新的 spec/annotate 完全可能插进来把
     // this.revision 推进。若这里落盘后才去读"此刻的 this.revision"，记下的就是
@@ -399,7 +399,11 @@ export class Session {
     // 记下"磁盘上现在是哪一个状态"，而不是简单地把 dirty 抹掉：保存点可以落在撤销
     // 链的任意一处，之后往回退反而会重新变脏（见 revision 的注释）。
     this.savedRevision = revision
-    return { written: true }
+    // dirty 必须在 savedRevision 落定之后才读：如果上面 await 期间又落地了一笔新
+    // 编辑（this.revision 已经比 revision 更新），isDirty() 此刻会正确地算出
+    // true——调用方（UI）得如实转达这个值，不能自己假定保存一定让脏标记熄灭
+    // （SaveResult.dirty 上有完整推导）。
+    return { written: true, dirty: this.isDirty() }
   }
 
   /**

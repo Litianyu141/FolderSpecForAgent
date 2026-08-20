@@ -323,6 +323,63 @@ describe('App', () => {
     await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(true))
   })
 
+  // 窄路径复现：两个宿主的消息回调都不排队（cli/src/server.ts 的
+  // `socket.on('message', async ...)`、vscode/src/editor.ts 的 `onDidReceiveMessage`），
+  // spec/save 横跨落盘的那个 await 期间完全可能又落地一笔 spec/annotate。core 侧
+  // session.save() 已经用捕获时的 revision 记账，会如实在响应里回报 dirty: true——
+  // 但如果 UI 收到 spec/save 成功后无条件 setDirty(false)，界面上的脏标记会被
+  // 错误地抹掉，用户以为存好了、其实第二笔编辑从未写盘。
+  //
+  // 用手写 Bridge（不走 FakeBridge）把 spec/save 挂在一个受控 Promise 上，才能在
+  // 它 resolve 之前插入一次真实的 fireEvent 编辑——这是唯一能让"编辑落在保存的
+  // await 期间"这件事真实发生的桩形态，参照的是本文件"先点的大文件晚回来时"那条
+  // 用例已经验证过的手法。
+  it('保存的 await 期间落地一笔编辑，保存完成后脏标记必须仍然亮着', async () => {
+    let resolveSave!: (v: { written: boolean; dirty: boolean }) => void
+    let annotateCalls = 0
+    let saveCalls = 0
+    const bridge: Bridge = {
+      request: (async (method: string, _params: unknown) => {
+        if (method === 'workspace/open') return openResult()
+        if (method === 'spec/annotate') {
+          annotateCalls += 1
+          return {
+            tree: tree([{ ...SRC, annotation: `第${annotateCalls}版`, origin: 'both' }, DOCS, README]),
+            dirty: true, groups: [G1], canUndo: true, canRedo: false,
+          }
+        }
+        if (method === 'spec/save') {
+          saveCalls += 1
+          return new Promise(res => { resolveSave = res })
+        }
+        throw new Error(`本用例未配置 ${method}`)
+      }) as Bridge['request'],
+      on: () => () => {},
+    }
+
+    const { container } = render(<App bridge={bridge} initialRoot="/tmp/repo" />)
+    await waitFor(() => screen.getByLabelText('工作区路径'))
+    clickFirstRow(container)
+    await waitFor(() => screen.getByLabelText('注释'))
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: '第一版' } })
+    fireEvent.blur(screen.getByLabelText('注释'))
+    await waitFor(() => expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false))
+
+    fireEvent.click(screen.getByText('保存'))   // spec/save 挂起，尚未 resolve
+    await waitFor(() => expect(saveCalls).toBe(1))
+
+    // 保存的 await 期间，第二笔编辑先落地——它此刻从未写盘
+    fireEvent.change(screen.getByLabelText('注释'), { target: { value: '第二版——保存期间落地' } })
+    fireEvent.blur(screen.getByLabelText('注释'))
+    await waitFor(() => expect(annotateCalls).toBe(2))
+
+    // 保存这才完成；桩如实回报 dirty: true（对应 core 侧 rawForSave 捕获的是
+    // 第一版的 revision，"第二版"从未被这次保存覆盖）
+    await act(async () => { resolveSave({ written: true, dirty: true }) })
+
+    expect((screen.getByText('保存') as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('收到 external-change 事件时提示可重载', async () => {
     const bridge = bridgeWith()
     render(<App bridge={bridge} initialRoot="/tmp/repo" />)

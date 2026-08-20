@@ -12,12 +12,12 @@ const view = (over: Partial<ViewNode> = {}): ViewNode =>
 describe('FakeBridge', () => {
   it('request 返回配置的结果并记录调用', async () => {
     const bridge = new FakeBridge({
-      'spec/save': () => ({ written: true }),
+      'spec/save': () => ({ written: true, dirty: false }),
     })
 
     const result = await bridge.request('spec/save', {})
 
-    expect(result).toEqual({ written: true })
+    expect(result).toEqual({ written: true, dirty: false })
     expect(bridge.calls).toEqual([{ method: 'spec/save', params: {} }])
   })
 
@@ -86,7 +86,7 @@ describe('FakeBridge', () => {
   })
 
   it('setHandler 覆盖已有方法的回应，可用来让某个方法抛错', async () => {
-    const bridge = new FakeBridge({ 'spec/save': () => ({ written: true }) })
+    const bridge = new FakeBridge({ 'spec/save': () => ({ written: true, dirty: false }) })
 
     bridge.setHandler('spec/save', () => { throw new Error('写盘炸了') })
 

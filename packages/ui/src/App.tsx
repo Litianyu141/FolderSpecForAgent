@@ -590,8 +590,12 @@ export function App({ bridge, initialRoot }: AppProps) {
 
   const handleSave = useCallback(async () => {
     try {
-      await bridge.request('spec/save', {})
-      setDirty(false)
+      // 两个宿主的消息回调都不排队：这个 await 横跨落盘期间完全可能又落地一笔
+      // spec/annotate/move/setGroup/deleteGroup，把 dirty 重新变 true——不能无
+      // 条件复位，必须信 spec/save 自己回报的 r.dirty（api.ts SaveResult.dirty
+      // 上有完整推导），否则界面会把一笔从未写盘的编辑显示成"已保存"。
+      const r = await bridge.request('spec/save', {})
+      setDirty(r.dirty)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

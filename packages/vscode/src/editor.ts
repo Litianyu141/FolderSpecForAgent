@@ -108,7 +108,12 @@ export class FolderSpecEditorProvider implements vscode.CustomTextEditorProvider
           } finally {
             applyingOwnEdit = false
           }
-          result = { written: true }
+          // 上面两个 await（WorkspaceEdit + document.save()）期间，消息回调不排队，
+          // 完全可能又处理了一条把 savingSession.revision 推进的新编辑——isDirty()
+          // 此刻会如实算出 true（对应的正是 markSaved 只追平了 rawForSave() 捕获的
+          // 那个旧 revision）。webview 侧的 UI 必须转达这个值，不能自己假定保存
+          // 一定让脏标记熄灭（api.ts SaveResult.dirty 上有完整推导）。
+          result = { written: true, dirty: savingSession.isDirty() }
         } else {
           result = await session.handle(msg.method, msg.params as never)
         }
