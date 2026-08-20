@@ -11,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/Litianyu141/FolderSpecForAgent/issues"
   },
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "folderspec",
   "engines": {
     "vscode": "^1.90.0"
