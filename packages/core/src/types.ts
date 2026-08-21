@@ -1,4 +1,4 @@
-import type { SpecErrorCode, SpecErrorParams } from './errors.js'
+import type { ErrorDetail } from './errors.js'
 
 export type Severity = 'error' | 'warning' | 'advisory'
 
@@ -71,19 +71,22 @@ export interface Spec {
 /**
  * 解析失败时报给用户的一条：**行号 + 渲染好的英文 message + 错误码 + 参数**。
  *
+ * 换句话说，它就是**一条明细（`ErrorDetail`）加上一个必填的行号**——所以这里用
+ * `extends` 钉住这层关系，而不是手工再抄一份字段列表。这不是洁癖：session.ts 的
+ * `serialize.selfCheckFailed` **不做任何转换**就把 `verify.errors` 整个塞进
+ * params.details，两个形状一旦漂移（一边多个字段、一边改个名），线上就会多搬一个
+ * 没人渲染的字段，而且完全没有症状。
+ *
  * `line` 与 `message` 是原有的两个字段，`code`/`params` 是后加的——加法，不是替换：
  * 不认识码的消费者（日志、还没接线的宿主）照旧显示 `message` 一句英文人话，认识码的
  * 显示端（ui 的 translateError）按码换成另一种语言。构造请一律走 errors.ts 的
  * `parseError()`，它保证这三者不会各说各话。
  *
- * `code` 之所以可选，是留给"从进程外收来的一条 ParseError"——那是 JSON.parse 的产物，
- * 类型系统一个字都保证不了；读取端容错，不是给自己人留后门。
+ * `code` 之所以可选（在 ErrorDetail 上），是留给"从进程外收来的一条 ParseError"
+ * ——那是 JSON.parse 的产物，类型系统一个字都保证不了；读取端容错，不是给自己人留后门。
  */
-export interface ParseError {
+export interface ParseError extends ErrorDetail {
   line: number
-  message: string
-  code?: SpecErrorCode
-  params?: SpecErrorParams
 }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; errors: ParseError[] }

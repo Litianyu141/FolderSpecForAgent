@@ -6,6 +6,7 @@ import { Session, SPEC_FILENAME } from './session.js'
 import { specError } from './errors.test-support.js'
 import { parseSpec } from './parse/index.js'
 import type { Spec, ViewNode } from './types.js'
+import type { ErrorDetail } from './errors.js'
 
 let root: string
 
@@ -1650,7 +1651,14 @@ describe('Session.move 红线：合并到同名节点时不覆盖目标已有的
     const beforeRaw = s.raw()
 
     expect(() => s.move({ from: 'old/utils.ts', toParent: 'src', isDir: false }))
-      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('共享工具函数，勿删') as unknown as string }))
+      .toThrow(specError('move.mergeConflict', {
+        conflicts: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'detail.conflictAnnotation',
+            params: expect.objectContaining({ path: 'src/utils.ts', kept: '共享工具函数，勿删', coming: '旧的' }),
+          }),
+        ]) as unknown as readonly ErrorDetail[],
+      }))
 
     // 只看"抛没抛错"不够：抛错之后契约、树、hidden 都必须原封不动。
     expect(s.raw()).toBe(beforeRaw)

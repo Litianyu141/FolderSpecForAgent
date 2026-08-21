@@ -973,9 +973,12 @@ export class Session {
     // 落盘（或交给宿主落盘）前自校验：序列化的结果必须能被自己解析回来（spec §8）
     const verify = parseSpec(text)
     if (!verify.ok) {
-      throw new SpecError('serialize.selfCheckFailed', {
-        details: verify.errors.map(e => `line ${e.line}: ${e.message}`).join('; '),
-      })
+      // `verify.errors` **不做任何转换**就整个塞进 params：一条 ParseError 本来就是
+      // "一条明细 + 行号"（types.ts 里它 `extends ErrorDetail`），渲染器认得这个形状，
+      // 行号由显示端拼成 "line N: " / "第 N 行："——两种语言下是同一个数字。
+      // （原先这里 `map(e => \`line ${e.line}: ${e.message}\`).join('; ')` 提前把明细
+      // 渲染死成英文，而那些 ParseError 自己就带码，是"本可翻译却被烘焙成英文"的东西。）
+      throw new SpecError('serialize.selfCheckFailed', { details: verify.errors })
     }
 
     return text

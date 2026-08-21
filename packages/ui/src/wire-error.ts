@@ -18,7 +18,7 @@ export class BridgeError extends Error {
   constructor(
     message: string,
     readonly code?: string,
-    readonly params?: Record<string, string | number>,
+    readonly params?: WireError['params'],
   ) {
     super(message)
     this.name = 'BridgeError'

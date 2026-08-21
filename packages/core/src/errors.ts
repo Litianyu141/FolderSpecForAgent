@@ -97,6 +97,30 @@ export const EN_MESSAGES = {
   'move.mergeConflict':
     'The destination already has a node with this name, and this move would overwrite content already written there: {conflicts}. Decide which side to keep first — clear one side, or make both sides say exactly the same thing — then retry the move.',
 
+  // ============================================================
+  // `detail.*`：**嵌进别人句子里的从句**，不是能独立成句的整句。它们经 `detail()`
+  // 变成一条 ErrorDetail，塞进另一条报错的 params 里（今天只有 move.mergeConflict
+  // 的 {conflicts}），由渲染器逐条代进去。
+  //
+  // **命名前缀是这一组的身份**：errors.test.ts 按 `detail.` 把形状断言切成两组——
+  // 整句那组要求以句号或占位符收尾，这一组要求**不**以句号收尾（它后面还接着分隔符
+  // 和下一条）。将来第三种明细照抄这个前缀即可，不必再发明机制。
+  //
+  // **为什么四个字段各占一个码，而不是往一句话里插一个 {label} 变量**：与
+  // declare.typeConflictDiskDir/...File 拆成两个码、duplicateSibling 拆出根与非根
+  // 是同一条裁定——那个词一旦插进 message 就固定是英文了；而且英文是 "the comment
+  // of `x`"、中文是 "`x` 的注释"，词的位置本来就不同，拼装式翻译迟早在某种语言里散架。
+  // params 里只放**数据**（路径、两侧的值），不放已经渲染好的措辞。
+  // ============================================================
+  'detail.conflictAnnotation':
+    'the comment of `{path}` (“{kept}”) would be overwritten by “{coming}”',
+  'detail.conflictRole':
+    'the semantic role of `{path}` (“{kept}”) would be overwritten by “{coming}”',
+  'detail.conflictTemplate':
+    'the template of `{path}` (“{kept}”) would be overwritten by “{coming}”',
+  'detail.conflictSeverity':
+    'the severity of `{path}` (“{kept}”) would be overwritten by “{coming}”',
+
   // ---- 移除声明时的子树保护（红线：一次点击不该丢掉多条已写下的声明）----
   'remove.subtreeHasContent':
     '`{path}` still has descendants carrying a comment, semantic role, template, or severity, and removing it would take those declarations down with it. Remove each of those descendants’ own declarations first, then remove `{path}` itself.',
@@ -316,7 +340,124 @@ export const EN_MESSAGES = {
  */
 export type SpecErrorCode = keyof typeof EN_MESSAGES
 
-export type SpecErrorParams = Record<string, string | number>
+/**
+ * 一条**尚未被渲染成任何语言**的报错：就是 SpecError 身上那对 (code, params)，
+ * 只是不作为顶层错误抛出，而是嵌在另一条报错的 params 里当明细。
+ *
+ * 这个形状在本系统里早就存在——`ParseError` 去掉必填的行号就是它，所以那边直接
+ * `extends` 过来（见 types.ts）。
+ *
+ * `message` 是 core 按 EN_MESSAGES 渲染好的英文，与 SpecError.message / ParseError.message
+ * 是同一条已裁定的取舍（本文件顶部要点 1）：不认码的消费者——日志、还没接线的宿主、
+ * ERROR_ZH 里还没有这条码的那一格——**永远先有一句读得懂的话**。它不是第二份英文
+ * *定义*，是 EN_MESSAGES 的一次渲染结果，且只许由下面的 `detail()` 派生，绝不手写。
+ *
+ * 它带来的收益是**逐条降级**：外层有中文、某一条明细的码还没翻译时，只有那一条退回
+ * 英文，其余仍是中文——比"整条句子退回英文"细得多。
+ *
+ * `line` 只有解析层的明细才有，**绝不写进 EN_MESSAGES 的模板**——行号由显示端拼成
+ * "line N: " / "第 N 行："，两种语言下是同一个数字。这条是"解析失败 → 只读 + 报行号"
+ * 里"能定位"的那一半，见下面 parseError() 的注释。
+ */
+export interface ErrorDetail {
+  message: string
+  code?: SpecErrorCode
+  params?: SpecErrorParams
+  line?: number
+}
+
+/**
+ * params 的取值。判据与 ui/src/i18n.ts 顶部那条逐字一致——**"我们写的才翻译"**：
+ *   string | number   → 数据（路径、名字、行号、用户原文），两种语言下原样显示；
+ *   ErrorDetail[]     → 我们自己写的话，渲染必须推迟到显示那一刻。
+ *
+ * 纯数据：无类、无原型、无函数、无环，JSON round-trip 一个字段不丢——params 是要
+ * 经 bridge 过 JSON 的，装一个类实例进来，跨过边界之后方法全没了。
+ */
+export type SpecErrorParamValue = string | number | readonly ErrorDetail[]
+
+/**
+ * 必须写成带索引签名的 interface，**不是 `Record<...>` 别名**：值类型要经 ErrorDetail
+ * 递归引用自己，别名会撞上 TS2456（"类型别名循环引用自身"）；interface 的成员是延迟
+ * 解析的，这条环合法。
+ *
+ * **不写 `| undefined`**：仓库是 strict 且没开 exactOptionalPropertyTypes，加上它会让
+ * `{ path: maybeUndefined }` 从"今天就红的编译错误"变成"界面上渲染出一个字面量
+ * `undefined`"——后者看着像一个真值，比 `{path}` 残留（一眼看得出漏传）更坏。
+ */
+export interface SpecErrorParams {
+  readonly [key: string]: SpecErrorParamValue
+}
+
+/**
+ * 造一条明细。与 `parseError(line, code, params)` 逐字同构，只是没有行号。
+ *
+ * **明细一律走这里造，不许手写字面量**：`message` 必须是 EN_MESSAGES 对这对
+ * (code, params) 的渲染结果，手写就等于在 EN_MESSAGES 之外开了第二个英文定义处。
+ */
+export function detail(code: SpecErrorCode, params: SpecErrorParams = {}): ErrorDetail {
+  return { message: renderEnglish(code, params), code, params }
+}
+
+/** 明细之间的分隔符。**这是排版，不是文案**：英文这份在这里，中文那份在
+ *  ui/src/i18n.ts（中文用全角"；"）。"英文只有一份"这条要点只对**措辞**成立，
+ *  不对标点成立——把它做成跨包共享的常量，等于逼中文句子里用半角分号。 */
+const DETAIL_SEPARATOR = '; '
+
+/**
+ * 明细嵌套的深度上限。从进程外收来的明细可以嵌任意深（JSON 造不出环，但造得出一万层）。
+ *
+ * 触底**不抛错**，退回那条已经渲染好的 message——这里正处在别人的错误路径上，炸在
+ * 这儿会把真正的错因整个盖掉（与下面 interpolate 对缺键不抛错是同一条裁定）。
+ */
+const MAX_DETAIL_DEPTH = 8
+
+/**
+ * 递归渲染器内部走的那个值域：params 里放得下的东西（`SpecErrorParamValue`），**外加
+ * 数组拆开之后的单个元素**（`ErrorDetail`）。
+ *
+ * **只在这两个私有函数的形参上出现，绝不进 `SpecErrorParamValue`。** 往公开值域里
+ * 加"单个明细"那一格，等于允许调用方写 `{ conflict: detail(...) }`——一条没有任何
+ * 调用点、也就没有任何测试的第四条路径。这里要的只是"数组元素能再喂回同一个函数"，
+ * 那是实现细节，不是契约。
+ */
+type RenderableValue = SpecErrorParamValue | ErrorDetail
+
+/** 判据是"有一句能显示的 message"，与 ui/src/wire-error.ts 的 errorFromWire 同款：
+ *  没有 message 的对象一律当数据处理，绝不会渲染出 "[object Object]"。 */
+function isDetail(v: RenderableValue): v is ErrorDetail {
+  return typeof v === 'object' && v !== null && typeof (v as ErrorDetail).message === 'string'
+}
+
+/**
+ * 渲染一条明细。
+ *
+ * **按码重渲染，而不是直接用 `d.message`**：EN_MESSAGES 因此对"从线上收来的明细"
+ * 也保持权威——一条 message 与 code 说的不是一件事的伪造明细，不会把假文案带进
+ * 我们的句子里。
+ *
+ * **码不认识就退回 message，不抛错**：宿主传来一个 core 没有的码时，
+ * `EN_MESSAGES[code]` 是 undefined，直接 `.replace` 会在**构造 Error 的过程中**
+ * 再炸一次（见 MAX_DETAIL_DEPTH 上方那条同源裁定）。
+ *
+ * 行号在这里才被拼上，与 UI 侧用 `banner.parseErrorLine` 拼是同一个位置、同一个
+ * 数字。**无条件拼**（不设 `line > 0` 的闸）：与 App.tsx 的只读横幅逐字一致，而
+ * session.ts 确实存在 `parseError(0, 'spec.unreadable', …)`——加一道闸就会造出
+ * 第二套不一致的行号策略。
+ */
+function renderDetail(d: ErrorDetail, depth: number): string {
+  const known = d.code !== undefined && Object.prototype.hasOwnProperty.call(EN_MESSAGES, d.code)
+  const body = depth >= MAX_DETAIL_DEPTH || !known
+    ? d.message
+    : renderEnglishAt(d.code as SpecErrorCode, d.params ?? {}, depth + 1)
+  return typeof d.line === 'number' ? `line ${d.line}: ${body}` : body
+}
+
+function renderValue(v: RenderableValue, depth: number): string {
+  if (Array.isArray(v)) return v.map(x => renderValue(x, depth)).join(DETAIL_SEPARATOR)
+  if (isDetail(v)) return renderDetail(v, depth)
+  return String(v)
+}
 
 /**
  * 命名占位符 `{xxx}` 替换成 `params.xxx`；params 里没有这个键就**原样保留占位符**。
@@ -325,15 +466,19 @@ export type SpecErrorParams = Record<string, string | number>
  * 纯展示的文案缺陷升级成"构造一个 Error 的时候又炸了一次"（而这里正处在别人的错误
  * 路径上，炸在这儿会把真正的错因整个盖掉）；替换成空串会让缺陷肉眼不可见；留着没
  * 替换的 `{xxx}` 虽然难看，但一眼能看出"这里漏传了参数"。
+ *
+ * **必须是函数式 replacer**（今天就是）：用户注释里出现 `$&` / `` $` `` 时不会被
+ * `$` 的替换语义吃掉；替换文本也不会被二次扫描，所以用户注释里的 `{path}` 不会被
+ * 再插值一次。放宽 params 值域之后这一条更要紧了——明细里带的正是用户原文。
  */
-function interpolate(template: string, params: SpecErrorParams): string {
-  return template.replace(/\{(\w+)\}/g, (raw: string, key: string) =>
-    Object.prototype.hasOwnProperty.call(params, key) ? String(params[key]) : raw)
+function renderEnglishAt(code: SpecErrorCode, params: SpecErrorParams, depth: number): string {
+  return EN_MESSAGES[code].replace(/\{(\w+)\}/g, (raw: string, key: string) =>
+    Object.prototype.hasOwnProperty.call(params, key) ? renderValue(params[key], depth) : raw)
 }
 
 /** 按码渲染英文 message。导出是为了让宿主在只拿到 code + params 时也能自己渲染一遍。 */
 export function renderEnglish(code: SpecErrorCode, params: SpecErrorParams = {}): string {
-  return interpolate(EN_MESSAGES[code], params)
+  return renderEnglishAt(code, params, 0)
 }
 
 /**

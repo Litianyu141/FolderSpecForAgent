@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { copyNode, createNode, deriveGroupId, deleteGroup, emptySpec, findSpecNode, isSelfOrDescendant, moveNode, removeNode, renameNode, setAnnotation, setGroup, setLang } from './spec-edit.js'
 import { specError } from './errors.test-support.js'
 import type { Spec, SpecNode } from './types.js'
+import type { ErrorDetail } from './errors.js'
 import { serializeSpec } from './serialize.js'
 import { parseSpec } from './parse/index.js'
 
@@ -180,8 +181,19 @@ describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的�
 
     // 连 params.conflicts 一起断：只对 code，报错里少列一条冲突（等于把一条会被
     // 覆盖的注释藏起来）照样绿——原用例断的正是"报错点名了目标那条注释"。
+    //
+    // conflicts 从"一串拼好的英文"变成"一串纯数据明细"之后，这里断的东西比原来**更多**：
+    // 原来的 stringContaining 分不清"注释字段冲突"与"路径里恰好有这几个字"，现在断的是
+    // 哪个字段（code）、哪条路径、留哪一侧的值。
     expect(() => moveNode(s, 'old/utils.ts', 'src', false))
-      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('共享工具函数，勿删') as unknown as string }))
+      .toThrow(specError('move.mergeConflict', {
+        conflicts: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'detail.conflictAnnotation',
+            params: expect.objectContaining({ path: 'src/utils.ts', kept: '共享工具函数，勿删', coming: '旧的' }),
+          }),
+        ]) as unknown as readonly ErrorDetail[],
+      }))
 
     // 只看"抛没抛错"不够：抛错之后调用方手里的那份 spec 必须原封不动——
     // 目标的注释还在，源节点也没有被 detach 走。
@@ -193,7 +205,14 @@ describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的�
     let s = setAnnotation(emptySpec(), 'src/utils.ts', false, { role: 'shared' })
     s = setAnnotation(s, 'old/utils.ts', false, { role: 'legacy' })
     expect(() => moveNode(s, 'old/utils.ts', 'src', false))
-      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('semantic role') as unknown as string }))
+      .toThrow(specError('move.mergeConflict', {
+        conflicts: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'detail.conflictRole',
+            params: expect.objectContaining({ path: 'src/utils.ts', kept: 'shared', coming: 'legacy' }),
+          }),
+        ]) as unknown as readonly ErrorDetail[],
+      }))
     expect(find(s.nodes, 'src/utils.ts')?.role).toBe('shared')
   })
 
@@ -201,7 +220,14 @@ describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的�
     let s = setAnnotation(emptySpec(), 'src/cases', true, { template: 'case-dir' })
     s = setAnnotation(s, 'old/cases', true, { template: 'legacy-dir' })
     expect(() => moveNode(s, 'old/cases', 'src', true))
-      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('template') as unknown as string }))
+      .toThrow(specError('move.mergeConflict', {
+        conflicts: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'detail.conflictTemplate',
+            params: expect.objectContaining({ path: 'src/cases', kept: 'case-dir', coming: 'legacy-dir' }),
+          }),
+        ]) as unknown as readonly ErrorDetail[],
+      }))
     expect(find(s.nodes, 'src/cases')?.template).toBe('case-dir')
   })
 
@@ -209,7 +235,14 @@ describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的�
     let s = setAnnotation(emptySpec(), 'src/cases', true, { severity: 'error' })
     s = setAnnotation(s, 'old/cases', true, { severity: 'warning' })
     expect(() => moveNode(s, 'old/cases', 'src', true))
-      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('severity') as unknown as string }))
+      .toThrow(specError('move.mergeConflict', {
+        conflicts: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'detail.conflictSeverity',
+            params: expect.objectContaining({ path: 'src/cases', kept: 'error', coming: 'warning' }),
+          }),
+        ]) as unknown as readonly ErrorDetail[],
+      }))
     expect(find(s.nodes, 'src/cases')?.severity).toBe('error')
   })
 
@@ -220,8 +253,47 @@ describe('moveNode 红线：合并到同名节点时绝不覆盖目标已有的�
     s = setAnnotation(s, 'old/cases/input.json', false, { annotation: '源侧的说明' })
 
     expect(() => moveNode(s, 'old/cases', 'src', true))
-      .toThrow(specError('move.mergeConflict', { conflicts: expect.stringContaining('目标侧的关键说明') as unknown as string }))
+      .toThrow(specError('move.mergeConflict', {
+        conflicts: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'detail.conflictAnnotation',
+            params: expect.objectContaining({
+              path: 'src/cases/input.json', kept: '目标侧的关键说明', coming: '源侧的说明',
+            }),
+          }),
+        ]) as unknown as readonly ErrorDetail[],
+      }))
     expect(find(s.nodes, 'src/cases/input.json')?.annotation).toBe('目标侧的关键说明')
+  })
+
+  // M1 的正主：上面那几条只证明"某一条冲突在里面"，`conflicts.slice(0, 1)` 或者
+  // 把递归那段删掉，它们里至少有一条照样绿。这一条断的是**一条都不少**——少报一条
+  // 冲突就等于把一条会被覆盖的注释藏起来，而本工具唯一能造成的伤害正是弄丢人写的注释。
+  it('多处冲突一条都不截断：四个字段 + 一条子孙层，conflicts 与 count 同时对得上', () => {
+    let s = setAnnotation(emptySpec(), 'src/cases', true,
+      { annotation: '目标注释', role: 'shared', template: 'case-dir', severity: 'error' })
+    s = setAnnotation(s, 'src/cases/input.json', false, { annotation: '目标侧的关键说明' })
+    s = setAnnotation(s, 'old/cases', true,
+      { annotation: '源注释', role: 'legacy', template: 'legacy-dir', severity: 'warning' })
+    s = setAnnotation(s, 'old/cases/input.json', false, { annotation: '源侧的说明' })
+
+    let thrown: unknown
+    try { moveNode(s, 'old/cases', 'src', true) } catch (e) { thrown = e }
+
+    const params = (thrown as { params: { conflicts: ErrorDetail[]; count: number } }).params
+    expect(params.conflicts).toHaveLength(5)
+    expect(params.count).toBe(5)
+    // 顺序也断：四个内容字段按 CONTENT_FIELD_CODES 的顺序，子孙层跟在自己那一层后面。
+    expect(params.conflicts.map(c => c.code)).toEqual([
+      'detail.conflictAnnotation',
+      'detail.conflictRole',
+      'detail.conflictTemplate',
+      'detail.conflictSeverity',
+      'detail.conflictAnnotation',
+    ])
+    expect(params.conflicts.map(c => c.params?.path)).toEqual([
+      'src/cases', 'src/cases', 'src/cases', 'src/cases', 'src/cases/input.json',
+    ])
   })
 
   it('对照：目标侧该字段为空时照常合并，什么都没丢', () => {

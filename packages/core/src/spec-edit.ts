@@ -1,5 +1,6 @@
 import type { Group, Lang, Severity, Spec, SpecNode } from './types.js'
-import { SpecError } from './errors.js'
+import { SpecError, detail } from './errors.js'
+import type { ErrorDetail, SpecErrorCode } from './errors.js'
 
 export interface AnnotationPatch {
   annotation?: string | null
@@ -420,14 +421,27 @@ function detach(nodes: SpecNode[], segs: string[]): SpecNode | null {
   return list.splice(idx, 1)[0]
 }
 
-/** 四个"用户内容"字段在报错文案里的英文叫法（报错 message 一律英文，见 errors.ts
- *  的要点 1）。与 hasContent 判定的是同一组字段——「什么算人写下的内容」这件事在本
- *  文件里只有一份定义，move 与 removeNode 共用。 */
-const CONTENT_FIELD_LABELS: ReadonlyArray<{ key: 'annotation' | 'role' | 'template' | 'severity'; label: string }> = [
-  { key: 'annotation', label: 'comment' },
-  { key: 'role', label: 'semantic role' },
-  { key: 'template', label: 'template' },
-  { key: 'severity', label: 'severity' },
+/**
+ * 四个"用户内容"字段各自对应的**错误码**。与 hasContent 判定的是同一组字段——
+ * 「什么算人写下的内容」这件事在本文件里只有一份定义，move 与 removeNode 共用。
+ *
+ * **表里存码，不存词。** 这里原先存的是四个英文词（comment / semantic role /
+ * template / severity），拼进一句模板字面量里——那四个词一旦拼进 message 就固定
+ * 是英文了，中文界面上只能连着英文一起显示。改成一个字段一个码、四条**完整从句**
+ * 进 EN_MESSAGES，与 declare.typeConflictDiskDir/...File 拆成两个码、
+ * duplicateSibling 拆出根与非根是同一条已经立过两次的裁定。
+ *
+ * 为什么不是"给那四个词各发一个词条码、再嵌进句子"：英文是 "the comment of `x`"、
+ * 中文是 "`x` 的注释"，词的位置不同，拼装式翻译迟早在某种语言里散架。
+ */
+const CONTENT_FIELD_CODES: ReadonlyArray<{
+  key: 'annotation' | 'role' | 'template' | 'severity'
+  code: SpecErrorCode
+}> = [
+  { key: 'annotation', code: 'detail.conflictAnnotation' },
+  { key: 'role', code: 'detail.conflictRole' },
+  { key: 'template', code: 'detail.conflictTemplate' },
+  { key: 'severity', code: 'detail.conflictSeverity' },
 ]
 
 /**
@@ -466,26 +480,24 @@ function duplicateSibling(parentSegs: string[], name: string): SpecError {
  * 冲突可能藏在任意一层——只查顶层等于只堵住最浅的那一格。
  */
 function assertNoMergeConflict(target: SpecNode, incoming: SpecNode, path: string): void {
-  const conflicts: string[] = []
+  const conflicts: ErrorDetail[] = []
   collectMergeConflicts(target, incoming, path, conflicts)
   if (conflicts.length === 0) return
-  // conflicts 是一串**已经渲染好的英文**，作为一个整体塞进 params。这是本轮唯一一处
-  // 参数不是纯数据的地方，理由：冲突是一个长度不定的列表，每一条自己还带着字段名、
-  // 路径和两侧的值，而 SpecError 的 params 是扁平的 Record<string, string|number>，
-  // 装不下一个"可翻译的子句数组"。取舍是：宁可让中文那侧的这一句里嵌着英文明细，
-  // 也不要只报第一条冲突——**少报一条冲突就等于把一条会被覆盖的注释藏起来**，
-  // 而本工具唯一能造成的伤害正是弄丢人写的注释。要根治得让 params 支持嵌套的
-  // {code, params} 列表，那是另一件事（见 error-i18n-core-report.md 的顾虑一节）。
-  throw new SpecError('move.mergeConflict', { conflicts: conflicts.join('; '), count: conflicts.length })
+  // conflicts 是一串**纯数据明细**，每条自带 code + params，两端各按自己的字典渲染。
+  // （这里原先塞的是一串已经在 core 里拼好的英文，中文界面上只能连着英文一起显示；
+  // params 的值域从"标量"放宽到"标量 | 一串明细"之后，那个缺口补上了。）
+  //
+  // **仍然一条不截断**：冲突是一个长度不定的列表，报全它比句子短更重要——**少报一条
+  // 冲突就等于把一条会被覆盖的注释藏起来**，而本工具唯一能造成的伤害正是弄丢人写的
+  // 注释。多给一个 {count} 是为了让句子先说清"一共几处"，不是为了替代逐条列出。
+  throw new SpecError('move.mergeConflict', { conflicts, count: conflicts.length })
 }
 
-function collectMergeConflicts(target: SpecNode, incoming: SpecNode, path: string, out: string[]): void {
-  for (const { key, label } of CONTENT_FIELD_LABELS) {
+function collectMergeConflicts(target: SpecNode, incoming: SpecNode, path: string, out: ErrorDetail[]): void {
+  for (const { key, code } of CONTENT_FIELD_CODES) {
     const kept = target[key]
     const coming = incoming[key]
-    if (kept && coming && kept !== coming) {
-      out.push(`the ${label} of \`${path}\` (“${kept}”) would be overwritten by “${coming}”`)
-    }
+    if (kept && coming && kept !== coming) out.push(detail(code, { path, kept, coming }))
   }
   for (const c of incoming.children) {
     const t = target.children.find(x => x.name === c.name)

@@ -294,6 +294,18 @@ export interface Api {
 export type ApiMethod = keyof Api
 
 /**
+ * params 里一个值的取值。`string | number` 是数据（路径、名字、行号、用户原文），
+ * 两种语言下原样显示；`readonly WireError[]` 是**一串还没被渲染成任何语言的明细**
+ * ——我们自己写的话，渲染必须推迟到显示那一刻。
+ *
+ * **一条明细就是嵌在别人 params 里的一条 WireError**，所以这里自引用，不另起一个
+ * 结构等价的 `WireErrorDetail`：三个字段的语义、"message 是永远有一句能显示的话"
+ * 这条地板、"有 code 就可翻译"这条约定，在任何一层都逐字成立。多造一个同构类型只会
+ * 让线上契约出现两套等价的递归定义，而且没有任何测试能把它们绑在一起。
+ */
+export type WireErrorParamValue = string | number | readonly WireError[]
+
+/**
  * 错误在**线上**的形状。
  *
  * 今天错误跨 bridge 只是一个裸字符串（`msg.error`，UI 侧 `new Error(msg.error)` 还原，
@@ -321,8 +333,14 @@ export interface WireError {
   message: string
   /** 点分命名空间的错误码，存在即表示这是一条 core 定义过的、可翻译的错误 */
   code?: string
-  /** 渲染 message 用过的那组值（路径、名字……）。翻译时按同名占位符 `{xxx}` 代回去 */
-  params?: Record<string, string | number>
+  /** 渲染 message 用过的那组值（路径、名字、以及可能的一串明细）。翻译时按同名占位符 `{xxx}` 代回去 */
+  params?: { readonly [key: string]: WireErrorParamValue }
+  /**
+   * 只有**解析层的明细**带行号（一条 ParseError 嵌进 params 时就长这样），顶层错误
+   * 用不到它。行号绝不进文案，由显示端自己拼成 "line N: " / "第 N 行："——两种语言
+   * 下必须是同一个数字，那是"解析失败 → 只读 + 报行号"里"能定位"的那一半。
+   */
+  line?: number
 }
 
 export type BridgeEvent = 'spec-changed' | 'scan-progress' | 'external-change'

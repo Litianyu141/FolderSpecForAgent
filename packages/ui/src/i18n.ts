@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { Lang } from '@folderspec/core/api'
+import type { Lang, WireError } from '@folderspec/core/api'
 // `import type`，编译后一行不剩：ui 对 core 只允许类型依赖，运行期一个符号都不引入。
 import type { SpecErrorCode } from '@folderspec/core'
 
@@ -473,13 +473,33 @@ export const ERROR_ZH: Partial<Record<SpecErrorCode, string>> = {
     + '再粘一次又翻一倍，而契约的消费者是会照着它真去建目录的 Agent',
 
   // ---- 移动时的合并冲突 ----
-  // 例外之二：{conflicts} 是 core 已经渲染好的**英文**明细（每条冲突自带字段名、路径和
-  // 两侧的值），params 装不下"可翻译的子句数组"，翻不动——这是第一轮报告 §10 顾虑 1 记下的
-  // 已知缺口。这里用上 core 特意多给的 {count}，让中文这侧至少能说清"一共几处"，
-  // 而不是把冲突截断成第一条（少报一条就等于把一条会被覆盖的注释藏起来）。
+  // **缺口已补**：{conflicts} 曾经是 core 提前拼好的一串**英文**明细，params 装不下
+  // "可翻译的子句数组"，中文这一句里只能嵌着英文（第一轮报告 §10 顾虑 1 记下的已知
+  // 缺口）。params 的值域放宽到"标量 | 一串明细"之后，它现在是一串纯数据明细，每条
+  // 自带 code + params，由下面的 renderZhValue 逐条查 ERROR_ZH 渲染。
+  // 文案一个字没改：{count} / {conflicts} 都在原位，变的只是代进去的值。
+  // {count} 仍然承重——它让句子先说清"一共几处"，而冲突**一条都不截断**：少报一条
+  // 就等于把一条会被覆盖的注释藏起来。
   'move.mergeConflict':
     '目标位置已经有同名节点，这次移动会覆盖掉它已经写下的内容（共 {count} 处）：{conflicts}。'
     + '请先决定保留哪一份（把其中一侧清空，或把两侧改成相同内容），再重试这次移动',
+
+  // ---- 合并冲突的明细（core 的 `detail.*` 那一组）----
+  // 一个字段一个码、四条**完整从句**，不是"给 comment / semantic role 这几个词各发
+  // 一个词条再嵌进句子"：英文是 "the comment of `x`"、中文是 "`x` 的注释"，词的位置
+  // 不同，拼装式翻译迟早在某种语言里散架。
+  //
+  // 四个译名不另造说法，全部取自界面上已经在用的字：「注释」=
+  // annotationPanel.annotationLabel、「语义角色」= annotationPanel.roleLabel、
+  // 「约束强度」= common.severity——用户当初就是看着这几个标签在标注面板上键入它们的。
+  // template 今天没有面板标签（面板不编辑这个字段），取本文件里已经在用的「模板」
+  // （见 remove.subtreeHasContent 与 parse.* 那一批），同样不是新译。
+  //
+  // {kept} / {coming} 是**用户自己写下的内容**，两种语言下都原样显示，判据不变。
+  'detail.conflictAnnotation': '`{path}` 的注释（“{kept}”）会被“{coming}”覆盖',
+  'detail.conflictRole': '`{path}` 的语义角色（“{kept}”）会被“{coming}”覆盖',
+  'detail.conflictTemplate': '`{path}` 的模板（“{kept}”）会被“{coming}”覆盖',
+  'detail.conflictSeverity': '`{path}` 的约束强度（“{kept}”）会被“{coming}”覆盖',
 
   // ---- 移除声明时的子树保护 ----
   'remove.subtreeHasContent':
@@ -526,11 +546,15 @@ export const ERROR_ZH: Partial<Record<SpecErrorCode, string>> = {
   'readonly.diskView': '当前处于「原始结构」视图，为只读模式；切回「我的结构」视图后即可编辑',
 
   // ---- 写盘前的自校验 ----
-  // {details} 是 serialize → parse 自校验时解析器给的"行号 + 原因"，从第三轮起它是
-  // **英文**（解析层的 message 由 EN_MESSAGES 渲染）。这一段没有再翻一遍：它是一条
-  // 内部自校验的明细，params 装不下"可翻译的子句数组"（与 move.mergeConflict 的
-  // {conflicts} 是同一个已知缺口，见第一轮报告 §10 顾虑 1）。中文用户读到的是
-  // "序列化自校验失败……：line 3: <英文明细>"——句子读得懂，明细是给我们排障用的。
+  // **缺口已补**：{details} 曾经是 core 提前拼成一串的 "line N: <英文原因>"，中文
+  // 用户读到的是"序列化自校验失败……：line 3: <英文明细>"（与 move.mergeConflict 的
+  // {conflicts} 同一个已知缺口，第一轮报告 §10 顾虑 1）。现在它是一串 ParseError
+  // 原样塞进来的纯数据——ParseError 本来就是"一条明细 + 行号"，不做任何转换，
+  // 由 renderZhValue 逐条查 ERROR_ZH，行号由 banner.parseErrorLine 拼成"第 N 行："。
+  // 文案一个字没改，{details} 在原位。
+  //
+  // 仍会剩英文的一格：明细恰好是 parse.yamlSyntax 时，它的 {message} 是 yaml 库给的
+  // 英文原文——那是**外来数据，不翻译**，符合本文件顶部的判据，不是缺口。
   'serialize.selfCheckFailed': '序列化自校验失败，已中止以免损坏契约文件：{details}',
 
   // ==========================================================================
@@ -704,6 +728,83 @@ function messageOf(e: unknown): string {
   return String(e)
 }
 
+/**
+ * 报错的 params 值域，比界面字典那个 `Interpolations` 宽一格：除了标量，还能装
+ * **一串还没被渲染成任何语言的明细**（形状见 core/src/api.ts 的 `WireError`，自引用）。
+ *
+ * 判据与本文件顶部那条逐字一致——"我们写的才翻译"：路径、名字、行号、用户原文是
+ * 数据，两种语言下原样显示；明细是我们自己写的话，渲染必须推迟到显示这一刻。
+ */
+type ErrorParams = { readonly [key: string]: string | number | readonly WireError[] }
+
+/** 中文的明细分隔符。与 core 的 `'; '` 是同一件事的两种语言写法——分隔符是**标点**，
+ *  本来就该跟着语言走；把它做成跨包共享的常量，等于逼中文句子里用半角分号。 */
+const DETAIL_SEPARATOR_ZH = '；'
+
+/** 这一侧的数据来自 `JSON.parse`，深度完全不可信。触底退回明细自带的英文 message，
+ *  与 core 侧同一个上限、同一条裁定。 */
+const MAX_DETAIL_DEPTH = 8
+
+/**
+ * 渲染一条明细。
+ *
+ * **逐条降级**：这一条的码在 ERROR_ZH 里查不到（或触底）时，只有**它**退回自己那句
+ * 英文 message，外层中文照旧成立。降级落在一句英文人话上，不是码、不是占位符——
+ * 这正是本文件顶部"忘了加翻译的代价是这一句暂时是英文"那条要点，只是粒度更细了。
+ * 真正会发生这一格的场景是宿主与 UI 版本不齐（收到一个这份字典没有的码）；我们自己
+ * 漏翻一条时 i18n.test.ts 的覆盖率用例在 CI 就红了，轮不到这里兜。
+ *
+ * 行号与只读横幅走**同一个字典键、同一个数字**（App.tsx 的 parseErrors 列表就是这么
+ * 渲染的）。**无条件拼**，与 core 侧对称——session.ts 确实存在 line=0 的
+ * `spec.unreadable`，加一道 `line > 0` 的闸就会造出第二套不一致的行号策略。
+ */
+function renderZhDetail(d: WireError, depth: number): string {
+  const template = typeof d.code === 'string' ? ERROR_ZH[d.code as SpecErrorCode] : undefined
+  const body = depth >= MAX_DETAIL_DEPTH || template === undefined
+    ? d.message
+    : interpolateError(template, d.params, depth + 1)
+  return typeof d.line === 'number'
+    ? translate('zh', 'banner.parseErrorLine', { line: d.line }) + body
+    : body
+}
+
+/** 一个 params 值渲染成中文：数组逐条渲染再用中文分号连起来，明细走 renderZhDetail，
+ *  其余一律当数据 `String(v)` 原样显示。 */
+function renderZhValue(v: unknown, depth: number): string {
+  if (Array.isArray(v)) return v.map(x => renderZhValue(x, depth)).join(DETAIL_SEPARATOR_ZH)
+  // 判据与 core 的 isDetail、与 wire-error.ts 的 errorFromWire 同款：有 message 才算
+  // 明细。没有 message 的对象一律当数据走 String(v)，绝不会渲染出 "[object Object]"。
+  if (typeof v === 'object' && v !== null && typeof (v as WireError).message === 'string') {
+    return renderZhDetail(v as WireError, depth)
+  }
+  return String(v)
+}
+
+/**
+ * 与 `interpolate()` 并列的第二个插值器：只服务报错，值域更宽（多一格明细数组）。
+ * 界面字典那个一个字不动——界面文案里不会嵌报错，没有理由跟着放宽。
+ *
+ * **没有 `lang` 参数。** translateError 在 `lang !== 'zh'` 时早就返回了 core 给的
+ * message，英文永远由 core 渲染（英文的唯一定义处始终是 EN_MESSAGES）。把 lang 传
+ * 进这条递归，只会造出一条永远执行不到、也就永远测不到、必然与 core 那半边慢慢漂移
+ * 的死分支。
+ *
+ * 缺键仍然原样保留占位符，与 interpolate 逐字同一条裁定。
+ */
+function interpolateError(template: string, params: unknown, depth: number): string {
+  if (typeof params !== 'object' || params === null) return template
+  const p = params as ErrorParams
+  return template.replace(/\{(\w+)\}/g, (raw: string, key: string) =>
+    Object.prototype.hasOwnProperty.call(p, key) ? renderZhValue(p[key], depth) : raw)
+}
+
+/**
+ * **顶层绝不拼行号，行号只在 renderZhDetail 里拼。** 这是本轮最容易踩的一个坑：
+ * 行号有**两条**渲染路径，它们不得相交——一条顶层解析错误由 App.tsx 自己拼
+ * `banner.parseErrorLine` 再接上这个函数的返回值；嵌套明细（一条 ParseError 塞在
+ * 别人的 params 里）由 renderZhDetail 自己拼。这里再拼一次，只读横幅上就会出现
+ * 「第 3 行：第 3 行：…」。i18n.test.ts 有一条用例专门钉这个，别"顺手补上"。
+ */
 export function translateError(e: unknown, lang: Lang): string {
   if (isUiMessage(e)) return translate(lang, e.uiKey, e.uiParams)
 
@@ -720,8 +821,5 @@ export function translateError(e: unknown, lang: Lang): string {
   const template = ERROR_ZH[wire.code as SpecErrorCode]
   if (template === undefined) return message
 
-  const params = typeof wire.params === 'object' && wire.params !== null
-    ? wire.params as Interpolations
-    : undefined
-  return interpolate(template, params)
+  return interpolateError(template, wire.params, 0)
 }
